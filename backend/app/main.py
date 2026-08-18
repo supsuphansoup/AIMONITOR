@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from backend.app.core.config import settings
-from backend.app.db.session import init_db
+from backend.app.db.session import init_db, engine
 from backend.app.routers.traces import router as traces_router
 from backend.app.routers.metrics import router as metrics_router
 from backend.app.routers.alerts import router as alerts_router
@@ -82,7 +82,9 @@ if frontend_dist.exists() and (frontend_dist / "index.html").exists():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str):
-        if full_path.startswith("api/") or full_path == "api":
+        # Exclude API and known backend-only paths from SPA fallback
+        if (full_path.startswith("api/") or full_path == "api"
+                or full_path in ("health", "docs", "redoc", "openapi.json")):
             raise HTTPException(status_code=404, detail="API endpoint not found")
         file_path = frontend_dist / full_path
         if full_path and file_path.is_file():

@@ -45,7 +45,11 @@ export const TraceDetailModal: React.FC<TraceDetailModalProps> = ({ trace, onClo
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <span
             className={`badge ${
-              trace.status === 'SUCCESS' ? 'badge-success' : 'badge-error'
+              trace.status === 'SUCCESS'
+                ? 'badge-success'
+                : trace.status === 'TIMEOUT' || trace.status === 'RATE_LIMITED'
+                ? 'badge-warning'
+                : 'badge-error'
             }`}
           >
             {trace.status}
@@ -128,16 +132,24 @@ export const TraceDetailModal: React.FC<TraceDetailModalProps> = ({ trace, onClo
         )}
 
         {/* Metadata JSON */}
-        {trace.metadata_json && (
-          <div>
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>
-              Custom Metadata Payload
+        {trace.metadata_json && (() => {
+          let displayContent: string;
+          try {
+            displayContent = JSON.stringify(JSON.parse(trace.metadata_json), null, 2);
+          } catch {
+            displayContent = trace.metadata_json;
+          }
+          return (
+            <div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>
+                Custom Metadata Payload
+              </div>
+              <pre className="code-block">
+                {displayContent}
+              </pre>
             </div>
-            <pre className="code-block">
-              {JSON.stringify(JSON.parse(trace.metadata_json), null, 2)}
-            </pre>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

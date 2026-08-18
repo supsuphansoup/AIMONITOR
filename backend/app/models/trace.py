@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import ClassVar, FrozenSet, Optional, Dict, Any, List
 from sqlmodel import SQLModel, Field
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 def get_utc_now() -> datetime:
@@ -51,6 +51,19 @@ class TraceEventCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(extra="ignore")
+
+    _VALID_STATUSES: ClassVar[FrozenSet[str]] = frozenset({"SUCCESS", "ERROR", "TIMEOUT", "RATE_LIMITED"})
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: str) -> str:
+        """Normalize status to uppercase and validate against allowed values."""
+        upper = str(v).strip().upper()
+        if upper not in cls._VALID_STATUSES:
+            raise ValueError(
+                f"Invalid status '{v}'. Must be one of: {sorted(cls._VALID_STATUSES)}"
+            )
+        return upper
 
 
 class BatchTraceCreate(BaseModel):

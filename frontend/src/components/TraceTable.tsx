@@ -91,13 +91,21 @@ export const TraceTable: React.FC<TraceTableProps> = ({
                   onClick={() => onSelectTrace(trace)}
                   style={{
                     backgroundColor:
-                      trace.status === 'ERROR' ? 'rgba(239, 68, 68, 0.06)' : undefined,
+                      trace.status === 'ERROR'
+                        ? 'rgba(239, 68, 68, 0.06)'
+                        : trace.status === 'TIMEOUT' || trace.status === 'RATE_LIMITED'
+                        ? 'rgba(245, 158, 11, 0.06)'
+                        : undefined,
                   }}
                 >
                   <td>
                     <span
                       className={`badge ${
-                        trace.status === 'SUCCESS' ? 'badge-success' : 'badge-error'
+                        trace.status === 'SUCCESS'
+                          ? 'badge-success'
+                          : trace.status === 'TIMEOUT' || trace.status === 'RATE_LIMITED'
+                          ? 'badge-warning'
+                          : 'badge-error'
                       }`}
                     >
                       {trace.status}

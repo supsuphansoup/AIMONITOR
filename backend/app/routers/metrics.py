@@ -44,6 +44,7 @@ def get_metrics_timeseries(
 @router.get("/breakdown", response_model=List[Dict[str, Any]])
 def get_model_breakdown(
     session: Session = Depends(get_session),
+    hours_back: int = Query(24, ge=1, le=720, description="Hours of past data to include"),
 ):
     """Get model and provider breakdown statistics."""
-    return MetricAggregator.get_model_breakdown(session=session)
+    return MetricAggregator.get_model_breakdown(session=session, hours_back=hours_back)

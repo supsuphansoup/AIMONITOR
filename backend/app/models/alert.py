@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import ClassVar, FrozenSet, Optional
 from sqlmodel import SQLModel, Field
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 def get_utc_now() -> datetime:
@@ -36,6 +36,33 @@ class AlertRuleCreate(BaseModel):
     is_active: bool = True
 
     model_config = ConfigDict(extra="ignore")
+
+    _VALID_OPERATORS: ClassVar[FrozenSet[str]] = frozenset({">", ">=", "<", "<=", "==", "!="})
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        stripped = str(v).strip()
+        if not stripped:
+            raise ValueError("Alert rule name must not be empty")
+        return stripped
+
+    @field_validator("operator", mode="before")
+    @classmethod
+    def validate_operator(cls, v: str) -> str:
+        op = str(v).strip()
+        if op not in cls._VALID_OPERATORS:
+            raise ValueError(f"Invalid operator '{v}'. Must be one of: {sorted(cls._VALID_OPERATORS)}")
+        return op
+
+    @field_validator("webhook_url", mode="before")
+    @classmethod
+    def normalize_webhook_url(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        stripped = str(v).strip()
+        return stripped if stripped else None
+
 
 
 class AlertRuleRead(AlertRuleBase):

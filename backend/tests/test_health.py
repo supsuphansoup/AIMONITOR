@@ -24,9 +24,15 @@ def test_api_v1_health_check():
 
 
 def test_spa_fallback():
+    """SPA fallback only available when frontend/dist is built. Skip in unit test environments."""
+    from pathlib import Path
+    import pytest
+    frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if not (frontend_dist.exists() and (frontend_dist / "index.html").exists()):
+        pytest.skip("frontend/dist not built — skipping SPA fallback test")
     response = client.get("/")
     assert response.status_code == 200
-    assert "<!doctype html>" in response.text.lower() or "<html" in response.text.lower()
+    assert "<html" in response.text.lower() or "<!doctype html>" in response.text.lower()
 
 
 def test_nonexistent_api_returns_404():

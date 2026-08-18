@@ -128,7 +128,7 @@ class AlertEvaluator:
 
         Returns a list of created AlertHistory records.
         """
-        query = select(AlertRule).where(AlertRule.is_active == True)
+        query = select(AlertRule).where(col(AlertRule.is_active).is_(True))
         rules: List[AlertRule] = list(session.exec(query).all())
 
         if not rules:

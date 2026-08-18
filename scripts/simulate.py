@@ -1,7 +1,7 @@
 """CLI script to generate realistic LLM traffic to AIMONITOR backend."""
 import random
 import time
-import requests
+import httpx
 
 API_URL = "http://localhost:8000/api/v1/traces/batch"
 
@@ -10,7 +10,7 @@ MODELS = [
     {"provider": "openai", "model": "gpt-4o-mini", "base_prompt": 600, "base_comp": 250, "base_lat": 180},
     {"provider": "anthropic", "model": "claude-3-5-sonnet", "base_prompt": 1800, "base_comp": 800, "base_lat": 680},
     {"provider": "anthropic", "model": "claude-3-5-haiku", "base_prompt": 500, "base_comp": 200, "base_lat": 230},
-    {"provider": "gemini", "model": "gemini-1.5-pro", "base_prompt": 3000, "base_comp": 900, "base_lat": 520},
+    {"provider": "gemini", "model": "gemini-2.5-flash", "base_prompt": 3000, "base_comp": 900, "base_lat": 520},
     {"provider": "gemini", "model": "gemini-2.0-flash", "base_prompt": 800, "base_comp": 350, "base_lat": 150},
     {"provider": "ollama", "model": "llama3.1:8b", "base_prompt": 700, "base_comp": 300, "base_lat": 850},
 ]
@@ -37,17 +37,18 @@ def generate_batch(size: int = 5):
 
 def run_simulation(batches: int = 10, delay_sec: float = 1.0):
     print(f"🚀 Generating {batches} batches of simulated LLM traffic to {API_URL}...")
-    for i in range(batches):
-        payload = generate_batch(size=random.randint(3, 7))
-        try:
-            res = requests.post(API_URL, json=payload, timeout=5.0)
-            if res.status_code == 201:
-                print(f"[{i+1}/{batches}] Ingested {len(payload['traces'])} traces successfully.")
-            else:
-                print(f"[{i+1}/{batches}] Failed: HTTP {res.status_code}")
-        except Exception as e:
-            print(f"[{i+1}/{batches}] Error connecting to backend: {e}")
-        time.sleep(delay_sec)
+    with httpx.Client(timeout=5.0) as client:
+        for i in range(batches):
+            payload = generate_batch(size=random.randint(3, 7))
+            try:
+                res = client.post(API_URL, json=payload)
+                if res.status_code == 201:
+                    print(f"[{i+1}/{batches}] Ingested {len(payload['traces'])} traces successfully.")
+                else:
+                    print(f"[{i+1}/{batches}] Failed: HTTP {res.status_code}")
+            except Exception as e:
+                print(f"[{i+1}/{batches}] Error connecting to backend: {e}")
+            time.sleep(delay_sec)
     print("✨ Simulation finished!")
 
 

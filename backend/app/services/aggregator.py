@@ -146,9 +146,10 @@ class MetricAggregator:
         return results
 
     @staticmethod
-    def get_model_breakdown(session: Session) -> List[Dict[str, Any]]:
-        """Calculate breakdown by model and provider."""
-        query = select(TraceEvent)
+    def get_model_breakdown(session: Session, hours_back: int = 24) -> List[Dict[str, Any]]:
+        """Calculate breakdown by model and provider for the given time window."""
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        query = select(TraceEvent).where(TraceEvent.timestamp >= cutoff)
         events = session.exec(query).all()
         
         breakdown_map: Dict[str, Dict[str, Any]] = {}

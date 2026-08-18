@@ -287,6 +287,11 @@ body {
   color: var(--status-error);
 }
 
+.badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+}
+
 .badge-provider {
   background: var(--bg-subtle);
   color: var(--text-muted);

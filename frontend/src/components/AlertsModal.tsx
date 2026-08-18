@@ -292,7 +292,9 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                     <strong>{rule.name}</strong>: {rule.metric_type} {rule.operator} {rule.threshold_value} (Window: {rule.window_minutes}m)
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span className="badge badge-success">Active</span>
+                    <span className={rule.is_active ? 'badge badge-success' : 'badge badge-error'}>
+                      {rule.is_active ? 'Active' : 'Inactive'}
+                    </span>
                     <button
                       onClick={() => handleDeleteRule(rule.id)}
                       style={{
