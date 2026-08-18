@@ -1,0 +1,21 @@
+services:
+  aimonitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aimonitor:latest
+    container_name: aimonitor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PROJECT_NAME=AIMONITOR
+      - VERSION=0.1.0
+      - DATABASE_URL=sqlite:////app/data/aimonitor.db
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:8000","http://127.0.0.1:8000"]
+    volumes:
+      - aimonitor-data:/app/data
+
+volumes:
+  aimonitor-data:
+    driver: local

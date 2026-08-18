@@ -1,99 +1,56 @@
-# AGENTS.md
+# 🤖 AI Collaboration System (`AGENTS.md`)
 
-이 저장소에서 작업하는 모든 AI 코딩 에이전트를 위한 지침이다. **이 파일이 정본이며**, `CLAUDE.md` / `GEMINI.md` / `.github/copilot-instructions.md`는 이 파일을 가리킨다. 지침을 고칠 때는 이 파일만 고친다.
+이 프로젝트는 **Coordinator AI (Antigravity)**와 **Worker AI (GitHub Copilot Subagent)**의 분업 체계로 완벽하게 운영되었습니다.
 
-## 저장소 현황
+---
 
-**코드가 아직 없다.** `PRD.md`, `PLAN.md`, `README.md`뿐이며 PLAN Phase 0(프로젝트 부트스트랩)이 시작되지 않았다. 두 설계 문서가 유일한 진실 공급원이다.
+## 👑 1. Coordinator AI (Antigravity / Gemini)
 
-- `PRD.md` — 요구사항(FR-001~FR-011), 데이터 모델, 수용 기준, 확정된 기술 결정. **무엇을 만들지**의 기준.
-- `PLAN.md` — Phase 0~10의 작업·완료 기준·바이브 코딩 프롬프트. **어떤 순서로 만들지**의 기준.
+### 역할 및 책임
+- **Product & Architecture Lead**: 시스템 설계, 기술 스택 결정, 아키텍처 원칙 수립 (`docs/PRD.md`, `docs/PLAN.md`, `docs/architecture.md` 관리).
+- **Task Orchestrator**: 요구사항을 독립적이고 구현 가능한 단위(`tasks/TASK-XXX.md`)로 쪼개고 발급.
+- **Code Reviewer & Quality Gatekeeper**: Worker가 구현한 코드를 리뷰하고, 엣지 케이스, 통합 테스트, 타입 안정성, 동시성 스트레스 검증.
+- **Status Manager**: `tasks/task_board.md` 갱신 및 전체 마일스톤 진척 관리.
 
-두 문서는 상호 참조하므로 한쪽만 고치면 어긋난다. 요구사항·데이터 모델은 PRD를 먼저 고치고 PLAN을 맞춘다. 문서는 한국어로 작성한다.
+### 행동 지침
+1. 코드를 작성하기 전에 반드시 `docs/PRD.md`와 `docs/PLAN.md`를 기준으로 아키텍처 정합성을 확인한다.
+2. Worker(Copilot)에게 작업을 위임할 때는 명확한 파일 경로, 인터페이스, 요구사항, 완료 조건(Acceptance Criteria), 테스트 명령어를 포함한 전용 프롬프트를 제공한다.
+3. 작업 완료 후 테스트 결과와 코드를 검수한 뒤 결함이 없을 때까지 수정-재검증 루프를 수행한다.
 
-문서 상단의 `rev.N`은 문서 개정 번호이고 `v0.1.0` / `v0.2` 등은 제품 버전이다. PLAN §9의 로드맵 버전과 혼동하지 말 것.
+---
 
-## 제품 한 줄 요약
+## 🔨 2. Worker AI (GitHub Copilot Subagent)
 
-Windows에서 Claude Code의 로컬 JSONL 로그(`~/.claude/projects/<해시>/*.jsonl`)를 감시·파싱해 토큰과 원화 비용을 트레이와 한국어 대시보드에 보여주는 로컬 전용 Tauri 앱. 서버 없음, 원문 저장 없음.
+### 역할 및 책임
+- **Precision Implementation Specialist**: Coordinator가 발급한 Task 명세서에 따라 정확한 코드 작성.
+- **Unit Test Coverage**: 구현한 모든 함수/모듈에 대해 100% 동작 가능한 단위/통합 테스트 작성.
+- **Self-Verification**: 로컬 테스트 및 린트를 실행하여 무결성 확인 후 결과 보고.
 
-## 아키텍처 (Phase 0 이후 구현될 구조)
+### 행동 지침 (from `.github/copilot-instructions.md`)
+1. **지정된 범위 준수**: `tasks/TASK-XXX.md`에 명시된 파일과 요구사항만 수정/생성하며, Coordinator 승인 없이 아키텍처 구조를 임의 변경하지 않는다.
+2. **프로덕션 퀄리티 코드**: TODO 빈 함수, Mock 더미 남발, 타입 `any` 남용 금지. 완결된 형태의 코드를 작성한다.
+3. **완료 보고 포맷 준수**:
+   ```markdown
+   ### ✅ Task Completion Summary
+   - **Files Created/Modified**: [파일 목록]
+   - **Implemented Features**: [주요 구현 사항]
+   - **Test Results**: [테스트 명령어 및 통과 결과]
+   - **Questions / Notes**: [코디네이터에게 전달할 메모]
+   ```
 
-단방향 파이프라인이며, 각 단계는 인접 단계만 안다. 파싱·저장·집계·UI를 직접 연결하지 않는다.
+---
 
-```
-.claude/projects/*.jsonl
-  → collectors/  (notify watcher, file_key 기준 증분 읽기)
-  → parser/      (JSONL 1행 → UsageEvent, event_hash 생성)
-  → pricing/ + exchange/  (USD/KRW 비용, 같은 트랜잭션에서 계산)
-  → storage/     (SQLite: sessions / usage_events / costs / file_offsets
-                          / parse_errors / daily_rollups / app_settings)
-  → aggregation/ → commands.rs (Tauri command) → React 대시보드 + tray/
-```
+## 📂 핵심 문서 맵 (Document Map)
 
-`UsageCollector` 인터페이스를 두어 MVP의 `ClaudeCodeCollector` 외 수집기를 나중에 붙일 수 있게 한다(PRD §9).
-
-## 깨뜨리기 쉬운 핵심 불변식
-
-이 프로젝트의 가치는 데이터 정확성이다. 아래는 여러 문서를 읽어야 알 수 있고, 어기면 조용히 데이터가 틀어지는 규칙들이다.
-
-- **`event_hash`는 내용 기반이다.** 파일 경로·오프셋을 해시 입력에 절대 넣지 않는다. 중복 방지의 최종 방어선은 애플리케이션 로직이 아니라 `usage_events(event_hash)` UNIQUE 제약 + `ON CONFLICT DO NOTHING`이다. 그래서 파일명이 바뀌거나 전체 재스캔을 해도 행 수가 늘지 않아야 한다.
-- **`file_offsets`는 성능 최적화지 정확성 장치가 아니다.** 키는 경로가 아니라 `file_key`(volume serial + file index). 오프셋을 잃어도 중복이 생기면 안 된다.
-- **컨텍스트 사용률은 로그에 없다.** `(input + cache_read + cache_write) / context_window`로 앱이 계산하며, 모델 `context_window`는 가격표에서 온다. 파서가 가격표 조회에 의존하는 유일한 지점이다. 계산값은 `is_estimated = true` → UI에 `(추정)`.
-- **캐시 읽기와 캐시 쓰기는 단가가 다르다.** 절대 합산해 한 단가로 계산하지 않는다.
-- **비용은 제공값 우선.** 로그에 `costUSD`가 있으면 `cost_source = provided`로 그 값을 쓰고, 없을 때만 가격표 추정값을 쓴다. 가격 정보가 없으면 0원이 아니라 `계산 불가`.
-- **과거 비용은 불변.** 가격표나 환율을 바꿔도 이미 계산된 `costs` 행은 재계산하지 않는다. 예외는 `is_estimable = false`로 남아 계산 자체를 못 했던 행의 백필뿐이다.
-- **KST 집계는 `local_date` / `local_month` 컬럼으로 한다.** SQLite에 타임존 DB가 없으므로 저장 시 UTC+9를 적용해 비정규화한다. 조회 시점에 변환하지 않는다.
-- **`delete_all_data`는 `file_offsets`를 지우지 않는다.** 지우면 watcher가 기존 로그를 즉시 재수집해 "삭제 후 빈 상태" 수용 기준이 깨진다. 과거 데이터를 다시 읽는 것은 별도의 `rescan_all` 기능이다.
-- **원문 페이로드는 어디에도 남기지 않는다.** 도메인 타입, DB, 로그, `parse_errors` 전부. 원문 저장 기능은 MVP에서 코드 경로 자체가 없다.
-- **세션 키는 `(source, session_key)`.** `sessionId`를 UUID로 가정하지 않는다. 세션 종료는 마지막 이벤트 후 30분 무활동으로 판정한다.
-
-## 재논의하지 말 것 (PRD §13에서 확정)
-
-| 항목 | 결정 |
-|---|---|
-| DB 접근 | `rusqlite` + `refinery` (`sqlx` 아님) |
-| 설치 번들러 | NSIS **per-user** 고정 (WiX MSI는 UAC를 유발해 제외) |
-| E2E | `tauri-driver` + WebdriverIO (Playwright로 Tauri 앱을 직접 구동할 수 없음) |
-| 프론트 린터 | Biome (ESLint + Prettier 아님) |
-| 트레이 표시 | Windows 트레이는 아이콘 옆 텍스트가 불가. 아이콘=상태 색상, 수치=툴팁 + 팝업 |
-| 환율 | 기본 수동 모드. 자동 조회를 켜야만 외부 요청이 발생한다 |
-| 라이선스 / 보관 기간 기본값 | MIT / 무제한 |
-
-MVP에서 앱이 하는 외부 통신은 환율 조회 1건뿐이며 기본값은 비활성이다. 여기에 네트워크 호출을 추가하면 PRD §8의 외부 통신 표와 `docs/privacy.md`를 함께 갱신해야 한다.
-
-## 명령어
-
-Phase 0이 끝나기 전에는 실행 가능한 명령이 없다. PLAN Phase 0에서 아래가 성립하도록 만든다.
-
-```bash
-pnpm install
-pnpm dev          # Vite 개발 서버
-pnpm tauri dev    # 앱 창 실행
-pnpm tauri build  # NSIS per-user 설치 파일 생성 (UAC 프롬프트 없어야 함)
-```
-
-Rust 쪽은 `apps/desktop/src-tauri`에서 실행한다.
-
-```bash
-cargo test                      # 통합 테스트 전체
-cargo test --test parser        # 특정 통합 테스트 파일만
-cargo test parses_multi_model   # 이름으로 단일 테스트만
-cargo clippy -- -D warnings     # 경고 0개 유지
-```
-
-프론트엔드는 `apps/desktop`에서 실행한다.
-
-```bash
-pnpm vitest run                       # 전체
-pnpm vitest run src/lib/format.test.ts  # 단일 파일
-pnpm biome check --write .
-```
-
-fixture와 Rust 테스트는 `src-tauri/` 아래에 둔다. 루트 `tests/`는 Cargo가 통합 테스트로 인식하지 않고, 루트 `fixtures/`는 `CARGO_MANIFEST_DIR` 기준 경로가 어긋난다.
-
-## 작업 방식
-
-PLAN §7의 작업 템플릿(목표 / 현재 상태 / 변경 범위 / 변경하지 않을 것 / 수용 기준 / 테스트)을 따르고, Phase 순서를 건너뛰지 않는다. 특히 수집기와 파서가 안정되기 전에 대시보드를 먼저 만들지 않는다.
-
-**Phase 3 착수 전제조건: 실제 Claude Code JSONL 샘플 확보.** PLAN에 적힌 샘플 JSON 구조는 가정이며 Claude Code 버전에 따라 필드명이 다를 수 있다. 실제 로그로 `src-tauri/fixtures/claude-code/`를 채운 뒤 파서를 작성한다.
+| 문서 | 설명 | 주 관리자 |
+| :--- | :--- | :--- |
+| `AGENTS.md` | AI 역할 정의 및 협업 규칙 (본 문서) | Coordinator |
+| `.github/copilot-instructions.md` | GitHub Copilot이 자동 로드하는 인스트럭션 | Coordinator |
+| `docs/PRD.md` | 제품 요구사항 정의서 (Product Requirements) | Coordinator |
+| `docs/PLAN.md` | 마스터 개발 로드맵 & 마일스톤 계획 | Coordinator |
+| `docs/architecture.md` | 세부 아키텍처 및 데이터 흐름 | Coordinator |
+| `docs/workflow.md` | Coordinator-Worker 협업 워크플로우 가이드 | Coordinator |
+| `docs/PROGRESS.md` | 전체 개발 진행 및 완료 상세 보고서 | Coordinator |
+| `tasks/task_board.md` | 실시간 태스크 진행 보드 | Coordinator |
+| `tasks/TASK-*.md` | 단위 태스크 지시서 (Worker용) | Coordinator 발급 -> Worker 수행 |
+| `README.md` | 프로젝트 종합 소개 및 빠른 시작 가이드 | Coordinator |
