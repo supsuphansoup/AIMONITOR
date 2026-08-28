@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, select, update
 
 from backend.app.core.metrics_catalog import METRIC_FIELD_MAP, resolve_metric_key, unit_for
 from backend.app.core.timeutil import to_aware_utc, utc_now
@@ -127,11 +127,49 @@ class AlertEvaluator:
             return False
         return now - rule.last_triggered_at < timedelta(minutes=rule.cooldown_minutes)
 
+    @staticmethod
+    def claim_rule(session: Session, rule: AlertRule, now: datetime) -> bool:
+        """Atomically reserve the right to fire this rule, honouring its cooldown.
+
+        A compare-and-set on `last_triggered_at`: the UPDATE only matches while
+        the cooldown is still expired, so exactly one caller can win. Checking
+        the cooldown in Python and writing later leaves a window as wide as the
+        webhook call, during which every worker in a multi-process deployment
+        reads "not in cooldown" and sends its own copy of the same alert.
+        """
+        if rule.id is None:
+            return False
+
+        condition = col(AlertRule.id) == rule.id
+        if rule.cooldown_minutes > 0:
+            cutoff = now - timedelta(minutes=rule.cooldown_minutes)
+            condition = condition & (
+                col(AlertRule.last_triggered_at).is_(None)
+                | (col(AlertRule.last_triggered_at) <= cutoff)
+            )
+
+        result = session.exec(
+            update(AlertRule).where(condition).values(last_triggered_at=now)
+        )
+        session.commit()
+        if result.rowcount == 1:
+            rule.last_triggered_at = now
+            return True
+        return False
+
     @classmethod
     def evaluate_rules(
-        cls, session: Session, rule_ids: Optional[List[int]] = None
+        cls,
+        session: Session,
+        rule_ids: Optional[List[int]] = None,
+        ignore_cooldown: bool = False,
     ) -> List[AlertHistory]:
         """Evaluate active rules against recent metrics; log and dispatch hits.
+
+        `ignore_cooldown` forces every active rule to be evaluated even if it
+        fired recently. It still records history and still dispatches webhooks -
+        it is a real evaluation, not a dry run - but it neither consumes nor
+        resets any cooldown, so a manual check leaves the schedule untouched.
 
         Returns the AlertHistory records created by this pass.
         """
@@ -144,20 +182,30 @@ class AlertEvaluator:
 
         triggered_histories: List[AlertHistory] = []
         now = utc_now()
+        # Rules sharing a window share an aggregation; a dozen rules on the same
+        # five-minute window used to mean a dozen identical scans.
+        overview_cache: Dict[int, Dict[str, Any]] = {}
 
         for rule in rules:
-            if cls.is_in_cooldown(rule, now):
+            if not ignore_cooldown and cls.is_in_cooldown(rule, now):
                 continue
 
             window_minutes = max(1, rule.window_minutes)
-            overview = MetricAggregator.get_overview_metrics(
-                session=session,
-                start_time=now - timedelta(minutes=window_minutes),
-                end_time=now,
-            )
+            if window_minutes not in overview_cache:
+                overview_cache[window_minutes] = MetricAggregator.get_overview_metrics(
+                    session=session,
+                    start_time=now - timedelta(minutes=window_minutes),
+                    end_time=now,
+                )
+            overview = overview_cache[window_minutes]
 
             metric_val = extract_metric_value(overview, rule.metric_type)
             if not compare_operator(metric_val, rule.operator, rule.threshold_value):
+                continue
+
+            if not ignore_cooldown and not cls.claim_rule(session, rule, now):
+                # Another evaluator got there first within the cooldown window.
+                logger.debug("Rule '%s' already claimed by a concurrent evaluation", rule.name)
                 continue
 
             sent_ok = cls.dispatch_webhook(rule, metric_val, now)
@@ -169,8 +217,6 @@ class AlertEvaluator:
                 sent_successfully=sent_ok,
                 created_at=now,
             )
-            rule.last_triggered_at = now
-            session.add(rule)
             session.add(history)
             triggered_histories.append(history)
 

@@ -73,12 +73,24 @@ def _add_column_ddl(column: Any, target_engine: Engine) -> Optional[str]:
     return " ".join(parts)
 
 
+def _load_model_metadata() -> None:
+    """Ensure every table is registered on SQLModel.metadata.
+
+    Tables register themselves as a side effect of importing their module, so a
+    caller that reaches init_db() without having imported the models would
+    otherwise operate on empty metadata and silently do nothing. Imported here
+    rather than at module scope to keep the dependency one-directional.
+    """
+    import backend.app.models  # noqa: F401
+
+
 def ensure_schema(target_engine: Optional[Engine] = None) -> None:
-    """Add columns introduced since a database was first created.
+    """Add columns and indexes introduced since a database was first created.
 
     A lightweight substitute for a migration tool: it never drops or retypes
     anything, so upgrading an existing deployment keeps its history intact.
     """
+    _load_model_metadata()
     target_engine = target_engine or engine
     inspector = inspect(target_engine)
     existing_tables = set(inspector.get_table_names())
@@ -86,19 +98,34 @@ def ensure_schema(target_engine: Optional[Engine] = None) -> None:
     for table in SQLModel.metadata.sorted_tables:
         if table.name not in existing_tables:
             continue
+
         present = {col["name"] for col in inspector.get_columns(table.name)}
         missing = [c for c in table.columns if c.name not in present]
-        if not missing:
-            continue
-        with target_engine.begin() as conn:
-            for column in missing:
-                clause = _add_column_ddl(column, target_engine)
-                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN {clause}'))
-                logger.info("Schema upgrade: added %s.%s", table.name, column.name)
+        if missing:
+            with target_engine.begin() as conn:
+                for column in missing:
+                    clause = _add_column_ddl(column, target_engine)
+                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN {clause}'))
+                    logger.info("Schema upgrade: added %s.%s", table.name, column.name)
+            present |= {c.name for c in missing}
+
+        # CREATE INDEX is a separate statement from ADD COLUMN, so a new indexed
+        # column arrives unindexed on an upgraded database and every query that
+        # filters on it degrades to a full scan.
+        existing_indexes = {idx["name"] for idx in inspect(target_engine).get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name in existing_indexes:
+                continue
+            if not {c.name for c in index.columns} <= present:
+                continue
+            with target_engine.begin() as conn:
+                index.create(bind=conn)
+            logger.info("Schema upgrade: created index %s", index.name)
 
 
 def init_db() -> None:
     """Create missing tables, then backfill columns added by later versions."""
+    _load_model_metadata()
     SQLModel.metadata.create_all(engine)
     ensure_schema(engine)
 

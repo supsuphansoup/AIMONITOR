@@ -159,17 +159,18 @@ def list_alert_history(
 def trigger_alert_evaluation(
     session: Session = Depends(get_session),
     ignore_cooldown: bool = Query(
-        False, description="Evaluate even if a rule fired inside its cooldown window"
+        False,
+        description=(
+            "Evaluate even if a rule fired inside its cooldown window. Still records "
+            "history and dispatches webhooks, but leaves the cooldown untouched."
+        ),
     ),
 ):
     """Evaluate all active rules now.
 
     The scheduler runs this on its own interval; this endpoint exists for manual
-    checks and for testing a freshly created rule.
+    checks and for testing a freshly created rule. `ignore_cooldown` forces a
+    real evaluation - history and webhooks included - without consuming or
+    resetting the cooldown that governs the scheduled passes.
     """
-    if ignore_cooldown:
-        for rule in session.exec(select(AlertRule).where(col(AlertRule.is_active).is_(True))).all():
-            rule.last_triggered_at = None
-            session.add(rule)
-        session.commit()
-    return AlertEvaluator.evaluate_rules(session=session)
+    return AlertEvaluator.evaluate_rules(session=session, ignore_cooldown=ignore_cooldown)

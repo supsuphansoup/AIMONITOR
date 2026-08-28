@@ -53,6 +53,8 @@ export interface TimeseriesPoint {
   p95_latency_ms: number;
   total_cost_usd: number;
   total_tokens: number;
+  /** True when the row cap cut into this bucket, so its counts are a floor. */
+  partial: boolean;
 }
 
 export interface ModelBreakdown {

@@ -56,7 +56,9 @@ export function setApiKey(value: string): void {
   }
 }
 
-function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined>): string {
+type QueryParams = Record<string, string | number | boolean | undefined>;
+
+function buildUrl(path: string, params?: QueryParams): string {
   const query = new URLSearchParams();
   Object.entries(params ?? {}).forEach(([key, value]) => {
     if (value !== undefined && value !== '') query.set(key, String(value));
@@ -109,6 +111,32 @@ export interface TraceQuery {
   offset?: number;
 }
 
+/** A page of traces plus the total number of matches, from `X-Total-Count`. */
+export interface TracePage {
+  items: TraceEvent[];
+  total: number;
+}
+
+async function requestTracePage(query: TraceQuery, signal?: AbortSignal): Promise<TracePage> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers['X-API-Key'] = apiKey;
+
+  const response = await fetch(buildUrl('/traces', { ...query }), { headers, signal });
+  if (!response.ok) {
+    throw new ApiError(await describeFailure(response), response.status);
+  }
+  const items = (await response.json()) as TraceEvent[];
+  const header = response.headers.get('X-Total-Count');
+  // Guard on the header being present, not just numeric: Number(null) is 0, so
+  // a cross-origin deployment that does not expose the header would otherwise
+  // report an empty table while showing rows.
+  const declared = header === null ? Number.NaN : Number(header);
+  return {
+    items,
+    total: Number.isFinite(declared) && declared >= 0 ? declared : items.length,
+  };
+}
+
 export const api = {
   overview: (hours?: number, signal?: AbortSignal) =>
     request<OverviewMetrics>('/metrics/overview', { params: { hours_back: hours }, signal }),
@@ -122,8 +150,19 @@ export const api = {
   breakdown: (hours: number, signal?: AbortSignal) =>
     request<ModelBreakdown[]>('/metrics/breakdown', { params: { hours_back: hours }, signal }),
 
-  traces: (query: TraceQuery, signal?: AbortSignal) =>
-    request<TraceEvent[]>('/traces', { params: query, signal }),
+  traces: (query: TraceQuery, signal?: AbortSignal) => requestTracePage(query, signal),
+
+  /** Fetches the CSV export as a Blob so the API key can travel in a header;
+   *  a plain download link cannot carry one. */
+  exportCsv: async (query: { provider?: string; limit?: number }): Promise<Blob> => {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers['X-API-Key'] = apiKey;
+    const response = await fetch(buildUrl('/traces/export.csv', query), { headers });
+    if (!response.ok) {
+      throw new ApiError(await describeFailure(response), response.status);
+    }
+    return response.blob();
+  },
 
   alertRules: (signal?: AbortSignal) => request<AlertRule[]>('/alerts/rules', { signal }),
 

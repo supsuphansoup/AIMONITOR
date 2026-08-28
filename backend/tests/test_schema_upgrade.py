@@ -99,3 +99,61 @@ def test_ensure_schema_is_idempotent(legacy_engine):
     ensure_schema(legacy_engine)  # must not raise "duplicate column name"
     with legacy_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM trace_events")).scalar() == 1
+
+
+def test_missing_indexes_are_created(legacy_engine):
+    """A new indexed column arrives unindexed unless CREATE INDEX also runs.
+
+    ALTER TABLE ADD COLUMN cannot carry an index, so every query filtering on
+    cost_source would fall back to a full scan on an upgraded database.
+    """
+    before = {i["name"] for i in inspect(legacy_engine).get_indexes("trace_events")}
+    assert "ix_trace_events_cost_source" not in before
+
+    ensure_schema(legacy_engine)
+
+    after = {i["name"] for i in inspect(legacy_engine).get_indexes("trace_events")}
+    assert "ix_trace_events_cost_source" in after
+    # v0.1.0 only ever indexed timestamp; the rest are backfilled too.
+    assert {"ix_trace_events_provider", "ix_trace_events_status"} <= after
+
+
+def test_index_creation_is_idempotent(legacy_engine):
+    ensure_schema(legacy_engine)
+    first = {i["name"] for i in inspect(legacy_engine).get_indexes("trace_events")}
+    ensure_schema(legacy_engine)
+    assert {i["name"] for i in inspect(legacy_engine).get_indexes("trace_events")} == first
+
+
+def test_ensure_schema_works_without_the_models_imported():
+    """init_db() must not depend on the caller having imported the models.
+
+    Tables register on SQLModel.metadata as an import side effect, so a script
+    that only imports the session module would otherwise operate on empty
+    metadata and silently create nothing.
+    """
+    import pathlib
+    import subprocess
+    import sys
+
+    # A fresh interpreter is the only way to test this: by the time pytest runs,
+    # conftest has already imported the models for every other test.
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    script = (
+        "import tempfile, os\n"
+        "from sqlalchemy import create_engine, text, inspect\n"
+        "from backend.app.db.session import ensure_schema\n"
+        "fd, p = tempfile.mkstemp(suffix='.db'); os.close(fd)\n"
+        "e = create_engine('sqlite:///' + p)\n"
+        f"""with e.begin() as c: c.execute(text('''{LEGACY_TRACE_TABLE}'''))\n"""
+        "ensure_schema(e)\n"
+        "cols = {c['name'] for c in inspect(e).get_columns('trace_events')}\n"
+        "print('RESULT', 'cost_source' in cols)\n"
+        "e.dispose(); os.remove(p)\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(repo_root)}
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, cwd=str(repo_root), env=env,
+    )
+    assert "RESULT True" in result.stdout, result.stderr

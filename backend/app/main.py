@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.app.core.config import settings
 from backend.app.core.logging import configure_logging
@@ -51,24 +52,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(GZipMiddleware, minimum_size=1024)
-
-# CORS. A wildcard origin and credentials are mutually exclusive per the CORS
-# spec; sending both makes browsers drop the response, so credentials are
-# switched off whenever the origin list is a wildcard.
-origins = settings.cors_origin_list
-if origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=not settings.cors_allows_wildcard,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
-    )
-
-
-@app.middleware("http")
+# Middleware order matters, and `add_middleware` makes the LAST registration the
+# outermost layer. These are registered innermost-first so that CORS ends up
+# outermost: an error response produced inside still picks up its headers on the
+# way out, without which a cross-origin dashboard sees an opaque network failure
+# instead of the actual status.
 async def request_context(request: Request, call_next):
     """Tag every request with an id and log its outcome.
 
@@ -107,6 +95,48 @@ async def request_context(request: Request, call_next):
             elapsed_ms,
         )
     return response
+
+
+async def enforce_body_limit(request: Request, call_next):
+    """Reject oversized bodies before they are buffered into memory.
+
+    MAX_BATCH_SIZE only applies once the JSON has been parsed, which is too late
+    to stop a single enormous payload from being read in full.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > settings.MAX_REQUEST_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body exceeds the {settings.MAX_REQUEST_BYTES} byte limit."
+                        )
+                    },
+                )
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Malformed Content-Length."})
+    return await call_next(request)
+
+
+app.add_middleware(BaseHTTPMiddleware, dispatch=request_context)
+app.add_middleware(BaseHTTPMiddleware, dispatch=enforce_body_limit)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+# CORS. A wildcard origin and credentials are mutually exclusive per the CORS
+# spec; sending both makes browsers drop the response, so credentials are
+# switched off whenever the origin list is a wildcard.
+origins = settings.cors_origin_list
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=not settings.cors_allows_wildcard,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID", "X-Total-Count"],
+    )
 
 
 @app.get("/health", tags=["Health"])

@@ -1,13 +1,17 @@
+import csv
+import io
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import Iterator, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from backend.app.core.security import require_read_auth, require_write_auth
-from backend.app.core.timeutil import to_naive_utc
+from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.db.session import get_session
 from backend.app.models.trace import (
     VALID_STATUSES,
@@ -16,7 +20,7 @@ from backend.app.models.trace import (
     TraceEventCreate,
     TraceEventRead,
 )
-from backend.app.services.cost import calculate_cost_detail
+from backend.app.services.cost import SOURCE_UNKNOWN, calculate_cost_detail
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,7 @@ def ingest_batch_traces(
 
 @router.get("", response_model=List[TraceEventRead], dependencies=[Depends(require_read_auth)])
 def list_traces(
+    response: Response,
     session: Session = Depends(get_session),
     provider: Optional[str] = Query(None, description="Filter by provider"),
     model_name: Optional[str] = Query(None, description="Filter by model name"),
@@ -143,13 +148,16 @@ def list_traces(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    """Query recent trace events with pagination and filters."""
-    query = select(TraceEvent).order_by(col(TraceEvent.timestamp).desc())
+    """Query recent trace events with pagination and filters.
 
+    The total number of matching rows is returned in `X-Total-Count`, so a
+    client can render real page numbers instead of guessing from page fullness.
+    """
+    filters = []
     if provider:
-        query = query.where(TraceEvent.provider == provider)
+        filters.append(TraceEvent.provider == provider)
     if model_name:
-        query = query.where(TraceEvent.model_name == model_name)
+        filters.append(TraceEvent.model_name == model_name)
     if status_filter:
         normalized = status_filter.strip().upper()
         if normalized not in VALID_STATUSES:
@@ -157,16 +165,97 @@ def list_traces(
                 status_code=HTTP_422_UNPROCESSABLE,
                 detail=f"Invalid status filter. Must be one of: {sorted(VALID_STATUSES)}",
             )
-        query = query.where(TraceEvent.status == normalized)
+        filters.append(TraceEvent.status == normalized)
     if session_id:
-        query = query.where(TraceEvent.session_id == session_id)
+        filters.append(TraceEvent.session_id == session_id)
     if start_time:
-        query = query.where(TraceEvent.timestamp >= to_naive_utc(start_time))
+        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
     if end_time:
-        query = query.where(TraceEvent.timestamp <= to_naive_utc(end_time))
+        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
 
-    query = query.offset(offset).limit(limit)
+    total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one()
+    response.headers["X-Total-Count"] = str(total or 0)
+
+    query = (
+        select(TraceEvent)
+        .where(*filters)
+        .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+        .offset(offset)
+        .limit(limit)
+    )
     return session.exec(query).all()
+
+
+CSV_COLUMNS = [
+    "id", "trace_id", "timestamp", "session_id", "provider", "model_name",
+    "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
+    "total_tokens", "latency_ms", "cost_usd", "cost_source", "status", "tags",
+]
+
+
+@router.get("/export.csv", dependencies=[Depends(require_read_auth)])
+def export_traces_csv(
+    session: Session = Depends(get_session),
+    provider: Optional[str] = Query(None),
+    model_name: Optional[str] = Query(None),
+    start_time: Optional[datetime] = Query(None),
+    end_time: Optional[datetime] = Query(None),
+    limit: int = Query(10_000, ge=1, le=100_000),
+):
+    """Stream matching traces as CSV, for cost reporting and spreadsheets.
+
+    `error_message` and `metadata_json` are omitted: an export is the easiest way
+    for trace content to escape into a shared file, and neither column is needed
+    to reconcile spend.
+    """
+    filters = []
+    if provider:
+        filters.append(TraceEvent.provider == provider)
+    if model_name:
+        filters.append(TraceEvent.model_name == model_name)
+    if start_time:
+        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
+    if end_time:
+        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
+
+    query = (
+        select(TraceEvent)
+        .where(*filters)
+        .order_by(col(TraceEvent.timestamp).desc())
+        .limit(limit)
+    )
+
+    def rows() -> Iterator[str]:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(CSV_COLUMNS)
+        yield buffer.getvalue()
+
+        # Streamed in chunks so a large export never assembles the whole file in
+        # memory on either side.
+        for event in session.exec(query).yield_per(500):
+            buffer.seek(0)
+            buffer.truncate(0)
+            aware = to_aware_utc(event.timestamp)
+            writer.writerow([
+                event.id, event.trace_id, aware.isoformat() if aware else "",
+                event.session_id or "", event.provider, event.model_name,
+                event.prompt_tokens, event.completion_tokens,
+                event.cache_read_tokens, event.cache_write_tokens,
+                event.total_tokens, event.latency_ms,
+                # An unpriced call exports as empty, not 0, so a spreadsheet sum
+                # cannot quietly treat "we do not know" as "it was free".
+                "" if event.cost_source == SOURCE_UNKNOWN else event.cost_usd,
+                event.cost_source, event.status, event.tags or "",
+            ])
+            yield buffer.getvalue()
+
+    filename = f"aimonitor-traces-{utc_now().strftime('%Y%m%d-%H%M%S')}.csv"
+    return StreamingResponse(
+        rows(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get(

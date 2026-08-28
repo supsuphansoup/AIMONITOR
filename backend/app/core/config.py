@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # --- Identity -------------------------------------------------------
     PROJECT_NAME: str = "AIMONITOR"
-    VERSION: str = "0.2.0"
+    VERSION: str = "0.3.0"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
 
     # --- Ingestion limits ----------------------------------------------
     MAX_BATCH_SIZE: int = 500
+    # Applied to Content-Length before the body is read, unlike MAX_BATCH_SIZE
+    # which can only reject a payload after it has been parsed.
+    MAX_REQUEST_BYTES: int = 8_388_608  # 8 MiB
     MAX_ERROR_MESSAGE_CHARS: int = 2000
     MAX_METADATA_BYTES: int = 8192
     MAX_TAGS: int = 20

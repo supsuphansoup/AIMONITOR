@@ -81,8 +81,9 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
     setIsEvaluating(true);
     setFormError(null);
     try {
-      // Manual checks bypass the cooldown; otherwise pressing the button during
-      // an ongoing incident appears to do nothing.
+      // Bypasses the cooldown so the button does something during an ongoing
+      // incident. Webhooks do fire, but the cooldown itself is left alone, so
+      // the scheduled passes keep their existing rhythm.
       await api.evaluateRules(true);
       onRefresh();
     } catch (err) {
@@ -132,6 +133,7 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
               onClick={handleEvaluateNow}
               disabled={isEvaluating}
               style={{ fontSize: '12px', padding: '6px 12px' }}
+              title="쿨다운을 무시하고 지금 평가합니다. Webhook 도 전송되며, 쿨다운 자체는 변경되지 않습니다."
             >
               <Play size={12} color="#10b981" />
               {isEvaluating ? 'Evaluating...' : 'Evaluate Now'}

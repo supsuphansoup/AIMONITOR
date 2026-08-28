@@ -131,13 +131,17 @@ class MetricAggregator:
         )
         cost_unknown_count = session.exec(unpriced_query).one() or 0
 
+        # Newest first: when the row cap truncates the sample, percentiles should
+        # describe recent behaviour. Without the ordering the database returns
+        # rows in storage order, so a capped query reported last month latency as
+        # if it were current.
         latency_query = _apply_filters(
             select(col(TraceEvent.latency_ms)),
             start_time,
             end_time,
             provider,
             model_name,
-        ).limit(settings.MAX_AGGREGATION_ROWS)
+        ).order_by(col(TraceEvent.timestamp).desc()).limit(settings.MAX_AGGREGATION_ROWS)
         latencies = list(session.exec(latency_query).all())
 
         success_count = total_requests - error_count
@@ -174,6 +178,9 @@ class MetricAggregator:
         interval_minutes = max(1, min(interval_minutes, 1440))
         cutoff = utc_now() - timedelta(hours=hours_back)
 
+        # Descending, so a truncated window drops the OLDEST events. Ascending
+        # order silently amputated the right-hand edge of the chart - the part a
+        # monitoring dashboard exists to show.
         query = _apply_filters(
             select(
                 col(TraceEvent.timestamp),
@@ -185,11 +192,12 @@ class MetricAggregator:
             start_time=cutoff,
             provider=provider,
             model_name=model_name,
-        ).order_by(col(TraceEvent.timestamp).asc()).limit(settings.MAX_AGGREGATION_ROWS)
+        ).order_by(col(TraceEvent.timestamp).desc()).limit(settings.MAX_AGGREGATION_ROWS)
 
         rows = list(session.exec(query).all())
         if not rows:
             return []
+        truncated = len(rows) >= settings.MAX_AGGREGATION_ROWS
 
         buckets: Dict[datetime, List[Any]] = {}
         for ts, status, latency, cost, tokens in rows:
@@ -204,8 +212,9 @@ class MetricAggregator:
             )
             buckets.setdefault(bucket_dt, []).append((status, latency, cost, tokens))
 
+        ordered = sorted(buckets)
         results: List[Dict[str, Any]] = []
-        for bucket_dt in sorted(buckets):
+        for index, bucket_dt in enumerate(ordered):
             entries = buckets[bucket_dt]
             count = len(entries)
             lats = [e[1] for e in entries]
@@ -218,6 +227,9 @@ class MetricAggregator:
                 "p95_latency_ms": round(percentile(lats, 95), 2),
                 "total_cost_usd": round(sum(e[2] for e in entries), 6),
                 "total_tokens": sum(e[3] for e in entries),
+                # The row cap cuts into the oldest bucket, so its counts are a
+                # floor rather than a total. Flagged instead of quietly shipped.
+                "partial": truncated and index == 0,
             })
         return results
 

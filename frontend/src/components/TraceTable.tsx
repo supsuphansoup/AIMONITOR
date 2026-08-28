@@ -1,10 +1,12 @@
-import React from 'react';
-import { ChevronLeft, ChevronRight, Filter } from 'lucide-react';
+import React, { useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, Filter } from 'lucide-react';
+import { api } from '../api';
 import { TraceEvent } from '../types';
 import { formatCost, formatMs, formatNumber, formatTime } from '../format';
 
 interface TraceTableProps {
   traces: TraceEvent[];
+  total: number;
   selectedProvider: string;
   selectedStatus: string;
   page: number;
@@ -29,6 +31,7 @@ function badgeClass(status: string): string {
 
 export const TraceTable: React.FC<TraceTableProps> = ({
   traces,
+  total,
   selectedProvider,
   selectedStatus,
   page,
@@ -38,14 +41,50 @@ export const TraceTable: React.FC<TraceTableProps> = ({
   onPageChange,
   onSelectTrace,
 }) => {
-  // The API returns one page at a time, so a full page implies there may be more.
-  const hasNextPage = traces.length === pageSize;
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // X-Total-Count gives a real page count instead of inferring "there may be
+  // more" from a full page.
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const hasNextPage = page + 1 < pageCount;
+
+  const handleExport = async () => {
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const blob = await api.exportCsv({ provider: selectedProvider || undefined });
+      // Fetched as a Blob rather than linked directly, because a plain download
+      // link cannot carry the API key header.
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `aimonitor-traces-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError('CSV 내보내기에 실패했습니다.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   return (
     <div className="card">
       <div className="card-title">
         <span>Live Trace Stream</span>
         <div className="filter-bar">
+          <button
+            className="btn btn-secondary pager-btn"
+            onClick={handleExport}
+            disabled={isExporting || total === 0}
+            title="현재 필터 조건으로 CSV 내보내기"
+          >
+            <Download size={13} />
+            {isExporting ? '내보내는 중...' : 'CSV'}
+          </button>
           <Filter size={14} color="var(--text-muted)" />
           <select
             className="select-input"
@@ -149,10 +188,12 @@ export const TraceTable: React.FC<TraceTableProps> = ({
         </table>
       </div>
 
+      {exportError && <div className="banner banner-error">{exportError}</div>}
+
       <div className="pager">
         <span className="pager-label">
-          {traces.length > 0
-            ? `${page * pageSize + 1}–${page * pageSize + traces.length}번 트레이스`
+          {total > 0
+            ? `${formatNumber(page * pageSize + 1)}–${formatNumber(page * pageSize + traces.length)} / ${formatNumber(total)}건 · ${page + 1}/${pageCount} 페이지`
             : '표시할 트레이스 없음'}
         </span>
         <button

@@ -34,12 +34,23 @@ export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown, windowLab
     time: formatTime(pt.timestamp),
   }));
 
+  // The oldest bucket is a floor rather than a total when the server hit its row
+  // cap. Drawing it like the rest would understate a spike at the window edge.
+  const hasPartialBucket = timeseries.some((pt) => pt.partial);
+
   return (
     <div className="charts-grid">
       <div className="card">
         <div className="card-title">
           <span>Latency &amp; Ingestion Trend</span>
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Last {windowLabel}</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            Last {windowLabel}
+            {hasPartialBucket && (
+              <span className="kpi-flag" title="서버 조회 한도로 가장 오래된 구간이 잘렸습니다">
+                {' '}· 구간 일부 누락
+              </span>
+            )}
+          </span>
         </div>
         <div style={{ width: '100%', height: 260 }}>
           {formattedTimeseries.length === 0 ? (

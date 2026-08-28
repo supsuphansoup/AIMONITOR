@@ -32,6 +32,7 @@ export const App: React.FC = () => {
   const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
   const [breakdown, setBreakdown] = useState<ModelBreakdown[]>([]);
   const [traces, setTraces] = useState<TraceEvent[]>([]);
+  const [traceTotal, setTraceTotal] = useState<number>(0);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [histories, setHistories] = useState<AlertHistory[]>([]);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
@@ -80,7 +81,8 @@ export const App: React.FC = () => {
       setMetrics(overview);
       setTimeseries(series);
       setBreakdown(models);
-      setTraces(traceRows);
+      setTraces(traceRows.items);
+      setTraceTotal(traceRows.total);
       setRules(ruleRows);
       setHistories(historyRows);
       setError(null);
@@ -202,6 +204,7 @@ export const App: React.FC = () => {
         </Suspense>
         <TraceTable
           traces={traces}
+          total={traceTotal}
           selectedProvider={selectedProvider}
           selectedStatus={selectedStatus}
           page={page}

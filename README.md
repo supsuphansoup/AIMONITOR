@@ -4,7 +4,8 @@
 
 AIMONITOR는 OpenAI, Anthropic, Gemini, 로컬 Ollama 등 다양한 LLM 호출의 **지연 시간(P50/P95/P99), 토큰 사용량, 실시간 비용, 에러율 및 이상 징후 알림**을 추적하고 대시보드로 시각화하는 셀프호스팅 모니터링 시스템입니다.
 
-**현재 버전: v0.2.0** — 인증, 백그라운드 알림 스케줄러, 데이터 보관 정책, 프롬프트 캐시 단가 분리 계산이 추가된 실사용 가능 릴리스입니다. 상세 변경 내역은 [docs/RELEASE-0.2.0.md](docs/RELEASE-0.2.0.md)를 참고하세요.
+**현재 버전: v0.3.0** — 인증, 백그라운드 알림 스케줄러, 데이터 보관 정책, 프롬프트 캐시 단가 분리 계산에 더해 동시 실행 안전성, CSV 내보내기, 실 페이지네이션이 들어간 릴리스입니다.
+변경 내역: [v0.3.0](docs/RELEASE-0.3.0.md) · [v0.2.0](docs/RELEASE-0.2.0.md)
 
 ---
 
@@ -12,7 +13,8 @@ AIMONITOR는 OpenAI, Anthropic, Gemini, 로컬 Ollama 등 다양한 LLM 호출�
 
 - **⚡ Zero-Friction Ingestion** — 코드 3줄 또는 `@monitor.observe()` 데코레이터. 동기·비동기 모두 지원하며, 프로바이더 응답에서 토큰 수를 **자동 추출**합니다.
 - **📊 실시간 대시보드** — 1H/6H/24H/7D/30D 시간대 전환, KPI 카드, 지연 시간·비용 차트, 라이브 트레이스 스트림.
-- **🚨 자동 알림** — 백그라운드 스케줄러가 규칙을 주기적으로 평가하고, **쿨다운**으로 같은 장애의 중복 발송을 막습니다. Slack / Discord Webhook 지원.
+- **🚨 자동 알림** — 백그라운드 스케줄러가 규칙을 주기적으로 평가합니다. **쿨다운**과 조건부 UPDATE 기반 선점으로, 워커를 여러 개 띄워도 한 장애에 한 번만 알립니다. Slack / Discord Webhook 지원.
+- **📄 CSV 내보내기** — 비용 정산용 스트리밍 내보내기. 프롬프트·응답 관련 컬럼은 제외되며, 단가 미상 호출은 `0` 이 아닌 빈 칸으로 나갑니다.
 - **💰 정직한 비용 계산** — 단가를 모르는 모델은 **0원이 아니라 `계산 불가`** 로 표시합니다. 프롬프트 캐시의 **읽기·쓰기 단가를 분리**해 계산합니다.
 - **🔐 API 키 인증** — 수집·변경 엔드포인트 보호, 필요 시 조회까지 보호.
 - **🔒 원문 미저장** — 프롬프트·응답 텍스트는 DB에도 로그에도 남지 않습니다. 메타데이터의 관련 필드는 수집 시 자동 제거됩니다.
@@ -55,7 +57,7 @@ python -m pytest
 ```
 
 ```bash
-cd frontend && npm run typecheck && npm run build
+cd frontend && npm run typecheck && npm test && npm run build
 ```
 
 ### 4. 데모 트래픽
@@ -124,6 +126,7 @@ with AIMonitor() as mon:
 | `POST` | `/api/v1/traces/batch` | 배치 수집 (최대 `MAX_BATCH_SIZE`) | 쓰기 |
 | `GET` | `/api/v1/traces` | 목록 조회 (필터·기간·페이지네이션) | 읽기 |
 | `GET` | `/api/v1/traces/{trace_id}` | 단건 조회 | 읽기 |
+| `GET` | `/api/v1/traces/export.csv` | CSV 스트리밍 내보내기 | 읽기 |
 | `GET` | `/api/v1/metrics/overview` | KPI 요약 (`hours_back` 지원) | 읽기 |
 | `GET` | `/api/v1/metrics/timeseries` | 시계열 버킷 | 읽기 |
 | `GET` | `/api/v1/metrics/breakdown` | 모델·프로바이더별 집계 | 읽기 |
@@ -140,6 +143,7 @@ with AIMonitor() as mon:
 | `GET` | `/api/v1/system/ready` | Readiness (DB 확인) | 공개 |
 
 모든 타임스탬프는 **UTC 오프셋이 포함된 ISO-8601** 로 반환됩니다.
+`GET /traces` 는 전체 건수를 `X-Total-Count` 헤더로 함께 반환합니다.
 
 ---
 
