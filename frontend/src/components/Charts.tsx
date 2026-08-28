@@ -1,43 +1,49 @@
 import React from 'react';
 import {
-  ResponsiveContainer,
-  AreaChart,
   Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  BarChart,
-  Bar,
-  CartesianGrid,
 } from 'recharts';
-import { TimeseriesPoint, ModelBreakdown } from '../types';
+import { ModelBreakdown, TimeseriesPoint } from '../types';
+import { formatTime } from '../format';
 
 interface ChartsProps {
   timeseries: TimeseriesPoint[];
   breakdown: ModelBreakdown[];
+  windowLabel: string;
 }
 
-export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown }) => {
-  // Format timestamp for chart X-Axis
+const TOOLTIP_STYLE = {
+  backgroundColor: '#0f172a',
+  borderColor: '#334155',
+  borderRadius: '6px',
+  fontSize: '12px',
+};
+
+export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown, windowLabel }) => {
   const formattedTimeseries = timeseries.map((pt) => ({
     ...pt,
-    time: new Date(pt.timestamp).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-    }),
+    // Backend timestamps carry a UTC offset, so this lands in the viewer locale.
+    time: formatTime(pt.timestamp),
   }));
 
   return (
     <div className="charts-grid">
-      {/* Time-series Latency & Traffic */}
       <div className="card">
         <div className="card-title">
-          <span>Latency & Ingestion Trend</span>
-          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Last 24 Hours</span>
+          <span>Latency &amp; Ingestion Trend</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Last {windowLabel}</span>
         </div>
         <div style={{ width: '100%', height: 260 }}>
           {formattedTimeseries.length === 0 ? (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)' }}>
+            <div className="chart-empty">
               No time-series data yet. Generate demo traffic to view charts.
             </div>
           ) : (
@@ -48,26 +54,34 @@ export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown }) => {
                     <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.4} />
                     <stop offset="95%" stopColor="#06b6d4" stopOpacity={0.0} />
                   </linearGradient>
+                  <linearGradient id="p95Gradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0.0} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                 <XAxis dataKey="time" stroke="#64748b" fontSize={11} tickLine={false} />
                 <YAxis stroke="#64748b" fontSize={11} tickLine={false} unit="ms" />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#0f172a',
-                    borderColor: '#334155',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                  }}
-                />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Area
                   type="monotone"
                   dataKey="avg_latency_ms"
-                  name="Avg Latency (ms)"
+                  name="Avg"
                   stroke="#06b6d4"
                   strokeWidth={2}
                   fillOpacity={1}
                   fill="url(#latencyGradient)"
+                />
+                {/* P95 is where a latency regression shows up first. */}
+                <Area
+                  type="monotone"
+                  dataKey="p95_latency_ms"
+                  name="P95"
+                  stroke="#a855f7"
+                  strokeWidth={1.5}
+                  fillOpacity={1}
+                  fill="url(#p95Gradient)"
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -75,16 +89,14 @@ export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown }) => {
         </div>
       </div>
 
-      {/* Model & Cost Breakdown */}
       <div className="card">
         <div className="card-title">
-          <span>Model Usage & Cost</span>
+          <span>Model Usage &amp; Cost</span>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Last {windowLabel}</span>
         </div>
         <div style={{ width: '100%', height: 260 }}>
           {breakdown.length === 0 ? (
-            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)' }}>
-              No model breakdown data.
-            </div>
+            <div className="chart-empty">No model breakdown data.</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={breakdown} layout="vertical">
@@ -96,21 +108,17 @@ export const Charts: React.FC<ChartsProps> = ({ timeseries, breakdown }) => {
                   stroke="#94a3b8"
                   fontSize={11}
                   tickLine={false}
-                  width={90}
+                  width={110}
                 />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#0f172a',
-                    borderColor: '#334155',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                  }}
-                  formatter={(value: any, name: string) => [
-                    name === 'total_cost_usd' ? `$${Number(value).toFixed(4)}` : value,
-                    name === 'total_cost_usd' ? 'Cost ($)' : 'Calls',
-                  ]}
+                  contentStyle={TOOLTIP_STYLE}
+                  formatter={(value: any, name: string) =>
+                    name === 'Cost ($)' ? [`$${Number(value).toFixed(4)}`, name] : [value, name]
+                  }
                 />
+                <Legend wrapperStyle={{ fontSize: '11px' }} />
                 <Bar dataKey="count" fill="#3b82f6" radius={[0, 4, 4, 0]} name="Calls" />
+                <Bar dataKey="error_count" fill="#ef4444" radius={[0, 4, 4, 0]} name="Errors" />
               </BarChart>
             </ResponsiveContainer>
           )}

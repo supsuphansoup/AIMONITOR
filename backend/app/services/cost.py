@@ -1,75 +1,198 @@
-from typing import Dict, Tuple, Optional
+"""Token cost calculation.
 
-# Cost per 1,000,000 tokens (USD) -> (Input Price, Output Price)
-MODEL_PRICING_USD_PER_1M: Dict[str, Tuple[float, float]] = {
-    # OpenAI — 2024~2026
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o-2024-11-20": (2.50, 10.00),
-    "gpt-4o-2024-08-06": (2.50, 10.00),
-    "gpt-4.1": (2.00, 8.00),
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1-nano": (0.10, 0.40),
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-4": (30.00, 60.00),
-    "gpt-3.5-turbo": (0.50, 1.50),
-    "o1": (15.00, 60.00),
-    "o1-mini": (3.00, 12.00),
-    "o1-pro": (150.00, 600.00),
-    "o3": (10.00, 40.00),
-    "o3-mini": (1.10, 4.40),
-    "o4-mini": (1.10, 4.40),
+Two invariants this module exists to protect:
 
-    # Anthropic — Claude 3 & 3.5 & 3.7
-    "claude-3-7-sonnet": (3.00, 15.00),
-    "claude-3-7-sonnet-20250219": (3.00, 15.00),
-    "claude-3-5-sonnet": (3.00, 15.00),
-    "claude-3-5-sonnet-20241022": (3.00, 15.00),
-    "claude-3-5-sonnet-20240620": (3.00, 15.00),
-    "claude-3-5-haiku": (0.80, 4.00),
-    "claude-3-5-haiku-20241022": (0.80, 4.00),
-    "claude-3-opus": (15.00, 75.00),
-    "claude-3-sonnet": (3.00, 15.00),
-    "claude-3-haiku": (0.25, 1.25),
+1. **A missing price is not a zero price.** When no rate is known the cost is
+   reported as ``unknown`` so the UI can render "계산 불가" instead of a
+   fabricated number. Guessing a mid-tier rate silently turns an unpriced model
+   into a plausible-looking-but-wrong line item.
+2. **Cache reads and cache writes are priced separately.** Providers charge a
+   premium to write a prompt into the cache and a steep discount to read it
+   back; collapsing both into the plain input rate misprices every cached call.
+"""
+from typing import Dict, NamedTuple, Optional, Tuple
 
-    # Google Gemini — 2024~2026
-    "gemini-2.5-pro": (1.25, 10.00),
-    "gemini-2.5-flash": (0.075, 0.30),
-    "gemini-2.5-flash-lite": (0.019, 0.075),
-    "gemini-2.0-pro-exp": (1.25, 5.00),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.0-flash-lite": (0.075, 0.30),
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
-    "gemini-1.5-flash-8b": (0.0375, 0.15),
+# --- Cost source markers ---------------------------------------------------
+SOURCE_CUSTOM = "custom"          # caller supplied the cost outright
+SOURCE_PRICING_TABLE = "pricing_table"
+SOURCE_LOCAL_FREE = "local_free"  # self-hosted inference, no per-token charge
+SOURCE_UNKNOWN = "unknown"        # no rate available -> cost is not computable
 
-    # Open source / Local models (Ollama, vLLM, etc.)
-    "ollama": (0.0, 0.0),
-    "llama3": (0.0, 0.0),
-    "llama3.1": (0.0, 0.0),
-    "llama3.2": (0.0, 0.0),
-    "llama3.3": (0.0, 0.0),
-    "llama4": (0.0, 0.0),
-    "qwen": (0.0, 0.0),
-    "qwen2": (0.0, 0.0),
-    "qwen3": (0.0, 0.0),
-    "mistral": (0.0, 0.0),
-    "mixtral": (0.0, 0.0),
-    "phi3": (0.0, 0.0),
-    "phi4": (0.0, 0.0),
-    "deepseek": (0.0, 0.0),
+ALL_COST_SOURCES = frozenset(
+    {SOURCE_CUSTOM, SOURCE_PRICING_TABLE, SOURCE_LOCAL_FREE, SOURCE_UNKNOWN}
+)
+
+
+class ModelPricing(NamedTuple):
+    """USD per 1,000,000 tokens."""
+    input_per_1m: float
+    output_per_1m: float
+    cache_write_per_1m: Optional[float] = None
+    cache_read_per_1m: Optional[float] = None
+
+
+class CostResult(NamedTuple):
+    cost_usd: float
+    source: str
+
+    @property
+    def is_computable(self) -> bool:
+        return self.source != SOURCE_UNKNOWN
+
+
+#: Providers whose inference runs on hardware the operator already pays for.
+LOCAL_PROVIDERS = frozenset({"ollama", "local", "vllm", "llamacpp", "lmstudio"})
+
+#: Fallback cache multipliers applied to the base input rate when a model has no
+#: explicit cache pricing, following each published provider policy:
+#: (cache_write_multiplier, cache_read_multiplier).
+PROVIDER_CACHE_MULTIPLIERS: Dict[str, Tuple[float, float]] = {
+    "anthropic": (1.25, 0.10),
+    "openai": (1.00, 0.50),
+    "gemini": (1.00, 0.25),
+    "google": (1.00, 0.25),
 }
+DEFAULT_CACHE_MULTIPLIERS: Tuple[float, float] = (1.00, 1.00)
+
+# NOTE: insertion order matters. `normalize_model_name` matches the longest key
+# first and falls back to insertion order on ties, which is why "ollama" is
+# listed before "llama3" - reordering these entries changes matching behaviour.
+MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
+    # OpenAI
+    "gpt-4o": ModelPricing(2.50, 10.00),
+    "gpt-4o-mini": ModelPricing(0.15, 0.60),
+    "gpt-4o-2024-11-20": ModelPricing(2.50, 10.00),
+    "gpt-4o-2024-08-06": ModelPricing(2.50, 10.00),
+    "gpt-4.1": ModelPricing(2.00, 8.00),
+    "gpt-4.1-mini": ModelPricing(0.40, 1.60),
+    "gpt-4.1-nano": ModelPricing(0.10, 0.40),
+    "gpt-4-turbo": ModelPricing(10.00, 30.00),
+    "gpt-4": ModelPricing(30.00, 60.00),
+    "gpt-3.5-turbo": ModelPricing(0.50, 1.50),
+    "o1": ModelPricing(15.00, 60.00),
+    "o1-mini": ModelPricing(3.00, 12.00),
+    "o1-pro": ModelPricing(150.00, 600.00),
+    "o3": ModelPricing(10.00, 40.00),
+    "o3-mini": ModelPricing(1.10, 4.40),
+    "o4-mini": ModelPricing(1.10, 4.40),
+
+    # Anthropic
+    "claude-3-7-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-7-sonnet-20250219": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-5-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-5-sonnet-20241022": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-5-sonnet-20240620": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-5-haiku": ModelPricing(0.80, 4.00, 1.00, 0.08),
+    "claude-3-5-haiku-20241022": ModelPricing(0.80, 4.00, 1.00, 0.08),
+    "claude-3-opus": ModelPricing(15.00, 75.00, 18.75, 1.50),
+    "claude-3-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
+    "claude-3-haiku": ModelPricing(0.25, 1.25, 0.30, 0.03),
+
+    # Google Gemini
+    "gemini-2.5-pro": ModelPricing(1.25, 10.00),
+    "gemini-2.5-flash": ModelPricing(0.075, 0.30),
+    "gemini-2.5-flash-lite": ModelPricing(0.019, 0.075),
+    "gemini-2.0-pro-exp": ModelPricing(1.25, 5.00),
+    "gemini-2.0-flash": ModelPricing(0.10, 0.40),
+    "gemini-2.0-flash-lite": ModelPricing(0.075, 0.30),
+    "gemini-1.5-pro": ModelPricing(1.25, 5.00),
+    "gemini-1.5-flash": ModelPricing(0.075, 0.30),
+    "gemini-1.5-flash-8b": ModelPricing(0.0375, 0.15),
+
+    # Self-hosted / open weights
+    "ollama": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "llama3": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "llama3.1": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "llama3.2": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "llama3.3": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "llama4": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "qwen": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "qwen2": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "qwen3": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "mistral": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "mixtral": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "phi3": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "phi4": ModelPricing(0.0, 0.0, 0.0, 0.0),
+    "deepseek": ModelPricing(0.0, 0.0, 0.0, 0.0),
+}
+
+_SORTED_PRICING_KEYS = sorted(MODEL_PRICING_USD_PER_1M.keys(), key=len, reverse=True)
 
 
 def normalize_model_name(name: str) -> str:
-    """Normalize model string to standard key, matching longest keys first."""
+    """Map a raw model string onto a pricing key, preferring the longest match."""
     cleaned = name.strip().lower()
-    # Sort keys by length in descending order to match specific model versions first
-    sorted_keys = sorted(MODEL_PRICING_USD_PER_1M.keys(), key=len, reverse=True)
-    for key in sorted_keys:
+    for key in _SORTED_PRICING_KEYS:
         if key in cleaned:
             return key
     return cleaned
+
+
+def resolve_pricing(provider: str, model_name: str) -> Optional[ModelPricing]:
+    """Look up the rate card for a call, or None when the model is unpriced."""
+    if provider.strip().lower() in LOCAL_PROVIDERS:
+        return ModelPricing(0.0, 0.0, 0.0, 0.0)
+    return MODEL_PRICING_USD_PER_1M.get(normalize_model_name(model_name))
+
+
+def cache_rates(provider: str, pricing: ModelPricing) -> Tuple[float, float]:
+    """Resolve (cache_write, cache_read) rates, falling back to provider policy."""
+    write_mult, read_mult = PROVIDER_CACHE_MULTIPLIERS.get(
+        provider.strip().lower(), DEFAULT_CACHE_MULTIPLIERS
+    )
+    write_rate = (
+        pricing.cache_write_per_1m
+        if pricing.cache_write_per_1m is not None
+        else pricing.input_per_1m * write_mult
+    )
+    read_rate = (
+        pricing.cache_read_per_1m
+        if pricing.cache_read_per_1m is not None
+        else pricing.input_per_1m * read_mult
+    )
+    return write_rate, read_rate
+
+
+def calculate_cost_detail(
+    provider: str,
+    model_name: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    custom_cost_usd: Optional[float] = None,
+) -> CostResult:
+    """Price a single call, reporting where the number came from.
+
+    ``prompt_tokens`` counts uncached input only; cached tokens are billed
+    through their own rates and must not be folded into it.
+    """
+    if custom_cost_usd is not None and custom_cost_usd >= 0:
+        return CostResult(round(custom_cost_usd, 6), SOURCE_CUSTOM)
+
+    if provider.strip().lower() in LOCAL_PROVIDERS:
+        return CostResult(0.0, SOURCE_LOCAL_FREE)
+
+    pricing = resolve_pricing(provider, model_name)
+    if pricing is None:
+        # No rate card: report as not computable rather than inventing a price.
+        return CostResult(0.0, SOURCE_UNKNOWN)
+
+    write_rate, read_rate = cache_rates(provider, pricing)
+
+    prompt_tokens = max(0, prompt_tokens)
+    completion_tokens = max(0, completion_tokens)
+    cache_read_tokens = max(0, cache_read_tokens)
+    cache_write_tokens = max(0, cache_write_tokens)
+
+    total = (
+        (prompt_tokens / 1_000_000.0) * pricing.input_per_1m
+        + (completion_tokens / 1_000_000.0) * pricing.output_per_1m
+        + (cache_write_tokens / 1_000_000.0) * write_rate
+        + (cache_read_tokens / 1_000_000.0) * read_rate
+    )
+    is_free = pricing.input_per_1m == 0 and pricing.output_per_1m == 0
+    return CostResult(round(total, 6), SOURCE_LOCAL_FREE if is_free else SOURCE_PRICING_TABLE)
 
 
 def calculate_cost(
@@ -77,33 +200,21 @@ def calculate_cost(
     model_name: str,
     prompt_tokens: int,
     completion_tokens: int,
-    custom_cost_usd: Optional[float] = None
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    custom_cost_usd: Optional[float] = None,
 ) -> float:
+    """Cost in USD; 0.0 when unpriced.
+
+    Prefer `calculate_cost_detail` when the caller needs to distinguish
+    "genuinely free" from "we have no rate for this model".
     """
-    Calculate estimated cost in USD based on model pricing per 1M tokens.
-    If custom_cost_usd is provided, returns it directly.
-    """
-    if custom_cost_usd is not None and custom_cost_usd >= 0:
-        return round(custom_cost_usd, 6)
-
-    provider_lower = provider.strip().lower()
-    if provider_lower in ("ollama", "local", "vllm"):
-        return 0.0
-
-    normalized_model = normalize_model_name(model_name)
-    pricing = MODEL_PRICING_USD_PER_1M.get(normalized_model)
-
-    if not pricing:
-        # Fallback default estimate (approx. mid-tier: $1.00 / $3.00 per 1M)
-        input_price_per_1m, output_price_per_1m = 1.00, 3.00
-    else:
-        input_price_per_1m, output_price_per_1m = pricing
-
-    prompt_tokens = max(0, prompt_tokens)
-    completion_tokens = max(0, completion_tokens)
-
-    prompt_cost = (prompt_tokens / 1_000_000.0) * input_price_per_1m
-    completion_cost = (completion_tokens / 1_000_000.0) * output_price_per_1m
-    
-    total_cost = prompt_cost + completion_cost
-    return round(total_cost, 6)
+    return calculate_cost_detail(
+        provider=provider,
+        model_name=model_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        custom_cost_usd=custom_cost_usd,
+    ).cost_usd

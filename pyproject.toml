@@ -1,0 +1,35 @@
+[project]
+name = "aimonitor"
+version = "0.2.0"
+description = "Real-time AI/LLM observability, cost and performance monitoring"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+# pythonpath removes the need for a PYTHONPATH=. prefix on every invocation.
+pythonpath = ["."]
+testpaths = ["backend/tests", "sdk/python/tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning:starlette.*",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+exclude = ["frontend", ".venv", "build", "dist"]
+
+[tool.ruff.lint]
+# "UP" is deliberately excluded: the codebase annotates with typing.Optional /
+# typing.Dict throughout, and half-migrating to PEP 585 builtins would leave it
+# less consistent than either style on its own.
+select = ["E", "F", "I", "B"]
+ignore = ["B008"]  # FastAPI declares dependencies as default arguments by design.
+
+[tool.ruff.lint.per-file-ignores]
+# Test fixtures and the traffic generator are mostly wide data literals; wrapping
+# them one key per line hurts readability more than the long line does.
+"backend/tests/**" = ["E501"]
+"sdk/python/tests/**" = ["E501"]
+"scripts/**" = ["E501"]

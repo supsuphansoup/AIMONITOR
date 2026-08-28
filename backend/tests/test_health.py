@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
-from backend.app.main import app
+
 from backend.app.core.config import settings
+from backend.app.main import app
 
 client = TestClient(app)
 
@@ -26,6 +27,7 @@ def test_api_v1_health_check():
 def test_spa_fallback():
     """SPA fallback only available when frontend/dist is built. Skip in unit test environments."""
     from pathlib import Path
+
     import pytest
     frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if not (frontend_dist.exists() and (frontend_dist / "index.html").exists()):

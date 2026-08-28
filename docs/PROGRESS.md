@@ -3,8 +3,12 @@
 > **프로젝트**: AIMONITOR (AI / LLM Real-time Observability & Monitoring Platform)  
 > **총괄 설계/검수 (Coordinator)**: Antigravity (Gemini)  
 > **정밀 구현/테스트 (Worker)**: GitHub Copilot Subagent  
-> **최종 상태**: ✅ **Phase 1 ~ Phase 4 전 마일스톤 100% 완료 & 프로덕션 레디**  
+> **최종 상태**: ✅ **v0.1.0 Phase 1 ~ Phase 4 전 마일스톤 완료**  
 > **작성일**: 2026-08-18  
+
+> ⚠️ **이 문서는 v0.1.0 시점의 기록입니다.** 이후 v0.2.0에서 인증, 백그라운드 알림 스케줄러, 보관 정책,
+> 프롬프트 캐시 단가 분리 계산이 추가되었고, 타임존·비용 산출 결함이 수정되었습니다.
+> 현재 상태는 [RELEASE-0.2.0.md](RELEASE-0.2.0.md) 를 참고하세요. (테스트 30개 → 113개)
 
 ---
 

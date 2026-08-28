@@ -1,13 +1,14 @@
-import pytest
+import concurrent.futures
 import os
 import tempfile
-import concurrent.futures
-from sqlalchemy import event
-from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine, Session
 
-from backend.app.main import app
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlmodel import Session, SQLModel, create_engine
+
 from backend.app.db.session import get_session
+from backend.app.main import app
 
 
 @pytest.fixture(name="client")

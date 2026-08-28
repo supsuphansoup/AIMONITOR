@@ -1,13 +1,44 @@
+"""Metric aggregation.
+
+Counts and sums are computed by the database; only the latency column is pulled
+into Python, and even that is capped. The previous implementation materialized
+every matching row as an ORM object to add up four integers, which is fine for a
+demo and fatal for a table that has been collecting traffic for a month.
+"""
 import math
-from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
-from sqlmodel import Session, select, col
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Sequence
 
+from sqlalchemy import Select, case, func
+from sqlmodel import Session, col, select
+
+from backend.app.core.config import settings
+from backend.app.core.timeutil import to_aware_utc, utc_now
 from backend.app.models.trace import TraceEvent
+from backend.app.services.cost import SOURCE_UNKNOWN
+
+EMPTY_OVERVIEW: Dict[str, Any] = {
+    "total_requests": 0,
+    "success_count": 0,
+    "error_count": 0,
+    "error_rate_pct": 0.0,
+    "avg_latency_ms": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0,
+    "p99_latency_ms": 0.0,
+    "total_cost_usd": 0.0,
+    "total_tokens": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_write_tokens": 0,
+    "cost_unknown_count": 0,
+    "latency_sampled": False,
+}
 
 
-def percentile(data: List[float], p: float) -> float:
-    """Calculate percentile from a list of floats."""
+def percentile(data: Sequence[float], p: float) -> float:
+    """Linearly interpolated percentile, matching numpy default behaviour."""
     if not data:
         return 0.0
     sorted_data = sorted(data)
@@ -21,6 +52,24 @@ def percentile(data: List[float], p: float) -> float:
     return float(d0 + d1)
 
 
+def _apply_filters(
+    query: Select,
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    provider: Optional[str] = None,
+    model_name: Optional[str] = None,
+) -> Select:
+    if start_time is not None:
+        query = query.where(TraceEvent.timestamp >= start_time)
+    if end_time is not None:
+        query = query.where(TraceEvent.timestamp <= end_time)
+    if provider:
+        query = query.where(TraceEvent.provider == provider)
+    if model_name:
+        query = query.where(TraceEvent.model_name == model_name)
+    return query
+
+
 class MetricAggregator:
     @staticmethod
     def get_overview_metrics(
@@ -31,60 +80,86 @@ class MetricAggregator:
         model_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Calculate high-level KPI overview metrics."""
-        query = select(TraceEvent)
-        if start_time:
-            query = query.where(TraceEvent.timestamp >= start_time)
-        if end_time:
-            query = query.where(TraceEvent.timestamp <= end_time)
-        if provider:
-            query = query.where(TraceEvent.provider == provider)
-        if model_name:
-            query = query.where(TraceEvent.model_name == model_name)
+        totals_query = _apply_filters(
+            select(
+                func.count(col(TraceEvent.id)),
+                func.sum(col(TraceEvent.cost_usd)),
+                func.sum(col(TraceEvent.total_tokens)),
+                func.sum(col(TraceEvent.prompt_tokens)),
+                func.sum(col(TraceEvent.completion_tokens)),
+                func.sum(col(TraceEvent.cache_read_tokens)),
+                func.sum(col(TraceEvent.cache_write_tokens)),
+                func.avg(col(TraceEvent.latency_ms)),
+            ),
+            start_time,
+            end_time,
+            provider,
+            model_name,
+        )
+        row = session.exec(totals_query).one()
+        (
+            total_requests,
+            total_cost,
+            total_tokens,
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            avg_latency,
+        ) = row
 
-        events: List[TraceEvent] = list(session.exec(query).all())
-        total_requests = len(events)
-        
-        if total_requests == 0:
-            return {
-                "total_requests": 0,
-                "success_count": 0,
-                "error_count": 0,
-                "error_rate_pct": 0.0,
-                "avg_latency_ms": 0.0,
-                "p50_latency_ms": 0.0,
-                "p95_latency_ms": 0.0,
-                "p99_latency_ms": 0.0,
-                "total_cost_usd": 0.0,
-                "total_tokens": 0,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-            }
+        if not total_requests:
+            return dict(EMPTY_OVERVIEW)
 
-        latencies = [e.latency_ms for e in events]
-        errors = [e for e in events if e.status != "SUCCESS"]
-        error_count = len(errors)
+        error_query = _apply_filters(
+            select(func.count(col(TraceEvent.id))).where(TraceEvent.status != "SUCCESS"),
+            start_time,
+            end_time,
+            provider,
+            model_name,
+        )
+        error_count = session.exec(error_query).one() or 0
+
+        unpriced_query = _apply_filters(
+            select(func.count(col(TraceEvent.id))).where(
+                TraceEvent.cost_source == SOURCE_UNKNOWN
+            ),
+            start_time,
+            end_time,
+            provider,
+            model_name,
+        )
+        cost_unknown_count = session.exec(unpriced_query).one() or 0
+
+        latency_query = _apply_filters(
+            select(col(TraceEvent.latency_ms)),
+            start_time,
+            end_time,
+            provider,
+            model_name,
+        ).limit(settings.MAX_AGGREGATION_ROWS)
+        latencies = list(session.exec(latency_query).all())
+
         success_count = total_requests - error_count
-        error_rate_pct = round((error_count / total_requests) * 100.0, 2)
-        
-        total_cost = sum(e.cost_usd for e in events)
-        total_tokens = sum(e.total_tokens for e in events)
-        prompt_tokens = sum(e.prompt_tokens for e in events)
-        completion_tokens = sum(e.completion_tokens for e in events)
-        avg_latency = sum(latencies) / total_requests
-
         return {
             "total_requests": total_requests,
             "success_count": success_count,
             "error_count": error_count,
-            "error_rate_pct": error_rate_pct,
-            "avg_latency_ms": round(avg_latency, 2),
+            "error_rate_pct": round((error_count / total_requests) * 100.0, 2),
+            "avg_latency_ms": round(float(avg_latency or 0.0), 2),
             "p50_latency_ms": round(percentile(latencies, 50), 2),
             "p95_latency_ms": round(percentile(latencies, 95), 2),
             "p99_latency_ms": round(percentile(latencies, 99), 2),
-            "total_cost_usd": round(total_cost, 6),
-            "total_tokens": total_tokens,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
+            "total_cost_usd": round(float(total_cost or 0.0), 6),
+            "total_tokens": int(total_tokens or 0),
+            "prompt_tokens": int(prompt_tokens or 0),
+            "completion_tokens": int(completion_tokens or 0),
+            "cache_read_tokens": int(cache_read_tokens or 0),
+            "cache_write_tokens": int(cache_write_tokens or 0),
+            "cost_unknown_count": int(cost_unknown_count),
+            # True when the percentile sample was truncated, so the dashboard can
+            # say so instead of presenting an approximation as exact.
+            "latency_sampled": len(latencies) < total_requests,
         }
 
     @staticmethod
@@ -92,92 +167,107 @@ class MetricAggregator:
         session: Session,
         interval_minutes: int = 5,
         hours_back: int = 24,
+        provider: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Group metrics by time intervals for charts safely across timezones."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-        query = (
-            select(TraceEvent)
-            .where(TraceEvent.timestamp >= cutoff)
-            .order_by(col(TraceEvent.timestamp).asc())
-        )
-        events: List[TraceEvent] = list(session.exec(query).all())
+        """Group metrics into fixed time buckets for charting."""
+        interval_minutes = max(1, min(interval_minutes, 1440))
+        cutoff = utc_now() - timedelta(hours=hours_back)
 
-        if not events:
+        query = _apply_filters(
+            select(
+                col(TraceEvent.timestamp),
+                col(TraceEvent.status),
+                col(TraceEvent.latency_ms),
+                col(TraceEvent.cost_usd),
+                col(TraceEvent.total_tokens),
+            ),
+            start_time=cutoff,
+            provider=provider,
+            model_name=model_name,
+        ).order_by(col(TraceEvent.timestamp).asc()).limit(settings.MAX_AGGREGATION_ROWS)
+
+        rows = list(session.exec(query).all())
+        if not rows:
             return []
 
-        # Group events into interval buckets
-        buckets: Dict[str, List[TraceEvent]] = {}
-        for event in events:
-            ts = event.timestamp
+        buckets: Dict[datetime, List[Any]] = {}
+        for ts, status, latency, cost, tokens in rows:
             if ts is None:
                 continue
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            else:
-                ts = ts.astimezone(timezone.utc)
-            
-            # Floor timestamp to interval
-            minute_bucket = (ts.minute // interval_minutes) * interval_minutes
-            bucket_dt = ts.replace(minute=minute_bucket, second=0, microsecond=0)
-            bucket_key = bucket_dt.isoformat()
+            # Bucket on minutes-since-midnight so intervals that do not divide 60
+            # still produce evenly spaced, non-overlapping buckets.
+            minutes_of_day = ts.hour * 60 + ts.minute
+            floored = (minutes_of_day // interval_minutes) * interval_minutes
+            bucket_dt = ts.replace(
+                hour=floored // 60, minute=floored % 60, second=0, microsecond=0
+            )
+            buckets.setdefault(bucket_dt, []).append((status, latency, cost, tokens))
 
-            if bucket_key not in buckets:
-                buckets[bucket_key] = []
-            buckets[bucket_key].append(event)
-
-        results = []
-        for bucket_key, bucket_events in sorted(buckets.items()):
-            count = len(bucket_events)
-            err_count = sum(1 for e in bucket_events if e.status != "SUCCESS")
-            lats = [e.latency_ms for e in bucket_events]
-            cost = sum(e.cost_usd for e in bucket_events)
-            tokens = sum(e.total_tokens for e in bucket_events)
-
+        results: List[Dict[str, Any]] = []
+        for bucket_dt in sorted(buckets):
+            entries = buckets[bucket_dt]
+            count = len(entries)
+            lats = [e[1] for e in entries]
+            aware = to_aware_utc(bucket_dt)
             results.append({
-                "timestamp": bucket_key,
+                "timestamp": aware.isoformat() if aware else "",
                 "request_count": count,
-                "error_count": err_count,
-                "avg_latency_ms": round(sum(lats) / count, 2) if count > 0 else 0,
+                "error_count": sum(1 for e in entries if e[0] != "SUCCESS"),
+                "avg_latency_ms": round(sum(lats) / count, 2),
                 "p95_latency_ms": round(percentile(lats, 95), 2),
-                "total_cost_usd": round(cost, 6),
-                "total_tokens": tokens,
+                "total_cost_usd": round(sum(e[2] for e in entries), 6),
+                "total_tokens": sum(e[3] for e in entries),
             })
-
         return results
 
     @staticmethod
-    def get_model_breakdown(session: Session, hours_back: int = 24) -> List[Dict[str, Any]]:
-        """Calculate breakdown by model and provider for the given time window."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-        query = select(TraceEvent).where(TraceEvent.timestamp >= cutoff)
-        events = session.exec(query).all()
-        
-        breakdown_map: Dict[str, Dict[str, Any]] = {}
-        for e in events:
-            key = f"{e.provider}/{e.model_name}"
-            if key not in breakdown_map:
-                breakdown_map[key] = {
-                    "provider": e.provider,
-                    "model_name": e.model_name,
-                    "count": 0,
-                    "total_tokens": 0,
-                    "total_cost_usd": 0.0,
-                    "error_count": 0,
-                    "latencies": [],
-                }
-            item = breakdown_map[key]
-            item["count"] += 1
-            item["total_tokens"] += e.total_tokens
-            item["total_cost_usd"] += e.cost_usd
-            if e.status != "SUCCESS":
-                item["error_count"] += 1
-            item["latencies"].append(e.latency_ms)
+    def get_model_breakdown(
+        session: Session,
+        hours_back: int = 24,
+        provider: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Per provider/model usage totals for the given window, grouped in SQL."""
+        cutoff = utc_now() - timedelta(hours=hours_back)
 
-        results = []
-        for item in breakdown_map.values():
-            lats = item.pop("latencies")
-            item["avg_latency_ms"] = round(sum(lats) / len(lats), 2) if lats else 0.0
-            item["total_cost_usd"] = round(item["total_cost_usd"], 6)
-            results.append(item)
+        query = (
+            select(
+                col(TraceEvent.provider),
+                col(TraceEvent.model_name),
+                func.count(col(TraceEvent.id)),
+                func.sum(col(TraceEvent.total_tokens)),
+                func.sum(col(TraceEvent.cost_usd)),
+                func.avg(col(TraceEvent.latency_ms)),
+                func.sum(case((TraceEvent.status != "SUCCESS", 1), else_=0)),
+                func.sum(case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0)),
+            )
+            .where(TraceEvent.timestamp >= cutoff)
+            .group_by(col(TraceEvent.provider), col(TraceEvent.model_name))
+            .order_by(func.count(col(TraceEvent.id)).desc())
+        )
+        if provider:
+            query = query.where(TraceEvent.provider == provider)
 
-        return sorted(results, key=lambda x: x["count"], reverse=True)
+        results: List[Dict[str, Any]] = []
+        for row in session.exec(query).all():
+            (
+                row_provider,
+                model,
+                count,
+                tokens,
+                cost,
+                avg_latency,
+                error_count,
+                unpriced_count,
+            ) = row
+            results.append({
+                "provider": row_provider,
+                "model_name": model,
+                "count": int(count or 0),
+                "total_tokens": int(tokens or 0),
+                "total_cost_usd": round(float(cost or 0.0), 6),
+                "error_count": int(error_count or 0),
+                "avg_latency_ms": round(float(avg_latency or 0.0), 2),
+                "cost_unknown_count": int(unpriced_count or 0),
+            })
+        return results

@@ -1,18 +1,19 @@
-from backend.app.models.trace import (
-    TraceEvent,
-    TraceEventBase,
-    TraceEventCreate,
-    TraceEventRead,
-    BatchTraceCreate,
-)
 from backend.app.models.alert import (
+    AlertHistory,
+    AlertHistoryBase,
+    AlertHistoryRead,
     AlertRule,
     AlertRuleBase,
     AlertRuleCreate,
     AlertRuleRead,
-    AlertHistory,
-    AlertHistoryBase,
-    AlertHistoryRead,
+    AlertRuleUpdate,
+)
+from backend.app.models.trace import (
+    BatchTraceCreate,
+    TraceEvent,
+    TraceEventBase,
+    TraceEventCreate,
+    TraceEventRead,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "AlertRule",
     "AlertRuleBase",
     "AlertRuleCreate",
+    "AlertRuleUpdate",
     "AlertRuleRead",
     "AlertHistory",
     "AlertHistoryBase",

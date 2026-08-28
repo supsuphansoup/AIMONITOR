@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { AlertRule, AlertHistory } from '../types';
-import { X, Bell, Plus, Play, ShieldAlert, Trash2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Bell, Pause, Play, Plus, ShieldAlert, Trash2, X } from 'lucide-react';
+import { api, ApiError } from '../api';
+import { AlertHistory, AlertMetricOption, AlertRule } from '../types';
+import { formatRelative, formatTime } from '../format';
 
 interface AlertsModalProps {
   isOpen: boolean;
@@ -9,6 +11,12 @@ interface AlertsModalProps {
   histories: AlertHistory[];
   onRefresh: () => void;
 }
+
+const FALLBACK_METRICS: AlertMetricOption[] = [
+  { key: 'error_rate', resolves_to: 'error_rate_pct', unit: '%' },
+  { key: 'latency_p95', resolves_to: 'p95_latency_ms', unit: 'ms' },
+  { key: 'total_cost', resolves_to: 'total_cost_usd', unit: 'USD' },
+];
 
 export const AlertsModal: React.FC<AlertsModalProps> = ({
   isOpen,
@@ -23,76 +31,102 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
   const [operator, setOperator] = useState('>');
   const [threshold, setThreshold] = useState('5.0');
   const [windowMin, setWindowMin] = useState('5');
+  const [cooldownMin, setCooldownMin] = useState('15');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const [busyRuleId, setBusyRuleId] = useState<number | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [metricOptions, setMetricOptions] = useState<AlertMetricOption[]>(FALLBACK_METRICS);
+
+  // The catalog is served by the backend so the form can never offer a metric
+  // the evaluator would reject.
+  useEffect(() => {
+    if (!isOpen) return;
+    api
+      .alertMetrics()
+      .then((catalog) => setMetricOptions(catalog.metrics))
+      .catch(() => setMetricOptions(FALLBACK_METRICS));
+  }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const describeError = (err: unknown, fallback: string) =>
+    err instanceof ApiError ? err.message : fallback;
 
   const handleCreateRule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-
+    setFormError(null);
     try {
-      const res = await fetch('/api/v1/alerts/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          metric_type: metricType,
-          operator: operator,
-          threshold_value: parseFloat(threshold) || 0,
-          window_minutes: parseInt(windowMin, 10) || 5,
-          webhook_url: webhookUrl.trim() || undefined,
-          is_active: true,
-        }),
+      await api.createRule({
+        name: name.trim(),
+        metric_type: metricType,
+        operator,
+        threshold_value: parseFloat(threshold) || 0,
+        window_minutes: parseInt(windowMin, 10) || 5,
+        cooldown_minutes: parseInt(cooldownMin, 10) || 0,
+        webhook_url: webhookUrl.trim() || undefined,
+        is_active: true,
       });
-      if (res.ok) {
-        setShowAddForm(false);
-        setName('');
-        setWebhookUrl('');
-        onRefresh();
-      }
+      setShowAddForm(false);
+      setName('');
+      setWebhookUrl('');
+      onRefresh();
     } catch (err) {
-      console.error('Failed to create alert rule:', err);
+      setFormError(describeError(err, '규칙을 생성하지 못했습니다.'));
     }
   };
 
   const handleEvaluateNow = async () => {
     setIsEvaluating(true);
+    setFormError(null);
     try {
-      await fetch('/api/v1/alerts/evaluate', { method: 'POST' });
+      // Manual checks bypass the cooldown; otherwise pressing the button during
+      // an ongoing incident appears to do nothing.
+      await api.evaluateRules(true);
       onRefresh();
     } catch (err) {
-      console.error('Evaluation failed:', err);
+      setFormError(describeError(err, '평가에 실패했습니다.'));
     } finally {
       setIsEvaluating(false);
     }
   };
 
-  const handleDeleteRule = async (ruleId: number) => {
+  const handleToggleRule = async (rule: AlertRule) => {
+    setBusyRuleId(rule.id);
     try {
-      const res = await fetch(`/api/v1/alerts/rules/${ruleId}`, { method: 'DELETE' });
-      if (res.ok) {
-        onRefresh();
-      }
+      await api.updateRule(rule.id, { is_active: !rule.is_active });
+      onRefresh();
     } catch (err) {
-      console.error('Failed to delete alert rule:', err);
+      setFormError(describeError(err, '규칙 상태를 변경하지 못했습니다.'));
+    } finally {
+      setBusyRuleId(null);
     }
   };
 
+  const handleDeleteRule = async (ruleId: number) => {
+    setBusyRuleId(ruleId);
+    try {
+      await api.deleteRule(ruleId);
+      onRefresh();
+    } catch (err) {
+      setFormError(describeError(err, '규칙을 삭제하지 못했습니다.'));
+    } finally {
+      setBusyRuleId(null);
+    }
+  };
+
+  const unitFor = (key: string) => metricOptions.find((m) => m.key === key)?.unit ?? '';
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div
-        className="modal-content"
-        style={{ maxWidth: '750px' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="modal-content" style={{ maxWidth: '820px' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Bell size={20} color="#f59e0b" />
-            <h3 style={{ fontSize: '18px', fontWeight: 600 }}>Alerts & Anomaly Detection</h3>
+            <h3 style={{ fontSize: '18px', fontWeight: 600 }}>Alerts &amp; Anomaly Detection</h3>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button
               className="btn btn-secondary"
               onClick={handleEvaluateNow}
@@ -100,23 +134,19 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
               style={{ fontSize: '12px', padding: '6px 12px' }}
             >
               <Play size={12} color="#10b981" />
-              {isEvaluating ? 'Evaluating...' : 'Evaluate Rules'}
+              {isEvaluating ? 'Evaluating...' : 'Evaluate Now'}
             </button>
-            <button
-              onClick={onClose}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
+            <button className="icon-button" onClick={onClose} aria-label="닫기">
               <X size={20} />
             </button>
           </div>
         </div>
 
-        {/* Rules Section */}
+        {formError && <div className="banner banner-error">{formError}</div>}
+
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-            <h4 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-muted)' }}>
-              Active Alert Rules ({rules.length})
-            </h4>
+          <div className="section-heading">
+            <h4>Alert Rules ({rules.length})</h4>
             <button
               className="btn btn-primary"
               onClick={() => setShowAddForm(!showAddForm)}
@@ -127,99 +157,50 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
           </div>
 
           {showAddForm && (
-            <form
-              onSubmit={handleCreateRule}
-              style={{
-                background: 'var(--bg-subtle)',
-                padding: '16px',
-                borderRadius: '6px',
-                marginBottom: '16px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}
-            >
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.5fr 1fr 1fr 1fr', gap: '10px' }}>
-                <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Rule Name</label>
+            <form onSubmit={handleCreateRule} className="rule-form">
+              <div className="rule-form-grid">
+                <label>
+                  <span>Rule Name</span>
                   <input
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="e.g. High Error Rate"
                     required
-                    style={{
-                      width: '100%',
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-main)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                    }}
                   />
-                </div>
-                <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Metric</label>
-                  <select
-                    value={metricType}
-                    onChange={(e) => setMetricType(e.target.value)}
-                    style={{
-                      width: '100%',
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-main)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                    }}
-                  >
-                    <option value="error_rate">Error Rate (%)</option>
-                    <option value="latency_p95">Latency P95 (ms)</option>
-                    <option value="total_cost">Total Cost ($)</option>
+                </label>
+                <label>
+                  <span>Metric</span>
+                  <select value={metricType} onChange={(e) => setMetricType(e.target.value)}>
+                    {metricOptions.map((m) => (
+                      <option key={m.key} value={m.key}>
+                        {m.key}
+                        {m.unit ? ` (${m.unit})` : ''}
+                      </option>
+                    ))}
                   </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Condition</label>
-                  <select
-                    value={operator}
-                    onChange={(e) => setOperator(e.target.value)}
-                    style={{
-                      width: '100%',
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-main)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                    }}
-                  >
-                    <option value=">">&gt; (Greater)</option>
-                    <option value=">=">&gt;= (Greater/Eq)</option>
-                    <option value="<">&lt; (Less)</option>
+                </label>
+                <label>
+                  <span>Condition</span>
+                  <select value={operator} onChange={(e) => setOperator(e.target.value)}>
+                    <option value=">">&gt;</option>
+                    <option value=">=">&gt;=</option>
+                    <option value="<">&lt;</option>
+                    <option value="<=">&lt;=</option>
                   </select>
-                </div>
-                <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Threshold</label>
+                </label>
+                <label>
+                  <span>Threshold {unitFor(metricType) && `(${unitFor(metricType)})`}</span>
                   <input
                     type="number"
                     step="any"
                     value={threshold}
                     onChange={(e) => setThreshold(e.target.value)}
                     required
-                    style={{
-                      width: '100%',
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-main)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                    }}
                   />
-                </div>
-                <div>
-                  <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Window (min)</label>
+                </label>
+                <label>
+                  <span>Window (min)</span>
                   <input
                     type="number"
                     min="1"
@@ -227,41 +208,32 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                     value={windowMin}
                     onChange={(e) => setWindowMin(e.target.value)}
                     required
-                    style={{
-                      width: '100%',
-                      background: 'var(--bg-card)',
-                      color: 'var(--text-main)',
-                      border: '1px solid var(--border-color)',
-                      borderRadius: '4px',
-                      padding: '6px 8px',
-                      fontSize: '12px',
-                    }}
                   />
-                </div>
+                </label>
+                <label>
+                  <span title="같은 규칙이 다시 알림을 보내기까지의 최소 간격">Cooldown (min)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10080"
+                    value={cooldownMin}
+                    onChange={(e) => setCooldownMin(e.target.value)}
+                    required
+                  />
+                </label>
               </div>
 
-              <div>
-                <label style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                  Webhook URL (Slack/Discord optional)
-                </label>
+              <label className="rule-form-full">
+                <span>Webhook URL (Slack / Discord, optional)</span>
                 <input
                   type="url"
                   value={webhookUrl}
                   onChange={(e) => setWebhookUrl(e.target.value)}
                   placeholder="https://hooks.slack.com/services/..."
-                  style={{
-                    width: '100%',
-                    background: 'var(--bg-card)',
-                    color: 'var(--text-main)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    padding: '6px 8px',
-                    fontSize: '12px',
-                  }}
                 />
-              </div>
+              </label>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                 <button type="submit" className="btn btn-primary" style={{ fontSize: '12px' }}>
                   Save Rule
                 </button>
@@ -270,41 +242,41 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
           )}
 
           {rules.length === 0 ? (
-            <div style={{ color: 'var(--text-faint)', fontSize: '13px', padding: '10px 0' }}>
+            <div className="empty-hint">
               No alert rules defined. Create one above to monitor thresholds.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {rules.map((rule) => (
-                <div
-                  key={rule.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: '10px 14px',
-                    background: 'var(--bg-subtle)',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                  }}
-                >
+                <div key={rule.id} className="rule-row">
                   <div>
-                    <strong>{rule.name}</strong>: {rule.metric_type} {rule.operator} {rule.threshold_value} (Window: {rule.window_minutes}m)
+                    <strong>{rule.name}</strong>
+                    <span className="rule-expr">
+                      {rule.metric_type} {rule.operator} {rule.threshold_value}
+                      {unitFor(rule.metric_type) && ` ${unitFor(rule.metric_type)}`}
+                    </span>
+                    <div className="rule-meta">
+                      창 {rule.window_minutes}분 · 쿨다운 {rule.cooldown_minutes}분 · 최근 발동{' '}
+                      {formatRelative(rule.last_triggered_at)}
+                      {rule.webhook_url ? ' · webhook 설정됨' : ''}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span className={rule.is_active ? 'badge badge-success' : 'badge badge-error'}>
-                      {rule.is_active ? 'Active' : 'Inactive'}
+                    <span className={rule.is_active ? 'badge badge-success' : 'badge badge-warning'}>
+                      {rule.is_active ? 'Active' : 'Paused'}
                     </span>
                     <button
+                      className="icon-button"
+                      onClick={() => handleToggleRule(rule)}
+                      disabled={busyRuleId === rule.id}
+                      title={rule.is_active ? '일시 중지' : '재개'}
+                    >
+                      {rule.is_active ? <Pause size={14} /> : <Play size={14} color="#10b981" />}
+                    </button>
+                    <button
+                      className="icon-button"
                       onClick={() => handleDeleteRule(rule.id)}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--text-faint)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                      }}
+                      disabled={busyRuleId === rule.id}
                       title="Delete Rule"
                     >
                       <Trash2 size={14} color="#ef4444" />
@@ -316,26 +288,25 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
           )}
         </div>
 
-        {/* Alert History Section */}
         <div>
-          <h4 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '10px' }}>
-            Triggered Alert History ({histories.length})
-          </h4>
+          <div className="section-heading">
+            <h4>Triggered Alert History ({histories.length})</h4>
+          </div>
           <div className="table-container" style={{ maxHeight: '220px', overflowY: 'auto' }}>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Status</th>
+                  <th>Delivery</th>
                   <th>Rule Name</th>
                   <th>Value</th>
                   <th>Message</th>
-                  <th>Triggered Time</th>
+                  <th>Triggered</th>
                 </tr>
               </thead>
               <tbody>
                 {histories.length === 0 ? (
                   <tr>
-                    <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-faint)', padding: '20px' }}>
+                    <td colSpan={5} className="table-empty">
                       No alerts triggered yet. System operating normally.
                     </td>
                   </tr>
@@ -343,14 +314,26 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                   histories.map((hist) => (
                     <tr key={hist.id}>
                       <td>
-                        <span className="badge badge-error">
-                          <ShieldAlert size={10} style={{ marginRight: '4px' }} /> TRIGGERED
+                        {/* A failed webhook still records the alert; the two are
+                            tracked separately so a broken hook is visible. */}
+                        <span
+                          className={`badge ${hist.sent_successfully ? 'badge-error' : 'badge-warning'}`}
+                          title={
+                            hist.sent_successfully
+                              ? '알림 발송 완료'
+                              : 'Webhook 전송 실패 (알림은 기록됨)'
+                          }
+                        >
+                          <ShieldAlert size={10} style={{ marginRight: '4px' }} />
+                          {hist.sent_successfully ? 'TRIGGERED' : 'SEND FAILED'}
                         </span>
                       </td>
-                      <td><strong>{hist.rule_name}</strong></td>
+                      <td>
+                        <strong>{hist.rule_name}</strong>
+                      </td>
                       <td>{hist.triggered_value}</td>
                       <td style={{ color: 'var(--text-muted)' }}>{hist.message}</td>
-                      <td>{new Date(hist.created_at).toLocaleTimeString()}</td>
+                      <td>{formatTime(hist.created_at)}</td>
                     </tr>
                   ))
                 )}

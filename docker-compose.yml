@@ -3,18 +3,36 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: aimonitor:latest
+    image: aimonitor:0.2.0
     container_name: aimonitor
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Bound to loopback by default. Change to "8000:8000" only after setting
+      # API_KEY, since without it every endpoint is unauthenticated.
+      - "127.0.0.1:8000:8000"
     environment:
-      - PROJECT_NAME=AIMONITOR
-      - VERSION=0.1.0
-      - DATABASE_URL=sqlite:////app/data/aimonitor.db
-      - CORS_ORIGINS=["http://localhost:3000","http://localhost:8000","http://127.0.0.1:8000"]
+      PROJECT_NAME: AIMONITOR
+      ENVIRONMENT: production
+      DATABASE_URL: sqlite:////app/data/aimonitor.db
+      CORS_ORIGINS: http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000
+      # Set in a .env file next to this compose file, or export before `up`.
+      API_KEY: ${API_KEY:-}
+      REQUIRE_AUTH_FOR_READS: ${REQUIRE_AUTH_FOR_READS:-false}
+      RETENTION_DAYS: ${RETENTION_DAYS:-0}
+      ALERT_INTERVAL_SECONDS: ${ALERT_INTERVAL_SECONDS:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - aimonitor-data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/system/ready', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   aimonitor-data:

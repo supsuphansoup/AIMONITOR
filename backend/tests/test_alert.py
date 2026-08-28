@@ -1,18 +1,19 @@
 from datetime import datetime, timezone
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
-import httpx
-from sqlmodel import SQLModel, create_engine, Session
+from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
-from backend.app.main import app
 from backend.app.db.session import get_session
-from backend.app.models.alert import AlertRule, AlertHistory
+from backend.app.main import app
+from backend.app.models.alert import AlertRule
 from backend.app.services.alert import (
     AlertEvaluator,
-    extract_metric_value,
     compare_operator,
+    extract_metric_value,
 )
 
 engine = create_engine(
@@ -88,7 +89,7 @@ def test_list_and_get_alert_rules(client: TestClient):
             "is_active": False,
         },
     )
-    rule2_id = res2.json()["id"]
+    res2.json()["id"]
 
     # List all
     res = client.get("/api/v1/alerts/rules")
