@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
 from backend.app.core.security import require_read_auth
-from backend.app.core.timeutil import to_naive_utc, utc_now
+from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.db.session import get_session
 from backend.app.services.aggregator import MetricAggregator
 
@@ -78,3 +78,51 @@ def get_model_breakdown(
 def get_active_contexts(session: Session = Depends(get_session)):
     """Per-tool usage windows and the latest context estimate for the desktop."""
     return MetricAggregator.get_active_contexts(session=session)
+
+
+@router.get("/connected_ais", response_model=Dict[str, Any])
+def get_connected_ais(session: Session = Depends(get_session)):
+    """Connected tools, sourced quotas and local usage; never credentials or local paths."""
+    from backend.app.services.api_key_manager import spend_service
+    from desktop.ai_detector import detect_connected_ais
+    from desktop.config import load_config
+    from desktop.context_manager import get_connected_ai_summary
+
+    config = load_config()
+    ais = detect_connected_ais()
+    summary = get_connected_ai_summary(
+        active_ais=ais,
+        usage_by_ai=MetricAggregator.get_active_contexts(session=session),
+        krw_rate=float(config.get("krw_per_usd") or 1380.0),
+        config=config,
+        official_spend=spend_service.spend_all([ai["key"] for ai in ais if ai["key"].endswith("_api")]),
+    )
+    # The desktop detector's detail can contain filesystem exception strings.
+    # Neither it nor a local credential path belongs in the web response.
+    for item in summary["items"]:
+        item.pop("path", None)
+        item.pop("detail", None)
+        if item.get("last_request_at"):
+            item["last_request_at"] = to_aware_utc(
+                datetime.fromisoformat(item["last_request_at"])
+            ).isoformat()
+        if item.get("context") and item["context"].get("as_of"):
+            item["context"]["as_of"] = to_aware_utc(
+                datetime.fromisoformat(item["context"]["as_of"])
+            ).isoformat()
+        for window in item["quota_windows"]:
+            for field in ("as_of", "resets_at"):
+                if window.get(field):
+                    window[field] = to_aware_utc(datetime.fromisoformat(window[field])).isoformat()
+        spend = item.get("official_spend")
+        if spend:
+            spend.pop("error", None)
+            for field in ("as_of", "period_start"):
+                if spend.get(field):
+                    spend[field] = to_aware_utc(datetime.fromisoformat(spend[field])).isoformat()
+        # A zero priced subtotal is not a zero bill when every call is unpriced.
+        for usage in item["usage"].values():
+            if usage["cost_unknown"] and usage["cost_unknown"] == usage["requests"]:
+                usage["cost_usd"] = None
+                usage["cost_krw"] = None
+    return summary

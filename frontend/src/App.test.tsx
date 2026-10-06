@@ -35,6 +35,9 @@ beforeEach(() => {
   vi.spyOn(api, 'alertRules').mockResolvedValue([]);
   vi.spyOn(api, 'alertHistory').mockResolvedValue([]);
   vi.spyOn(api, 'systemInfo').mockResolvedValue(systemInfo);
+  vi.spyOn(api, 'connectedAis').mockResolvedValue({ items: [], total: {
+    connected_count: 0, hidden_count: 0, billed_month_usd: 0, billed_unknown_month: 0, api_equivalent_month_usd: 0,
+  } });
   vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
 });
 
@@ -46,6 +49,23 @@ async function ready() {
 }
 
 describe('dashboard wiring', () => {
+  it('opens provider keys from the header and refreshes cards with dashboard data', async () => {
+    vi.spyOn(api, 'listApiKeys').mockResolvedValue([]);
+    vi.spyOn(api, 'providerSpend').mockResolvedValue({});
+    await ready();
+    expect(api.connectedAis).toHaveBeenCalledWith(expect.any(AbortSignal));
+    await userEvent.setup().click(screen.getByRole('button', { name: 'API 키 관리' }));
+    expect(screen.getByRole('dialog', { name: '공급자 API 키 관리' })).toBeInTheDocument();
+  });
+
+  it('keeps trace data available when discovery fails and guides authentication', async () => {
+    vi.mocked(api.connectedAis).mockRejectedValue(new ApiError('forbidden', 403));
+    await ready();
+    expect(screen.getByRole('alert')).toHaveTextContent('연결 AI 정보를 확인할 수 없습니다.');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'API 키 입력' }));
+    expect(screen.getByRole('dialog', { name: '설정' })).toBeInTheDocument();
+  });
+
   it.each(['production', 'unavailable', 'development'])('aligns empty-state guidance with the demo button in %s', async (environment) => {
     vi.mocked(api.traces).mockResolvedValue({ items: [], total: 0 });
     if (environment === 'unavailable') {

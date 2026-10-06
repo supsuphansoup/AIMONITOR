@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { formatCost, formatMs, formatNumber, formatRelative, formatTime, NOT_COMPUTABLE } from './format';
+import { formatCost, formatMs, formatNumber, formatProviderSpend, formatRelative, formatTime, NOT_COMPUTABLE } from './format';
+import { ProviderSpend } from './types';
+
+describe('official provider money', () => {
+  const spend: ProviderSpend = { provider: 'openai', kind: 'spend', amount: 0, currency: 'USD',
+    as_of: null, period_start: null, source_label: 'Official' };
+  it('keeps zero distinct from absent amount, endpoint or currency', () => {
+    expect(formatProviderSpend(spend)).toBe('사용액 $0.00');
+    expect(formatProviderSpend({ ...spend, amount: null })).toBe('확인 불가');
+    expect(formatProviderSpend({ ...spend, currency: null })).toBe('확인 불가');
+    expect(formatProviderSpend({ ...spend, kind: 'unavailable' })).toBe('확인 불가');
+    expect(formatProviderSpend(null)).toBe('확인 불가');
+  });
+  it('preserves reported non-USD currency without guessing an exchange rate', () => {
+    expect(formatProviderSpend({ ...spend, currency: 'KRW', amount: 1000 })).toBe('사용액 1,000 KRW');
+  });
+});
 
 describe('formatCost', () => {
   it('renders a priced call as a dollar amount', () => {

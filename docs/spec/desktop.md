@@ -73,7 +73,7 @@ Gemini 키는 URL에 넣지 않고 `x-goog-api-key` 헤더로 보낸다. 키 검
 
 ## Open questions
 
-- 웹의 `ApiKeyModal.tsx`·`ConnectedAICards.tsx` 및 `/metrics/connected_ais`는 이번 이식 범위 밖이다.
+- 웹의 키 관리·연결 AI 카드는 기존 데스크톱 감지·요약·청구액 서비스를 공유한다. 화면 동작은 [dashboard.md](dashboard.md), `/metrics/connected_ais` 계약은 [metrics.md](metrics.md)를 따른다.
 
 ## Areas of concern
 

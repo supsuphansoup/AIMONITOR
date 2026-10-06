@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Bell, Play, RefreshCw, Settings } from 'lucide-react';
+import { Activity, Bell, KeyRound, Play, RefreshCw, Settings } from 'lucide-react';
 import { SystemInfo, TimeWindow } from '../types';
 import { formatTime } from '../format';
 
@@ -8,6 +8,7 @@ interface HeaderProps {
   onSimulate: () => void;
   onOpenAlerts: () => void;
   onOpenSettings: () => void;
+  onOpenKeys?: () => void;
   alertCount: number;
   activeRuleCount: number;
   isLoading: boolean;
@@ -35,6 +36,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSimulate,
   onOpenAlerts,
   onOpenSettings,
+  onOpenKeys,
   alertCount,
   activeRuleCount,
   isLoading,
@@ -93,6 +95,10 @@ export const Header: React.FC<HeaderProps> = ({
             {isSimulating ? 'Simulating Traffic...' : 'Generate Demo Traffic'}
           </button>
         )}
+
+        {onOpenKeys && <button className="btn btn-secondary" onClick={onOpenKeys}>
+          <KeyRound size={14} /> API 키 관리
+        </button>}
 
         <button className="btn btn-secondary" onClick={onOpenSettings} title="설정">
           <Settings size={14} />

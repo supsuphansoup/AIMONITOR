@@ -1,5 +1,5 @@
 /** Shared display formatting, so "계산 불가" means the same thing everywhere. */
-import { CostSource } from './types';
+import { CostSource, ProviderSpend } from './types';
 
 /** Shown wherever a cost could not be computed, per the project rule that a
  *  missing rate is never rendered as 0원. */
@@ -12,6 +12,17 @@ export function formatCost(value: number, source: CostSource, digits = 5): strin
 
 export function formatUsd(value: number, digits = 4): string {
   return `$${value.toFixed(digits)}`;
+}
+
+/** Official money keeps its reported currency; no assumed exchange rate. */
+export function formatProviderSpend(spend?: ProviderSpend | null): string {
+  if (!spend || spend.kind === 'unavailable' || spend.amount === null || !Number.isFinite(spend.amount)) {
+    return '확인 불가';
+  }
+  const currency = spend.currency?.toUpperCase();
+  if (!currency) return '확인 불가';
+  const amount = currency === 'USD' ? formatUsd(spend.amount, 2) : `${formatNumber(spend.amount)} ${currency}`;
+  return `${spend.kind === 'balance' ? '잔액' : '사용액'} ${amount}`;
 }
 
 export function formatNumber(value: number | undefined | null): string {

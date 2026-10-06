@@ -9,6 +9,10 @@ import {
   AlertHistory,
   AlertMetricCatalog,
   AlertRule,
+  ApiKeyItem,
+  ConnectedAISummary,
+  KeyVerification,
+  ProviderSpend,
   ModelBreakdown,
   OverviewMetrics,
   SystemInfo,
@@ -83,6 +87,13 @@ async function request<T>(
   });
 
   if (!response.ok) {
+    // Provider-key endpoints must never echo submitted secrets in errors.
+    if (path === '/keys' || path.startsWith('/keys/')) {
+      const message = response.status === 401 || response.status === 403
+        ? '쓰기 권한이 있는 서버 API 키를 설정에서 입력하세요.'
+        : `키 관리 요청에 실패했습니다. (HTTP ${response.status})`;
+      throw new ApiError(message, response.status);
+    }
     throw new ApiError(await describeFailure(response), response.status);
   }
   if (response.status === 204) return undefined as T;
@@ -138,6 +149,23 @@ async function requestTracePage(query: TraceQuery, signal?: AbortSignal): Promis
 }
 
 export const api = {
+  connectedAis: (signal?: AbortSignal) =>
+    request<ConnectedAISummary>('/metrics/connected_ais', { signal }),
+
+  listApiKeys: (signal?: AbortSignal) => request<ApiKeyItem[]>('/keys', { signal }),
+
+  providerSpend: (signal?: AbortSignal) =>
+    request<Record<string, ProviderSpend>>('/keys/spend', { signal }),
+
+  setProviderKey: (provider: string, key: string) =>
+    request<{ verification?: KeyVerification }>('/keys', { method: 'POST', body: { provider, key } }),
+
+  deleteProviderKey: (provider: string) =>
+    request<void>(`/keys/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+
+  verifyProviderKey: (provider: string) =>
+    request<KeyVerification>(`/keys/${encodeURIComponent(provider)}/verify`, { method: 'POST' }),
+
   overview: (hours?: number, signal?: AbortSignal) =>
     request<OverviewMetrics>('/metrics/overview', { params: { hours_back: hours }, signal }),
 

@@ -3,6 +3,85 @@ export type TraceStatus = 'SUCCESS' | 'ERROR' | 'TIMEOUT' | 'RATE_LIMITED';
 /** How `cost_usd` was derived. `unknown` means no rate card matched the model. */
 export type CostSource = 'custom' | 'pricing_table' | 'local_free' | 'unknown';
 
+export interface ApiKeyItem {
+  provider: string;
+  name: string;
+  placeholder: string;
+  has_key: boolean;
+  masked_key: string;
+  source: 'stored' | 'env' | 'none';
+  detected_env_var: string | null;
+  status: string;
+  last_verified: string | null;
+  is_admin_key: boolean;
+}
+
+export interface KeyVerification {
+  valid: boolean;
+}
+
+export interface ProviderSpend {
+  provider: string;
+  kind: 'spend' | 'balance' | 'unavailable';
+  amount: number | null;
+  currency: string | null;
+  period_start: string | null;
+  as_of: string | null;
+  source_label: string;
+}
+
+export interface QuotaWindow {
+  id: string;
+  label: string;
+  remaining_pct: number | null;
+  source: 'official' | 'user_limit' | 'unavailable';
+  source_label: string;
+  as_of: string | null;
+  resets_at: string | null;
+  stale: boolean;
+  note: string;
+}
+
+export interface UsageBlock {
+  requests: number;
+  tokens: number;
+  cost_usd: number | null;
+  cost_unknown: number;
+}
+
+export interface ConnectedAIItem {
+  key: string;
+  display_name: string;
+  provider: string;
+  plan_name: string;
+  cost_meaning: 'billed' | 'api_equivalent' | 'free';
+  quota_windows: QuotaWindow[];
+  context: {
+    tokens: number;
+    max_tokens: number | null;
+    used_pct: number | null;
+    model_name: string;
+    estimated: boolean;
+    as_of: string | null;
+  } | null;
+  usage: Record<'5h' | 'today' | '7d' | 'month', UsageBlock>;
+  last_request_at: string | null;
+  session_status: string;
+  billing_note: string;
+  official_spend: ProviderSpend | null;
+}
+
+export interface ConnectedAISummary {
+  items: ConnectedAIItem[];
+  total: {
+    connected_count: number;
+    hidden_count: number;
+    billed_month_usd: number;
+    billed_unknown_month: number;
+    api_equivalent_month_usd: number;
+  };
+}
+
 export interface TraceEvent {
   id: number;
   trace_id: string;

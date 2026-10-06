@@ -23,6 +23,33 @@ afterEach(() => {
 });
 
 describe('api key handling', () => {
+  it('uses the server key header for provider management and sends provider secrets only in the POST body', async () => {
+    setApiKey('server-write-key');
+    fetchMock.mockImplementation(async () => jsonResponse({}));
+    await api.setProviderKey('openai', 'provider-secret');
+    await api.deleteProviderKey('openai');
+    await api.verifyProviderKey('openai');
+    await api.listApiKeys();
+    await api.providerSpend();
+    await api.connectedAis();
+    for (const [url, options] of fetchMock.mock.calls) {
+      expect(options.headers['X-API-Key']).toBe('server-write-key');
+      expect(url).not.toContain('provider-secret');
+    }
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider: 'openai', key: 'provider-secret' });
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST');
+    expect(fetchMock.mock.calls[1][1].method).toBe('DELETE');
+    expect(fetchMock.mock.calls[2][1].method).toBe('POST');
+  });
+
+  it.each([400, 401, 403, 422, 500])('never exposes provider secret in failed key requests (%s)', async (status) => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: 'provider-secret' }, { status }));
+    const error = await api.setProviderKey('openai', 'provider-secret').catch((err: ApiError) => err);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).message).not.toContain('provider-secret');
+    expect((error as ApiError).status).toBe(status);
+  });
+
   it('omits the header when no key is set', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]));
     await api.alertRules();

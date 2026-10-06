@@ -1,5 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { AlertsModal } from './components/AlertsModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
+import { ConnectedAICards } from './components/ConnectedAICards';
 import { ConnectionBanner } from './components/ConnectionBanner';
 import { Header, canGenerateDemoTraffic } from './components/Header';
 import { KPICards } from './components/KPICards';
@@ -10,6 +12,7 @@ import { api, ApiError } from './api';
 import {
   AlertHistory,
   AlertRule,
+  ConnectedAISummary,
   ModelBreakdown,
   OverviewMetrics,
   SystemInfo,
@@ -36,6 +39,8 @@ export const App: React.FC = () => {
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [histories, setHistories] = useState<AlertHistory[]>([]);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [connectedAis, setConnectedAis] = useState<ConnectedAISummary | null>(null);
+  const [connectedError, setConnectedError] = useState<{ message: string; status?: number } | null>(null);
 
   const [windowIndex, setWindowIndex] = useState<number>(2); // 24H
   const [page, setPage] = useState<number>(0);
@@ -45,6 +50,7 @@ export const App: React.FC = () => {
 
   const [isAlertsOpen, setIsAlertsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isKeysOpen, setIsKeysOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
   const [error, setError] = useState<{ message: string; status?: number } | null>(null);
@@ -60,6 +66,16 @@ export const App: React.FC = () => {
     inFlight.current = controller;
 
     setIsLoading(true);
+    // Discovery/billing failures must not hide the rest of the dashboard.
+    void api.connectedAis(controller.signal).then((summary) => {
+      if (controller.signal.aborted) return;
+      setConnectedAis(summary);
+      setConnectedError(null);
+    }).catch((err: unknown) => {
+      if (controller.signal.aborted) return;
+      setConnectedAis(null);
+      setConnectedError({ message: '연결 AI 정보를 확인할 수 없습니다.', status: err instanceof ApiError ? err.status : undefined });
+    });
     try {
       const [overview, series, models, traceRows, ruleRows, historyRows] = await Promise.all([
         api.overview(timeWindow.hours, controller.signal),
@@ -77,6 +93,8 @@ export const App: React.FC = () => {
         api.alertRules(controller.signal),
         api.alertHistory(controller.signal),
       ]);
+
+      if (controller.signal.aborted) return;
 
       setMetrics(overview);
       setTimeseries(series);
@@ -98,7 +116,8 @@ export const App: React.FC = () => {
       );
     } finally {
       if (inFlight.current === controller) {
-        inFlight.current = null;
+        // Keep the controller until the next poll/unmount: discovery may still
+        // be running after the core metrics finished.
         setIsLoading(false);
       }
     }
@@ -185,6 +204,7 @@ export const App: React.FC = () => {
         onSimulate={handleSimulate}
         onOpenAlerts={() => setIsAlertsOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenKeys={() => setIsKeysOpen(true)}
         alertCount={histories.length}
         activeRuleCount={activeRuleCount}
         isLoading={isLoading}
@@ -208,6 +228,8 @@ export const App: React.FC = () => {
           <span className="page-window">Last {timeWindow.label}</span>
         </div>
         <KPICards metrics={metrics} windowLabel={timeWindow.label} />
+        <ConnectedAICards summary={connectedAis} error={connectedError} onRetry={loadData}
+          onOpenKeys={() => setIsKeysOpen(true)} onOpenSettings={() => setIsSettingsOpen(true)} />
         <Suspense fallback={<div className="charts-grid"><div className="card chart-placeholder" /><div className="card chart-placeholder" /></div>}>
           <Charts timeseries={timeseries} breakdown={breakdown} windowLabel={timeWindow.label} showDemoTraffic={showDemoTraffic} />
         </Suspense>
@@ -249,6 +271,9 @@ export const App: React.FC = () => {
         systemInfo={systemInfo}
         onSaved={loadData}
       />
+
+      <ApiKeyModal isOpen={isKeysOpen} onClose={() => setIsKeysOpen(false)} onKeysChanged={loadData}
+        onOpenSettings={() => { setIsKeysOpen(false); setIsSettingsOpen(true); }} />
     </div>
   );
 };
