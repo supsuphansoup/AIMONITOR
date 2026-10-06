@@ -7,10 +7,10 @@ from backend.app.services.cost import (
     SOURCE_LOCAL_FREE,
     SOURCE_PRICING_TABLE,
     SOURCE_UNKNOWN,
+    ModelPricing,
     cache_rates,
     calculate_cost_detail,
     normalize_model_name,
-    resolve_pricing,
 )
 
 
@@ -39,7 +39,7 @@ def test_local_provider_is_free_not_unknown():
 @pytest.mark.parametrize("provider,model", [
     ("openai", "gpt-4.5-preview"),   # used to be billed as gpt-4 ($30/$60)
     ("openai", "gpt-4-32k"),
-    ("openai", "o3-pro"),            # used to be billed as o3
+    ("openai", "gpt-5.1-codex"),
     ("anthropic", "claude-3-5-sonnet-v3-preview"),
 ])
 def test_another_models_price_is_not_borrowed(provider, model):
@@ -48,7 +48,9 @@ def test_another_models_price_is_not_borrowed(provider, model):
 
 
 @pytest.mark.parametrize("model,key", [
-    ("gpt-4o-2024-05-13", "gpt-4o"),
+    ("gpt-5-2025-08-07", "gpt-5"),
+    ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5"),
+    ("anthropic.claude-opus-5-5", "claude-opus-5-5"),
     ("gpt-4o-mini-2024-07-18", "gpt-4o-mini"),
     ("gpt-3.5-turbo-0125", "gpt-3.5-turbo"),
     ("o3-mini-2025-01-31", "o3-mini"),
@@ -98,14 +100,14 @@ def test_cache_read_and_write_have_different_rates():
 
 
 def test_cache_rates_fall_back_to_provider_policy():
-    pricing = resolve_pricing("openai", "gpt-4o")
+    pricing = ModelPricing(2.50, 10.00)  # no model-specific cache rates
     write_rate, read_rate = cache_rates("openai", pricing)
     assert write_rate == pricing.input_per_1m          # writes billed as input
     assert read_rate == pricing.input_per_1m * 0.50    # reads discounted
 
 
 def test_unknown_provider_cache_rates_do_not_discount():
-    pricing = resolve_pricing("openai", "gpt-4o")
+    pricing = ModelPricing(2.50, 10.00)
     write_rate, read_rate = cache_rates("some-new-provider", pricing)
     assert write_rate == read_rate == pricing.input_per_1m
 
@@ -181,3 +183,30 @@ def test_legacy_guessed_cost_is_not_summed_anywhere(client: TestClient, session)
     assert breakdown["mystery-1"]["total_cost_usd"] == 0.0
     assert breakdown["mystery-1"]["cost_unknown_count"] == 1
     assert breakdown["gpt-4o"]["total_cost_usd"] == pytest.approx(0.075)
+
+
+M = 1_000_000
+
+
+@pytest.mark.parametrize("provider,model,rates", [
+    # (input, output, cache_write, cache_read) per 1M tokens, from the providers'
+    # pricing pages as of PRICING_AS_OF.
+    ("anthropic", "claude-opus-5-5", (4.00, 20.00, 5.00, 0.20)),       # cache read 0.05x
+    ("anthropic", "claude-fable-5-1", (10.00, 50.00, 12.50, 0.25)),    # cache read 0.025x
+    ("anthropic", "claude-sonnet-5-5", (2.00, 10.00, 2.50, 0.20)),
+    ("anthropic", "claude-sonnet-4-5-20250929", (3.00, 15.00, 3.75, 0.30)),
+    ("anthropic", "claude-haiku-4-5", (1.00, 5.00, 1.25, 0.10)),
+    ("openai", "gpt-5", (1.25, 10.00, 1.25, 0.125)),                   # cache read 0.1x
+    ("openai", "gpt-4.1", (2.00, 8.00, 2.00, 0.50)),                   # cache read 0.25x
+    ("openai", "o3", (2.00, 8.00, 2.00, 0.50)),                        # was $10/$40
+    ("openai", "o3-pro", (20.00, 80.00, 20.00, 20.00)),                # no cache discount
+    ("openai", "gpt-4o-2024-05-13", (5.00, 15.00, 5.00, 5.00)),        # not gpt-4o's price
+    ("gemini", "gemini-2.5-flash", (0.30, 2.50, 0.30, 0.03)),          # was $0.075/$0.30
+    ("gemini", "gemini-3.1-pro-preview", (2.00, 12.00, 2.00, 0.20)),
+])
+def test_rate_card_matches_published_prices(provider, model, rates):
+    input_rate, output_rate, write_rate, read_rate = rates
+    assert calculate_cost_detail(provider, model, M, 0).cost_usd == pytest.approx(input_rate)
+    assert calculate_cost_detail(provider, model, 0, M).cost_usd == pytest.approx(output_rate)
+    assert calculate_cost_detail(provider, model, 0, 0, cache_write_tokens=M).cost_usd == pytest.approx(write_rate)
+    assert calculate_cost_detail(provider, model, 0, 0, cache_read_tokens=M).cost_usd == pytest.approx(read_rate)

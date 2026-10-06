@@ -10,6 +10,8 @@ from backend.app.db.session import check_db, get_session
 from backend.app.services.cost import (
     LOCAL_PROVIDERS,
     MODEL_PRICING_USD_PER_1M,
+    PRICING_AS_OF,
+    PRICING_SOURCES,
     PROVIDER_CACHE_MULTIPLIERS,
 )
 from backend.app.services.retention import purge_older_than
@@ -43,6 +45,8 @@ def pricing_table() -> Dict[str, Any]:
     """The rate card used for cost calculation, so numbers can be audited."""
     return {
         "unit": "USD per 1,000,000 tokens",
+        "as_of": PRICING_AS_OF,
+        "sources": PRICING_SOURCES,
         # Self-hosted inference is free by provider, whatever the model name.
         "local_free_providers": sorted(LOCAL_PROVIDERS),
         "provider_cache_multipliers": {

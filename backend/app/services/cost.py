@@ -55,45 +55,128 @@ PROVIDER_CACHE_MULTIPLIERS: Dict[str, Tuple[float, float]] = {
 }
 DEFAULT_CACHE_MULTIPLIERS: Tuple[float, float] = (1.00, 1.00)
 
+#: When the published prices below were last checked against the sources.
+#: Bump it together with the table; /system/pricing reports it so a stale card
+#: is visible rather than silently wrong.
+PRICING_AS_OF = "2026-10-06"
+PRICING_SOURCES: Dict[str, str] = {
+    "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "openai": "https://developers.openai.com/api/docs/pricing",
+    "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
+}
+
+
+def _openai(input_rate: float, output_rate: float, cached: Optional[float]) -> ModelPricing:
+    """OpenAI: no cache-write premium; models without a cached rate get no discount."""
+    return ModelPricing(input_rate, output_rate, input_rate, input_rate if cached is None else cached)
+
+
+def _anthropic(input_rate: float, output_rate: float, write_5m: float, read: float) -> ModelPricing:
+    # One cache-write field: priced at the 5-minute rate (1-hour writes cost 2x input).
+    return ModelPricing(input_rate, output_rate, write_5m, read)
+
+
+def _gemini(input_rate: float, output_rate: float, cached: float) -> ModelPricing:
+    # Prompt rates are the <=200k-token tier; hourly cache storage is not modelled.
+    return ModelPricing(input_rate, output_rate, input_rate, cached)
+
+
 # Paid APIs only. Open-weight models are free when self-hosted, which is decided
 # by provider (LOCAL_PROVIDERS), never by model name: the same weights behind a
 # hosted API (mistral, deepseek, together, ...) have a price we do not know.
+#
+# A dated snapshot only inherits its family's price when it has no key of its
+# own - some snapshots are priced differently (gpt-4o-2024-05-13), so list those.
 MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
-    # OpenAI
-    "gpt-4o": ModelPricing(2.50, 10.00),
-    "gpt-4o-mini": ModelPricing(0.15, 0.60),
-    "gpt-4o-2024-11-20": ModelPricing(2.50, 10.00),
-    "gpt-4o-2024-08-06": ModelPricing(2.50, 10.00),
-    "gpt-4.1": ModelPricing(2.00, 8.00),
-    "gpt-4.1-mini": ModelPricing(0.40, 1.60),
-    "gpt-4.1-nano": ModelPricing(0.10, 0.40),
-    "gpt-4-turbo": ModelPricing(10.00, 30.00),
-    "gpt-4": ModelPricing(30.00, 60.00),
-    "gpt-3.5-turbo": ModelPricing(0.50, 1.50),
-    "o1": ModelPricing(15.00, 60.00),
+    # --- OpenAI, verified PRICING_AS_OF (Standard tier; "<272K" models at the short-context rate)
+    "gpt-6-astra": _openai(10.00, 50.00, 1.00),
+    "gpt-6.1-sol": _openai(2.00, 10.00, 0.10),
+    "gpt-6-sol": _openai(2.00, 10.00, 0.20),
+    "gpt-6-luna": _openai(0.10, 0.50, 0.01),
+    "gpt-5.6-sol": _openai(4.00, 20.00, 0.40),
+    "gpt-5.6-terra": _openai(2.00, 12.00, 0.20),
+    "gpt-5.6-luna": _openai(0.20, 1.20, 0.02),
+    "gpt-5.5": _openai(5.00, 30.00, 0.50),
+    "gpt-5.5-pro": _openai(30.00, 180.00, None),
+    "gpt-5.4": _openai(2.50, 15.00, 0.25),
+    "gpt-5.4-mini": _openai(0.75, 4.50, 0.075),
+    "gpt-5.4-nano": _openai(0.20, 1.25, 0.02),
+    "gpt-5.4-pro": _openai(30.00, 180.00, None),
+    "gpt-5.2": _openai(1.75, 14.00, 0.175),
+    "gpt-5.2-pro": _openai(21.00, 168.00, None),
+    "gpt-5.1": _openai(1.25, 10.00, 0.125),
+    "gpt-5": _openai(1.25, 10.00, 0.125),
+    "gpt-5-mini": _openai(0.25, 2.00, 0.025),
+    "gpt-5-nano": _openai(0.05, 0.40, 0.005),
+    "gpt-5-pro": _openai(15.00, 120.00, None),
+    "gpt-4.1": _openai(2.00, 8.00, 0.50),
+    "gpt-4.1-mini": _openai(0.40, 1.60, 0.10),
+    "gpt-4.1-nano": _openai(0.10, 0.40, 0.025),
+    "gpt-4o": _openai(2.50, 10.00, 1.25),
+    "gpt-4o-2024-05-13": _openai(5.00, 15.00, None),
+    "gpt-4o-mini": _openai(0.15, 0.60, 0.075),
+    "o1": _openai(15.00, 60.00, 7.50),
+    "o1-pro": _openai(150.00, 600.00, None),
+    "o3-pro": _openai(20.00, 80.00, None),
+    "o3": _openai(2.00, 8.00, 0.50),
+    "o4-mini": _openai(1.10, 4.40, 0.275),
+    "o3-mini": _openai(1.10, 4.40, 0.55),
+    "gpt-4-turbo": _openai(10.00, 30.00, None),          # gpt-4-turbo-2024-04-09
+    "gpt-4": _openai(30.00, 60.00, None),                # gpt-4-0613
+    "gpt-3.5-turbo": _openai(0.50, 1.50, None),
+    "gpt-3.5-turbo-1106": _openai(1.00, 2.00, None),
+    "gpt-3.5-turbo-instruct": _openai(1.50, 2.00, None),
+    "davinci-002": _openai(2.00, 2.00, None),
+    "babbage-002": _openai(0.40, 0.40, None),
+    # OpenAI, retired or unlisted - kept at their last known price, not re-verified
+    "gpt-4o-2024-11-20": _openai(2.50, 10.00, 1.25),
+    "gpt-4o-2024-08-06": _openai(2.50, 10.00, 1.25),
     "o1-mini": ModelPricing(3.00, 12.00),
-    "o1-pro": ModelPricing(150.00, 600.00),
-    "o3": ModelPricing(10.00, 40.00),
-    "o3-mini": ModelPricing(1.10, 4.40),
-    "o4-mini": ModelPricing(1.10, 4.40),
 
-    # Anthropic
+    # --- Anthropic, verified PRICING_AS_OF (first-party API; Bedrock/Vertex regional endpoints differ)
+    "claude-fable-5-1": _anthropic(10.00, 50.00, 12.50, 0.25),
+    "claude-mythos-5-1": _anthropic(10.00, 50.00, 12.50, 0.25),
+    "claude-fable-5": _anthropic(10.00, 50.00, 12.50, 1.00),
+    "claude-mythos-5": _anthropic(10.00, 50.00, 12.50, 1.00),
+    "claude-opus-5-5": _anthropic(4.00, 20.00, 5.00, 0.20),
+    "claude-opus-5": _anthropic(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-8": _anthropic(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-7": _anthropic(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-6": _anthropic(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-5": _anthropic(5.00, 25.00, 6.25, 0.50),
+    "claude-opus-4-1": _anthropic(15.00, 75.00, 18.75, 1.50),
+    "claude-opus-4": _anthropic(15.00, 75.00, 18.75, 1.50),
+    "claude-sonnet-5-5": _anthropic(2.00, 10.00, 2.50, 0.20),
+    "claude-sonnet-5": _anthropic(2.00, 10.00, 2.50, 0.20),
+    "claude-sonnet-4-6": _anthropic(3.00, 15.00, 3.75, 0.30),
+    "claude-sonnet-4-5": _anthropic(3.00, 15.00, 3.75, 0.30),
+    "claude-sonnet-4": _anthropic(3.00, 15.00, 3.75, 0.30),
+    "claude-haiku-4-5": _anthropic(1.00, 5.00, 1.25, 0.10),
+    "claude-3-5-haiku": _anthropic(0.80, 4.00, 1.00, 0.08),
+    "claude-3-5-haiku-20241022": _anthropic(0.80, 4.00, 1.00, 0.08),
+    # Anthropic, retired - kept at their last known price, not re-verified
     "claude-3-7-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-3-7-sonnet-20250219": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-3-5-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-3-5-sonnet-20241022": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-3-5-sonnet-20240620": ModelPricing(3.00, 15.00, 3.75, 0.30),
-    "claude-3-5-haiku": ModelPricing(0.80, 4.00, 1.00, 0.08),
-    "claude-3-5-haiku-20241022": ModelPricing(0.80, 4.00, 1.00, 0.08),
     "claude-3-opus": ModelPricing(15.00, 75.00, 18.75, 1.50),
     "claude-3-sonnet": ModelPricing(3.00, 15.00, 3.75, 0.30),
     "claude-3-haiku": ModelPricing(0.25, 1.25, 0.30, 0.03),
 
-    # Google Gemini
-    "gemini-2.5-pro": ModelPricing(1.25, 10.00),
-    "gemini-2.5-flash": ModelPricing(0.075, 0.30),
-    "gemini-2.5-flash-lite": ModelPricing(0.019, 0.075),
-    "gemini-2.0-pro-exp": ModelPricing(1.25, 5.00),
+    # --- Google Gemini, verified PRICING_AS_OF (paid tier, text input)
+    # 3.6-3.8 Flash are at promotional rates through 2026-12-31; they double on
+    # 2027-01-01, so this card must be refreshed before then.
+    "gemini-3.8-flash": _gemini(0.75, 3.75, 0.075),
+    "gemini-3.7-flash": _gemini(0.75, 3.75, 0.075),
+    "gemini-3.6-flash": _gemini(0.75, 3.75, 0.075),
+    "gemini-3.5-flash": _gemini(1.50, 9.00, 0.15),
+    "gemini-3.5-flash-lite": _gemini(0.30, 2.50, 0.03),
+    "gemini-3.1-flash-lite": _gemini(0.25, 1.50, 0.025),
+    "gemini-3.1-pro-preview": _gemini(2.00, 12.00, 0.20),
+    "gemini-2.5-pro": _gemini(1.25, 10.00, 0.125),
+    "gemini-2.5-flash": _gemini(0.30, 2.50, 0.03),
+    # Gemini, retired or unlisted - kept at their last known price, not re-verified
     "gemini-2.0-flash": ModelPricing(0.10, 0.40),
     "gemini-2.0-flash-lite": ModelPricing(0.075, 0.30),
     "gemini-1.5-pro": ModelPricing(1.25, 5.00),

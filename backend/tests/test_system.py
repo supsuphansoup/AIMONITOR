@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 from backend.app.core.timeutil import utc_now
 from backend.app.models.alert import AlertHistory
 from backend.app.models.trace import TraceEvent
+from backend.app.services.cost import PRICING_AS_OF
 from backend.app.services.retention import purge_older_than
 
 TRACE = {"provider": "openai", "model_name": "gpt-4o", "prompt_tokens": 10, "completion_tokens": 5}
@@ -33,6 +34,9 @@ def test_pricing_table_is_auditable(client: TestClient):
     assert body["models"]["claude-3-5-sonnet"]["cache_read"] == 0.30
     assert body["provider_cache_multipliers"]["anthropic"]["cache_read"] == 0.10
     assert "ollama" in body["local_free_providers"]
+    # The card says how old it is, so a stale price can be spotted.
+    assert body["as_of"] == PRICING_AS_OF
+    assert body["sources"]["anthropic"].startswith("https://")
     # Open weights are free by provider, so no model in the rate card may be priced at zero.
     assert all(m["input"] > 0 or m["output"] > 0 for m in body["models"].values())
 

@@ -5,7 +5,7 @@
 - COST-1 모든 트레이스는 `cost_source`로 비용의 출처를 밝힌다.
 - COST-2 단가를 모르면 금액을 만들지 않는다. 대시보드 `계산 불가`, CSV 빈 칸, 집계에는 `cost_unknown_count`.
 - COST-3 프롬프트 캐시 읽기·쓰기 토큰은 각각의 단가로 계산한다. 일반 입력과 합산하지 않는다.
-- COST-4 적용 중인 단가표와 무료 provider 목록을 `GET /api/v1/system/pricing`으로 공개한다.
+- COST-4 적용 중인 단가표, 무료 provider 목록, 단가 확인일(`as_of`)과 출처(`sources`)를 `GET /api/v1/system/pricing`으로 공개한다.
 - COST-5 과거 행의 비용은 단가표가 바뀌어도 재계산하지 않는다 (수집 시점 단가로 고정).
 - COST-6 단가표 키의 일부만 같은 다른 모델(`gpt-4.5-preview`, `o3-pro`)에 그 단가를 빌려주지 않는다.
 - COST-7 오픈 웨이트 모델이라도 유료 API로 호출했으면 무료가 아니다. 무료 여부는 provider로만 판단한다.
@@ -22,6 +22,16 @@
 | 4 | 그 외 | `pricing_table` | 계산값 |
 
 단가표에는 유료 API 모델만 둔다. 단가 0인 항목은 두지 않는다.
+
+### 단가표 관리
+
+- 기준일 `PRICING_AS_OF`(현재 2026-10-06)와 출처 `PRICING_SOURCES`(각 provider 공식 가격 페이지)를 코드에 둔다. 단가를 고칠 때 함께 갱신한다.
+- 항목은 "확인됨"(기준일에 공식 페이지와 대조)과 "은퇴·미게재, 재확인 안 함"으로 나눠 주석을 단다. 확인할 수 없고 의심스러운 값은 넣지 않는다.
+- 모든 확인된 항목은 **캐시 쓰기·읽기 단가를 명시**한다. 캐시 할인율이 모델마다 달라(Anthropic Opus 5.5 0.05배·Fable 5.1 0.025배, OpenAI gpt-4o 0.5배·gpt-4.1 0.25배·gpt-5 0.1배, Gemini 2.5+ 0.1배) provider 배수로는 틀린다. provider 배수는 단가가 명시되지 않은 옛 항목에만 쓰인다.
+  - OpenAI: 쓰기 할증 없음(=입력 단가). 캐시 가격이 없는 모델(`*-pro`, 옛 모델)은 읽기도 입력 단가(할인 없음).
+  - Anthropic: 쓰기는 5분 캐시 단가(입력의 1.25배).
+  - Gemini: 쓰기 = 입력 단가, 읽기 = 공식 context caching 단가.
+- 같은 계열이라도 가격이 다른 스냅샷은 별도 키로 둔다 (`gpt-4o-2024-05-13` = $5/$15, `gpt-4o`는 $2.50/$10).
 
 ### 계산식 (USD, 100만 토큰당 단가)
 
@@ -52,6 +62,7 @@ cost = prompt × input + completion × output + cache_write × write_rate + cach
 | :--- | :--- |
 | `gpt-4o-mini-2024-07-18`, `gpt-3.5-turbo-0125`, `gemini-1.5-pro-002` | 각 기본 모델 |
 | `claude-3-5-sonnet@20240620` (Vertex), `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Bedrock), `models/gemini-1.5-pro` | 각 기본 모델 |
+| `claude-opus-4-1-20250805` | `claude-opus-4-1` (`claude-opus-4`가 아님 — 긴 키 우선) |
 | `gpt-4.5-preview`, `gpt-4-32k`, `o3-pro`, `*-preview`, `ft:gpt-4o-mini:...` | `unknown` (다른 모델) |
 
 ## Open questions
@@ -61,6 +72,10 @@ cost = prompt × input + completion × output + cache_write × write_rate + cach
 
 ## Areas of concern
 
-- **단가표가 오래됐다.** Claude 4.x, GPT-5 계열 등 최신 모델은 전부 `unknown`. 원칙상 안전하지만 대시보드 비용이 대부분 `계산 불가`가 된다. 단가 출처·기준일을 표에 기록하지 않아 갱신 시점을 알 수 없다. 단가 갱신과 함께 "기준일"을 두는 방향으로 결정 필요.
+- **2027-01-01 전에 단가표를 갱신해야 한다.** Gemini 3.6–3.8 Flash는 2026-12-31까지 프로모션 가격이고 이후 2배가 된다. 단가표에는 유효 기간 개념이 없어 갱신하지 않으면 조용히 과소 계산된다.
+- **구간·옵션 가격을 모델링하지 않는다.** 긴 프롬프트 구간(OpenAI gpt-5.4/5.5 272K 초과, Gemini Pro 200K 초과)은 더 비싸지만 짧은 구간 단가로 계산한다. Anthropic 1시간 캐시 쓰기(입력의 2배)는 5분 단가로, Gemini 캐시 저장 시간 요금·OpenAI/Anthropic Batch 할인·`inference_geo` 1.1배·fast mode는 반영하지 않는다. → 실제 청구액과 다를 수 있는 "표준 단가 기준 추정치".
+- Bedrock·Vertex 경유 Claude는 파트너 가격(지역 엔드포인트 10% 할증 등)이지만 1st-party 단가로 계산한다.
+- 은퇴·미게재 모델(`claude-3-*`, `gemini-1.5-*`, `gemini-2.0-*`, `o1-mini` 등)은 마지막으로 알려진 단가를 재확인 없이 유지한다.
+- 해결됨(v0.5.0): 최신 모델 미등록, 기준일·출처 없음, 공식 가격과 다른 항목(`o3` $10/$40→$2/$8, `gemini-2.5-flash` $0.075/$0.30→$0.30/$2.50, `gpt-4o-2024-05-13`이 `gpt-4o` 단가를 쓰던 문제). 확인할 수 없는 `gemini-2.5-flash-lite`·`gemini-2.0-pro-exp`는 제거(`계산 불가`).
 - 매칭이 엄격해져(v0.4.0) 날짜·버전 외 접미사가 붙은 이름은 모두 `unknown`이다. 같은 단가인 별칭이 자주 쓰이면 키를 표에 추가해야 한다.
 - 해결됨(v0.4.0): 부분 문자열 매칭으로 다른 모델 단가를 빌려 쓰던 문제, 유료 API의 오픈 웨이트 모델을 $0으로 처리하던 문제.
