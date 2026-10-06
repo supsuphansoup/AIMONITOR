@@ -86,3 +86,30 @@ def test_export_is_not_shadowed_by_the_trace_id_route(client: TestClient):
     res = client.get("/api/v1/traces/export.csv")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/csv")
+
+
+def test_export_neutralises_spreadsheet_formulas(client: TestClient):
+    """Caller-chosen strings must not run as formulas when the CSV is opened."""
+    client.post("/api/v1/traces", json={
+        "provider": "acme",
+        "model_name": '=HYPERLINK("http://evil.example","x")',
+        "trace_id": "-2+3",
+        "session_id": "+cmd",
+        "tags": ["@SUM(A1)"],
+    })
+    row = _read(client.get("/api/v1/traces/export.csv"))[0]
+
+    assert row["model_name"] == '\'=HYPERLINK("http://evil.example","x")'
+    assert row["trace_id"] == "'-2+3"
+    assert row["session_id"] == "'+cmd"
+    assert row["tags"] == "'@SUM(A1)"
+
+
+def test_export_leaves_ordinary_values_and_numbers_alone(client: TestClient):
+    client.post("/api/v1/traces", json={**PRICED, "session_id": "s-1", "tags": ["prod"]})
+    row = _read(client.get("/api/v1/traces/export.csv"))[0]
+
+    assert row["model_name"] == "gpt-4o"
+    assert row["session_id"] == "s-1"
+    assert row["tags"] == "prod"
+    assert float(row["cost_usd"]) > 0

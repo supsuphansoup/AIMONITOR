@@ -51,6 +51,7 @@
 - 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags`.
 - `error_message`·`metadata_json`은 **내보내지 않는다** — 내용이 시스템 밖으로 나가는 가장 쉬운 경로다.
 - `cost_source='unknown'`이면 `cost_usd`는 `0`이 아니라 **빈 칸**.
+- 호출자가 정하는 문자열(`trace_id`, `session_id`, `provider`, `model_name`, `tags`)이 `=` `+` `-` `@` 탭·CR로 시작하면 앞에 `'`를 붙인다 — 스프레드시트에서 수식으로 실행되지 않게 (OWASP CSV injection). 숫자 컬럼은 그대로.
 - `limit` 기본 10,000(최대 100,000), 500행 단위 스트리밍.
 
 ## Open questions
@@ -59,5 +60,6 @@
 
 ## Areas of concern
 
-- **CSV 수식 주입**: `model_name`·`tags`·`session_id`는 호출자가 정하는 문자열인데, `=`·`+`·`-`·`@`로 시작하는 값을 이스케이프하지 않는다. 스프레드시트에서 열면 수식으로 실행된다. → [plan.md](../plan.md) 후속 항목.
+- CSV의 `'` 접두사 때문에 CSV를 프로그램으로 다시 읽으면 해당 값이 원본과 다르다. 스프레드시트 안전을 우선했다.
+- 해결됨(v0.5.0): CSV 수식 주입.
 - 음수 토큰은 거부하지 않고 0으로 보정한다. 잘못된 연동이 조용히 묻힐 수 있다 — 의도된 관용 정책으로 유지.

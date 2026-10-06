@@ -186,6 +186,21 @@ def list_traces(
     return session.exec(query).all()
 
 
+#: Leading characters a spreadsheet treats as the start of a formula.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_text(value: Optional[str]) -> str:
+    """Quote caller-chosen text so a spreadsheet shows it instead of running it.
+
+    Model names, tags and IDs come from whoever holds the ingest key; a value
+    like `=HYPERLINK(...)` would otherwise execute when the export is opened.
+    """
+    if not value:
+        return ""
+    return f"'{value}" if value.startswith(_FORMULA_PREFIXES) else value
+
+
 CSV_COLUMNS = [
     "id", "trace_id", "timestamp", "session_id", "provider", "model_name",
     "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
@@ -238,15 +253,15 @@ def export_traces_csv(
             buffer.truncate(0)
             aware = to_aware_utc(event.timestamp)
             writer.writerow([
-                event.id, event.trace_id, aware.isoformat() if aware else "",
-                event.session_id or "", event.provider, event.model_name,
+                event.id, _csv_text(event.trace_id), aware.isoformat() if aware else "",
+                _csv_text(event.session_id), _csv_text(event.provider), _csv_text(event.model_name),
                 event.prompt_tokens, event.completion_tokens,
                 event.cache_read_tokens, event.cache_write_tokens,
                 event.total_tokens, event.latency_ms,
                 # An unpriced call exports as empty, not 0, so a spreadsheet sum
                 # cannot quietly treat "we do not know" as "it was free".
                 "" if event.cost_source == SOURCE_UNKNOWN else event.cost_usd,
-                event.cost_source, event.status, event.tags or "",
+                event.cost_source, event.status, _csv_text(event.tags),
             ])
             yield buffer.getvalue()
 
