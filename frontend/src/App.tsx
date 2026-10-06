@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { AlertsModal } from './components/AlertsModal';
 import { ConnectionBanner } from './components/ConnectionBanner';
-import { Header } from './components/Header';
+import { Header, canGenerateDemoTraffic } from './components/Header';
 import { KPICards } from './components/KPICards';
 import { SettingsModal } from './components/SettingsModal';
 import { TraceDetailModal } from './components/TraceDetailModal';
@@ -194,6 +194,7 @@ export const App: React.FC = () => {
         windows={TIME_WINDOWS}
         windowIndex={windowIndex}
         onWindowChange={setWindowIndex}
+        showDemoTraffic={canGenerateDemoTraffic(systemInfo)}
       />
 
       <main className="main-content">

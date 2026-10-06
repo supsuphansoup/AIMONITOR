@@ -1,6 +1,6 @@
 import React from 'react';
 import { Activity, Bell, Play, RefreshCw, Settings } from 'lucide-react';
-import { TimeWindow } from '../types';
+import { SystemInfo, TimeWindow } from '../types';
 import { formatTime } from '../format';
 
 interface HeaderProps {
@@ -18,6 +18,16 @@ interface HeaderProps {
   windows: TimeWindow[];
   windowIndex: number;
   onWindowChange: (index: number) => void;
+  showDemoTraffic: boolean;
+}
+
+/**
+ * Demo traffic is written through the real ingest API, so in production it
+ * would land in real totals, alerts and exports. Hidden there, and hidden
+ * while the environment is unknown (auth failure, older server).
+ */
+export function canGenerateDemoTraffic(info: SystemInfo | null): boolean {
+  return info !== null && info.environment.trim().toLowerCase() !== 'production';
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -35,6 +45,7 @@ export const Header: React.FC<HeaderProps> = ({
   windows,
   windowIndex,
   onWindowChange,
+  showDemoTraffic,
 }) => {
   return (
     <header className="header">
@@ -75,10 +86,12 @@ export const Header: React.FC<HeaderProps> = ({
           {alertCount > 0 && <span className="btn-badge">{alertCount}</span>}
         </button>
 
-        <button className="btn btn-secondary" onClick={onSimulate} disabled={isSimulating}>
-          <Play size={14} color="#10b981" />
-          {isSimulating ? 'Simulating Traffic...' : 'Generate Demo Traffic'}
-        </button>
+        {showDemoTraffic && (
+          <button className="btn btn-secondary" onClick={onSimulate} disabled={isSimulating}>
+            <Play size={14} color="#10b981" />
+            {isSimulating ? 'Simulating Traffic...' : 'Generate Demo Traffic'}
+          </button>
+        )}
 
         <button className="btn btn-secondary" onClick={onOpenSettings} title="설정">
           <Settings size={14} />
