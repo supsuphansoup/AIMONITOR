@@ -1,56 +1,55 @@
-# 🤖 AI Collaboration System (`AGENTS.md`)
+# AGENTS.md — AIMONITOR
 
-이 프로젝트는 **Coordinator AI (Antigravity)**와 **Worker AI (GitHub Copilot Subagent)**의 분업 체계로 완벽하게 운영되었습니다.
+모든 AI 코딩 에이전트가 작업 전에 읽는 프로젝트 설명서다. `CLAUDE.md`·`GEMINI.md`·`.github/copilot-instructions.md`는 이 파일을 가리키기만 한다. 지침은 이 파일만 고친다.
 
----
+문서 순서: [docs/intent.md](docs/intent.md) (무엇을·왜) → [docs/spec/](docs/spec/README.md) (기능별 규칙과 수치) → [docs/plan.md](docs/plan.md) (지금 할 작업). 다음 단계는 항상 앞 단계 문서를 읽고 시작한다.
 
-## 👑 1. Coordinator AI (Antigravity / Gemini)
+## Commands
 
-### 역할 및 책임
-- **Product & Architecture Lead**: 시스템 설계, 기술 스택 결정, 아키텍처 원칙 수립 (`docs/PRD.md`, `docs/PLAN.md`, `docs/architecture.md` 관리).
-- **Task Orchestrator**: 요구사항을 독립적이고 구현 가능한 단위(`tasks/TASK-XXX.md`)로 쪼개고 발급.
-- **Code Reviewer & Quality Gatekeeper**: Worker가 구현한 코드를 리뷰하고, 엣지 케이스, 통합 테스트, 타입 안정성, 동시성 스트레스 검증.
-- **Status Manager**: `tasks/task_board.md` 갱신 및 전체 마일스톤 진척 관리.
+```bash
+pip install -r backend/requirements.txt          # 백엔드 의존성
+python -m pytest -q                               # 백엔드 + SDK 테스트 (루트에서 실행)
+ruff check .                                      # 파이썬 린트
+cd frontend && npm ci && npm run typecheck && npm test && npm run build
+python -m uvicorn backend.app.main:app --port 8000 --reload   # 개발 서버 (사람이 직접 실행)
+python scripts/simulate.py --batches 20 --spread-hours 6      # 데모 트래픽
+```
 
-### 행동 지침
-1. 코드를 작성하기 전에 반드시 `docs/PRD.md`와 `docs/PLAN.md`를 기준으로 아키텍처 정합성을 확인한다.
-2. Worker(Copilot)에게 작업을 위임할 때는 명확한 파일 경로, 인터페이스, 요구사항, 완료 조건(Acceptance Criteria), 테스트 명령어를 포함한 전용 프롬프트를 제공한다.
-3. 작업 완료 후 테스트 결과와 코드를 검수한 뒤 결함이 없을 때까지 수정-재검증 루프를 수행한다.
+## Conventions
 
----
+- Python 3.10+, 타입 힌트는 `typing.Optional`/`Dict` 스타일 유지 (ruff `UP` 규칙 의도적으로 제외). 줄 길이 110.
+- 시각: **저장은 naive UTC, 응답은 오프셋 포함 ISO-8601.** 변환은 `backend/app/core/timeutil.py`만 사용한다.
+- 비용: 단가를 모르면 0이 아니라 `cost_source='unknown'` → 화면 `계산 불가`, CSV 빈 칸.
+- 캐시 **읽기·쓰기 토큰은 단가가 다르다.** 합산해 한 단가로 계산하지 않는다.
+- 프롬프트·응답 원문은 DB·로그·오류 응답·CSV 어디에도 남기지 않는다 (`core/sanitize.py`).
+- 오류 응답에 예외 문자열을 싣지 않는다. 서버 로그로만 남긴다.
+- 의존성은 `backend/requirements.txt`, `frontend/package.json`에 있는 것만 쓴다. 추가는 사람 승인 후.
 
-## 🔨 2. Worker AI (GitHub Copilot Subagent)
+## Architecture
 
-### 역할 및 책임
-- **Precision Implementation Specialist**: Coordinator가 발급한 Task 명세서에 따라 정확한 코드 작성.
-- **Unit Test Coverage**: 구현한 모든 함수/모듈에 대해 100% 동작 가능한 단위/통합 테스트 작성.
-- **Self-Verification**: 로컬 테스트 및 린트를 실행하여 무결성 확인 후 결과 보고.
+```
+SDK(sdk/python) ─POST /api/v1/traces→ routers/traces → services/cost → DB(SQLite WAL, SQLModel)
+DB → services/aggregator → routers/metrics → frontend(React 18 + Vite, src/api.ts 단일 클라이언트)
+DB → services/alert ← services/scheduler(60초) → Slack/Discord Webhook
+core/: config · security(API 키) · sanitize · timeutil · metrics_catalog   db/session.py: ensure_schema
+```
 
-### 행동 지침 (from `.github/copilot-instructions.md`)
-1. **지정된 범위 준수**: `tasks/TASK-XXX.md`에 명시된 파일과 요구사항만 수정/생성하며, Coordinator 승인 없이 아키텍처 구조를 임의 변경하지 않는다.
-2. **프로덕션 퀄리티 코드**: TODO 빈 함수, Mock 더미 남발, 타입 `any` 남용 금지. 완결된 형태의 코드를 작성한다.
-3. **완료 보고 포맷 준수**:
-   ```markdown
-   ### ✅ Task Completion Summary
-   - **Files Created/Modified**: [파일 목록]
-   - **Implemented Features**: [주요 구현 사항]
-   - **Test Results**: [테스트 명령어 및 통과 결과]
-   - **Questions / Notes**: [코디네이터에게 전달할 메모]
-   ```
+단일 컨테이너(Dockerfile multi-stage)가 API와 `frontend/dist`를 함께 서빙한다. 기능별 상세는 `docs/spec/`.
 
----
+## Verifying your work
 
-## 📂 핵심 문서 맵 (Document Map)
+- 완료 보고 전 위 Commands의 테스트·린트·빌드 중 변경 범위에 해당하는 것을 실행하고 **출력을 그대로 보여줄 것.** 실패하면 코드를 고친다.
+- 동작을 바꿨는데 테스트가 없으면 테스트를 추가한다 (`backend/tests/`, `frontend/src/**/*.test.ts(x)`).
+- 스키마를 바꾸면 기존 DB 업그레이드 테스트(`test_schema_upgrade.py`)를 함께 확인한다.
+- 개발 서버처럼 계속 켜져 있는 프로그램은 에이전트가 띄우지 말고 사람에게 실행을 요청한다.
 
-| 문서 | 설명 | 주 관리자 |
-| :--- | :--- | :--- |
-| `AGENTS.md` | AI 역할 정의 및 협업 규칙 (본 문서) | Coordinator |
-| `.github/copilot-instructions.md` | GitHub Copilot이 자동 로드하는 인스트럭션 | Coordinator |
-| `docs/PRD.md` | 제품 요구사항 정의서 (Product Requirements) | Coordinator |
-| `docs/PLAN.md` | 마스터 개발 로드맵 & 마일스톤 계획 | Coordinator |
-| `docs/architecture.md` | 세부 아키텍처 및 데이터 흐름 | Coordinator |
-| `docs/workflow.md` | Coordinator-Worker 협업 워크플로우 가이드 | Coordinator |
-| `docs/PROGRESS.md` | 전체 개발 진행 및 완료 상세 보고서 | Coordinator |
-| `tasks/task_board.md` | 실시간 태스크 진행 보드 | Coordinator |
-| `tasks/TASK-*.md` | 단위 태스크 지시서 (Worker용) | Coordinator 발급 -> Worker 수행 |
-| `README.md` | 프로젝트 종합 소개 및 빠른 시작 가이드 | Coordinator |
+## Things the agent gets wrong
+
+- `ORDER BY ... ASC LIMIT n`으로 상한을 걸어 **최신 데이터를 잘라냄.** 상한은 항상 최신 우선(`DESC`)으로, 잘렸으면 `partial`/`latency_sampled`로 알린다.
+- 오프셋 없는 datetime을 응답해 대시보드가 9시간 어긋남.
+- 모르는 모델에 임의 단가를 붙이거나, 유료 API를 오픈 웨이트 모델명만 보고 `local_free`로 처리함.
+- 쿨다운을 파이썬에서 읽고 나중에 써서 다중 워커에서 알림 중복. 발동 권한은 조건부 UPDATE(`claim_rule`)로만 얻는다.
+- 수동 평가(`ignore_cooldown`)가 다른 규칙의 쿨다운 상태를 건드림. 수동 평가는 상태를 바꾸지 않는다.
+- `ALTER TABLE ADD COLUMN`만 하고 인덱스를 빠뜨림.
+- CORS 미들웨어보다 바깥에서 오류 응답을 만들어 CORS 헤더 누락.
+- `Number(null) === 0`처럼 "값 없음"을 0으로 취급함.

@@ -5,7 +5,7 @@
 AIMONITOR는 OpenAI, Anthropic, Gemini, 로컬 Ollama 등 다양한 LLM 호출의 **지연 시간(P50/P95/P99), 토큰 사용량, 실시간 비용, 에러율 및 이상 징후 알림**을 추적하고 대시보드로 시각화하는 셀프호스팅 모니터링 시스템입니다.
 
 **현재 버전: v0.3.0** — 인증, 백그라운드 알림 스케줄러, 데이터 보관 정책, 프롬프트 캐시 단가 분리 계산에 더해 동시 실행 안전성, CSV 내보내기, 실 페이지네이션이 들어간 릴리스입니다.
-변경 내역: [v0.3.0](docs/RELEASE-0.3.0.md) · [v0.2.0](docs/RELEASE-0.2.0.md)
+변경 내역: [CHANGELOG.md](CHANGELOG.md) · 기획·명세: [docs/intent.md](docs/intent.md) → [docs/spec/](docs/spec/README.md) → [docs/plan.md](docs/plan.md)
 
 ---
 
@@ -176,7 +176,9 @@ AIMONITOR/
 ├── frontend/src/      # React 18 + Vite 대시보드 (api.ts 단일 클라이언트)
 ├── sdk/python/        # 설치 가능한 Python 클라이언트 (aimonitor-sdk)
 ├── scripts/simulate.py
-└── docs/              # PRD, 아키텍처, 릴리스 노트
+├── docs/              # intent.md(기획) · spec/(기능별 명세) · plan.md(현재 작업 계획)
+├── AGENTS.md          # AI 코딩 에이전트 공통 지침 (CLAUDE.md·GEMINI.md는 포인터)
+└── CHANGELOG.md
 ```
 
 ---
