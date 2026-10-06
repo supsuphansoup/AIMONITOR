@@ -52,6 +52,12 @@ def percentile(data: Sequence[float], p: float) -> float:
     return float(d0 + d1)
 
 
+#: Cost that is actually known. Rows marked 'unknown' are stored with 0, except
+#: v0.1.0 rows upgraded in place, which kept a guessed cost; summing cost_usd
+#: directly would mix those guesses back into every total.
+KNOWN_COST = case((TraceEvent.cost_source == SOURCE_UNKNOWN, 0.0), else_=col(TraceEvent.cost_usd))
+
+
 def _apply_filters(
     query: Select,
     start_time: Optional[datetime] = None,
@@ -83,7 +89,7 @@ class MetricAggregator:
         totals_query = _apply_filters(
             select(
                 func.count(col(TraceEvent.id)),
-                func.sum(col(TraceEvent.cost_usd)),
+                func.sum(KNOWN_COST),
                 func.sum(col(TraceEvent.total_tokens)),
                 func.sum(col(TraceEvent.prompt_tokens)),
                 func.sum(col(TraceEvent.completion_tokens)),
@@ -186,7 +192,7 @@ class MetricAggregator:
                 col(TraceEvent.timestamp),
                 col(TraceEvent.status),
                 col(TraceEvent.latency_ms),
-                col(TraceEvent.cost_usd),
+                KNOWN_COST,
                 col(TraceEvent.total_tokens),
             ),
             start_time=cutoff,
@@ -248,7 +254,7 @@ class MetricAggregator:
                 col(TraceEvent.model_name),
                 func.count(col(TraceEvent.id)),
                 func.sum(col(TraceEvent.total_tokens)),
-                func.sum(col(TraceEvent.cost_usd)),
+                func.sum(KNOWN_COST),
                 func.avg(col(TraceEvent.latency_ms)),
                 func.sum(case((TraceEvent.status != "SUCCESS", 1), else_=0)),
                 func.sum(case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0)),

@@ -150,3 +150,34 @@ def test_cache_tokens_are_aggregated(client: TestClient):
     assert overview["cache_write_tokens"] == 1000
     # total_tokens defaults to the sum of every token class.
     assert overview["total_tokens"] == 5150
+
+
+def _legacy_unknown_row(session) -> None:
+    """A v0.1.0 row after upgrade: cost_source became 'unknown', the guessed cost stayed."""
+    from backend.app.models.trace import TraceEvent
+
+    session.add(TraceEvent(
+        trace_id="legacy-1", provider="acme", model_name="mystery-1",
+        prompt_tokens=1_000_000, completion_tokens=1_000_000,
+        cost_usd=4.0, cost_source=SOURCE_UNKNOWN,
+    ))
+    session.commit()
+
+
+def test_legacy_guessed_cost_is_not_summed_anywhere(client: TestClient, session):
+    _legacy_unknown_row(session)
+    client.post("/api/v1/traces", json={
+        "provider": "openai", "model_name": "gpt-4o", "prompt_tokens": 10_000, "completion_tokens": 5_000,
+    })  # $0.075
+
+    overview = client.get("/api/v1/metrics/overview").json()
+    assert overview["total_cost_usd"] == pytest.approx(0.075)
+    assert overview["cost_unknown_count"] == 1
+
+    buckets = client.get("/api/v1/metrics/timeseries", params={"interval_minutes": 1440}).json()
+    assert sum(b["total_cost_usd"] for b in buckets) == pytest.approx(0.075)
+
+    breakdown = {r["model_name"]: r for r in client.get("/api/v1/metrics/breakdown").json()}
+    assert breakdown["mystery-1"]["total_cost_usd"] == 0.0
+    assert breakdown["mystery-1"]["cost_unknown_count"] == 1
+    assert breakdown["gpt-4o"]["total_cost_usd"] == pytest.approx(0.075)

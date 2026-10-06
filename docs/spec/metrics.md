@@ -26,7 +26,7 @@
 - 시계열: 같은 상한을 최신순으로 적용한다. 잘리는 쪽은 항상 과거이며, 잘린 가장 오래된 버킷에 `partial: true`.
 - 버킷 경계: UTC 자정 기준 경과 분을 `interval_minutes`로 내림. 60의 약수가 아닌 간격도 겹치지 않는다.
 - 에러율 = `error_count / total_requests × 100`. `SUCCESS` 외 상태(`ERROR`, `TIMEOUT`, `RATE_LIMITED`)는 모두 에러로 센다.
-- 비용 합계는 `SUM(cost_usd)`이다. 미상 행은 `cost_usd=0`으로 저장되므로 합에 기여하지 않고, 건수는 `cost_unknown_count`로 따로 준다.
+- 비용 합계는 `SUM(CASE WHEN cost_source='unknown' THEN 0 ELSE cost_usd END)`(`KNOWN_COST`)이다. overview·timeseries·breakdown 모두 같다. 미상 건수는 `cost_unknown_count`로 따로 준다. 저장값은 바꾸지 않는다.
 
 ## Open questions
 
@@ -34,6 +34,7 @@
 
 ## Areas of concern
 
-- v0.1.0 DB를 업그레이드한 경우, 당시 임의 단가로 채운 `cost_usd`가 `cost_source='unknown'`인 채로 남아 **합계에 섞인다.** "미상 행은 0" 전제가 깨진다. 집계에서 `unknown` 행을 명시적으로 제외할지 결정 필요.
+- v0.1.0에서 업그레이드한 DB에는 임의 단가로 채운 `cost_usd`가 `unknown` 행에 여전히 저장돼 있다. 집계·CSV는 무시하지만 `GET /traces` 원본 응답에는 그대로 보인다 (대시보드는 `cost_source`를 보고 `계산 불가`로 표시).
+- 해결됨(v0.5.0): 잔존 추정 비용이 합계에 섞이던 문제.
 - 30D 범위(720시간)는 트래픽이 많으면 거의 항상 표본 상한에 걸린다. 화면에는 표시되지만 장기 추세가 근사치라는 점을 사용자가 놓치기 쉽다.
 - 버킷이 UTC 자정 기준이라 KST 사용자에게 360분(30D) 버킷 경계가 09:00/15:00/21:00/03:00이 된다. 의도된 동작으로 둔다.
