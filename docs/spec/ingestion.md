@@ -52,6 +52,7 @@
 - 필터: `provider`, `model_name`, `status`, `start_time`, `end_time`을 함께 적용한다. `status`는 조회 API와 동일한 `VALID_STATUSES`를 사용해 공백 제거·대문자 변환 후 검증하며, 잘못된 값은 같은 422 오류로 거부한다 (빈 문자열은 필터 생략).
 - 기간 경계는 양쪽 모두 포함한다 (`timestamp >= start_time`, `timestamp <= end_time`). 오프셋이 있는 입력 시각은 `timeutil.to_naive_utc`로 변환해 비교한다.
 - 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags`.
+- `latency_measured=False`이면 `latency_ms`는 **빈 칸**으로 내보내며, 측정된 `0ms`와 양수 지연 시간은 숫자로 유지한다.
 - `error_message`·`metadata_json`은 **내보내지 않는다** — 내용이 시스템 밖으로 나가는 가장 쉬운 경로다.
 - `cost_source='unknown'`이면 `cost_usd`는 `0`이 아니라 **빈 칸**.
 - 호출자가 정하는 문자열(`trace_id`, `session_id`, `provider`, `model_name`, `tags`)이 `=` `+` `-` `@` 탭·CR로 시작하면 앞에 `'`를 붙인다 — 스프레드시트에서 수식으로 실행되지 않게 (OWASP CSV injection). 숫자 컬럼은 그대로.

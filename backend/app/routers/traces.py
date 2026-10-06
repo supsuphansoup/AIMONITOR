@@ -273,7 +273,7 @@ def export_traces_csv(
                 _csv_text(event.session_id), _csv_text(event.provider), _csv_text(event.model_name),
                 event.prompt_tokens, event.completion_tokens,
                 event.cache_read_tokens, event.cache_write_tokens,
-                event.total_tokens, event.latency_ms,
+                event.total_tokens, event.latency_ms if event.latency_measured else "",
                 # An unpriced call exports as empty, not 0, so a spreadsheet sum
                 # cannot quietly treat "we do not know" as "it was free".
                 "" if event.cost_source == SOURCE_UNKNOWN else event.cost_usd,

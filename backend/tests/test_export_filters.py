@@ -88,3 +88,20 @@ def test_empty_export_is_not_partial(client: TestClient):
     assert _rows(response) == []
     assert response.headers["X-Total-Count"] == "0"
     assert response.headers["X-Export-Partial"] == "false"
+
+
+@pytest.mark.parametrize(
+    "latency_ms, expected", [(None, ""), (0.0, "0.0"), (125.5, "125.5")],
+    ids=["unmeasured", "measured-zero", "measured-positive"],
+)
+def test_export_distinguishes_unmeasured_latency_from_measured_zero(
+    client: TestClient, latency_ms, expected: str,
+):
+    response = client.post("/api/v1/traces", json={
+        "provider": "openai", "model_name": "test-model", "latency_ms": latency_ms,
+    })
+    assert response.status_code == 201
+    assert response.json()["latency_measured"] is (latency_ms is not None)
+    rows = _rows(client.get("/api/v1/traces/export.csv"))
+    assert len(rows) == 1
+    assert rows[0]["latency_ms"] == expected
