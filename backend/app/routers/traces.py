@@ -217,6 +217,9 @@ def export_traces_csv(
     session: Session = Depends(get_session),
     provider: Optional[str] = Query(None),
     model_name: Optional[str] = Query(None),
+    status_filter: Optional[str] = Query(
+        None, alias="status", description="Filter by status (SUCCESS, ERROR, TIMEOUT, RATE_LIMITED)"
+    ),
     start_time: Optional[datetime] = Query(None),
     end_time: Optional[datetime] = Query(None),
     limit: int = Query(10_000, ge=1, le=100_000),
@@ -232,15 +235,24 @@ def export_traces_csv(
         filters.append(TraceEvent.provider == provider)
     if model_name:
         filters.append(TraceEvent.model_name == model_name)
+    if status_filter:
+        normalized = status_filter.strip().upper()
+        if normalized not in VALID_STATUSES:
+            raise HTTPException(
+                status_code=HTTP_422_UNPROCESSABLE,
+                detail=f"Invalid status filter. Must be one of: {sorted(VALID_STATUSES)}",
+            )
+        filters.append(TraceEvent.status == normalized)
     if start_time:
         filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
     if end_time:
         filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
 
+    total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one() or 0
     query = (
         select(TraceEvent)
         .where(*filters)
-        .order_by(col(TraceEvent.timestamp).desc())
+        .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
         .limit(limit)
     )
 
@@ -273,7 +285,11 @@ def export_traces_csv(
     return StreamingResponse(
         rows(),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Total-Count": str(total),
+            "X-Export-Partial": "true" if total > limit else "false",
+        },
     )
 
 

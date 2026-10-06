@@ -154,7 +154,9 @@ export const api = {
 
   /** Fetches the CSV export as a Blob so the API key can travel in a header;
    *  a plain download link cannot carry one. */
-  exportCsv: async (query: { provider?: string; limit?: number }): Promise<Blob> => {
+  exportCsv: async (query: {
+    provider?: string; status?: string; start_time?: string; limit?: number;
+  }): Promise<Blob> => {
     const headers: Record<string, string> = {};
     if (apiKey) headers['X-API-Key'] = apiKey;
     const response = await fetch(buildUrl('/traces/export.csv', query), { headers });

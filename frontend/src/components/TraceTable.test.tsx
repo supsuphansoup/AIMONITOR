@@ -32,6 +32,7 @@ function renderTable(props: Partial<React.ComponentProps<typeof TraceTable>> = {
     total: 1,
     selectedProvider: '',
     selectedStatus: '',
+    hoursBack: 24,
     page: 0,
     pageSize: 50,
     onProviderChange: vi.fn(),
@@ -160,12 +161,15 @@ describe('row selection', () => {
 });
 
 describe('CSV export', () => {
-  it('describes the provider condition when a status filter is also selected', () => {
+  it('describes the provider, status and period conditions', () => {
     renderTable({ selectedProvider: 'anthropic', selectedStatus: 'ERROR' });
-    expect(screen.getByRole('button', { name: 'CSV' })).toHaveAttribute('title', 'Provider 필터 기준 CSV 내보내기');
+    expect(screen.getByRole('button', { name: 'CSV' })).toHaveAttribute(
+      'title', 'Provider·상태 필터와 선택한 기간 기준 CSV 내보내기',
+    );
   });
 
-  it('downloads with the provider filter and prevents duplicate exports while busy', async () => {
+  it('downloads with all current filters and prevents duplicate exports while busy', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-06T13:00:00Z').getTime());
     const user = userEvent.setup();
     let resolve!: (value: Blob) => void;
     const exportCsv = vi.spyOn(api, 'exportCsv').mockImplementation(() => new Promise((done) => { resolve = done; }));
@@ -174,12 +178,14 @@ describe('CSV export', () => {
     vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     try {
-      renderTable({ selectedProvider: 'anthropic', selectedStatus: 'ERROR' });
+      renderTable({ selectedProvider: 'anthropic', selectedStatus: 'ERROR', hoursBack: 6 });
       await user.click(screen.getByRole('button', { name: 'CSV' }));
       const busy = screen.getByRole('button', { name: '내보내는 중...' });
       expect(busy).toBeDisabled();
       await user.click(busy);
-      expect(exportCsv).toHaveBeenCalledExactlyOnceWith({ provider: 'anthropic' });
+      expect(exportCsv).toHaveBeenCalledExactlyOnceWith({
+        provider: 'anthropic', status: 'ERROR', start_time: '2026-10-06T07:00:00.000+00:00',
+      });
       const blob = new Blob(['trace_id\ntrace-0001'], { type: 'text/csv' });
       await act(async () => resolve(blob));
       expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(blob);
@@ -189,6 +195,18 @@ describe('CSV export', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it.each([1, 24, 168, 720])('exports the selected %i-hour period with all providers and statuses', async (hoursBack) => {
+    const now = new Date('2026-10-06T13:00:00Z').getTime();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const exportCsv = vi.spyOn(api, 'exportCsv').mockRejectedValue(new Error('Stop before download'));
+    renderTable({ hoursBack });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'CSV' }));
+    expect(exportCsv).toHaveBeenCalledExactlyOnceWith({
+      provider: undefined, status: undefined,
+      start_time: new Date(now - hoursBack * 60 * 60 * 1000).toISOString().replace('Z', '+00:00'),
+    });
   });
 
   it('shows an export failure and re-enables retry', async () => {

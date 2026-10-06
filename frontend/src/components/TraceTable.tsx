@@ -9,6 +9,7 @@ interface TraceTableProps {
   total: number;
   selectedProvider: string;
   selectedStatus: string;
+  hoursBack: number;
   page: number;
   pageSize: number;
   onProviderChange: (provider: string) => void;
@@ -29,6 +30,7 @@ export const TraceTable: React.FC<TraceTableProps> = ({
   total,
   selectedProvider,
   selectedStatus,
+  hoursBack,
   page,
   pageSize,
   onProviderChange,
@@ -49,7 +51,11 @@ export const TraceTable: React.FC<TraceTableProps> = ({
     setIsExporting(true);
     setExportError(null);
     try {
-      const blob = await api.exportCsv({ provider: selectedProvider || undefined });
+      const blob = await api.exportCsv({
+        provider: selectedProvider || undefined,
+        status: selectedStatus || undefined,
+        start_time: new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString().replace('Z', '+00:00'),
+      });
       // Fetched as a Blob rather than linked directly, because a plain download
       // link cannot carry the API key header.
       const url = URL.createObjectURL(blob);
@@ -76,7 +82,7 @@ export const TraceTable: React.FC<TraceTableProps> = ({
             className="btn btn-secondary pager-btn"
             onClick={handleExport}
             disabled={isExporting || total === 0}
-            title="Provider 필터 기준 CSV 내보내기"
+            title="Provider·상태 필터와 선택한 기간 기준 CSV 내보내기"
           >
             <Download size={13} />
             {isExporting ? '내보내는 중...' : 'CSV'}

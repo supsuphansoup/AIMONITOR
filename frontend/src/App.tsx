@@ -216,6 +216,7 @@ export const App: React.FC = () => {
           total={traceTotal}
           selectedProvider={selectedProvider}
           selectedStatus={selectedStatus}
+          hoursBack={timeWindow.hours}
           page={page}
           pageSize={PAGE_SIZE}
           onProviderChange={(value) => {

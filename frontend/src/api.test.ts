@@ -109,6 +109,25 @@ describe('trace paging', () => {
 });
 
 describe('csv export', () => {
+  it('passes status, offset-bearing start time and limit in the export query', async () => {
+    fetchMock.mockResolvedValue(new Response('id\n', { status: 200 }));
+    await api.exportCsv({
+      provider: 'anthropic', status: 'ERROR', start_time: '2026-10-06T10:00:00+09:00', limit: 25,
+    });
+    const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost');
+    expect(url.pathname).toBe('/api/v1/traces/export.csv');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      provider: 'anthropic', status: 'ERROR', start_time: '2026-10-06T10:00:00+09:00', limit: '25',
+    });
+  });
+
+  it('omits empty provider and status filters while keeping the period', async () => {
+    fetchMock.mockResolvedValue(new Response('id\n', { status: 200 }));
+    await api.exportCsv({ provider: '', status: '', start_time: '2026-10-05T13:00:00+00:00' });
+    const url = new URL(fetchMock.mock.calls[0][0] as string, 'http://localhost');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ start_time: '2026-10-05T13:00:00+00:00' });
+  });
+
   it('returns a blob and carries the api key', async () => {
     setApiKey('secret-123');
     fetchMock.mockResolvedValue(new Response('id,trace_id\n1,abc\n', { status: 200 }));
