@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Optional
 import httpx
 from sqlmodel import Session, col, select, update
 
-from backend.app.core.metrics_catalog import METRIC_FIELD_MAP, resolve_metric_key, unit_for
+from backend.app.core.metrics_catalog import (
+    LOWER_BOUND_OPERATORS,
+    METRIC_FIELD_MAP,
+    UNDEFINED_WITHOUT_TRAFFIC,
+    resolve_metric_key,
+    unit_for,
+)
 from backend.app.core.timeutil import to_aware_utc, utc_now
 from backend.app.models.alert import AlertHistory, AlertRule
 from backend.app.services.aggregator import MetricAggregator
@@ -60,17 +66,23 @@ class AlertEvaluator:
     """Evaluation and alerting engine for anomaly detection rules."""
 
     @staticmethod
-    def build_message(rule: AlertRule, metric_value: float) -> str:
+    def build_message(rule: AlertRule, metric_value: float, note: Optional[str] = None) -> str:
         unit = unit_for(rule.metric_type)
         suffix = f" {unit}" if unit and unit != "count" else ""
-        return (
+        message = (
             f"[AIMONITOR] Rule '{rule.name}' triggered: {rule.metric_type} = "
             f"{round(metric_value, 4)}{suffix} (threshold: {rule.operator} "
             f"{rule.threshold_value}{suffix}) over the past {rule.window_minutes}m"
         )
+        return f"{message} - {note}" if note else message
 
     @staticmethod
-    def dispatch_webhook(rule: AlertRule, metric_value: float, triggered_at: datetime) -> bool:
+    def dispatch_webhook(
+        rule: AlertRule,
+        metric_value: float,
+        triggered_at: datetime,
+        message: Optional[str] = None,
+    ) -> bool:
         """POST the alert to the configured webhook.
 
         Returns True on success (or when no webhook is configured). Network and
@@ -80,7 +92,7 @@ class AlertEvaluator:
         if not rule.webhook_url or not rule.webhook_url.strip():
             return True
 
-        text = AlertEvaluator.build_message(rule, metric_value)
+        text = message or AlertEvaluator.build_message(rule, metric_value)
         aware_ts = to_aware_utc(triggered_at) or datetime.now(timezone.utc)
 
         if _is_discord(rule.webhook_url):
@@ -199,6 +211,23 @@ class AlertEvaluator:
                 )
             overview = overview_cache[window_minutes]
 
+            metric_key = resolve_metric_key(rule.metric_type)
+            if not overview.get("total_requests") and metric_key in UNDEFINED_WITHOUT_TRAFFIC:
+                # An empty window has no P95 or error rate; reading it as 0 used
+                # to fire every "p95 < 100ms" style rule whenever traffic paused.
+                continue
+
+            note: Optional[str] = None
+            unpriced = int(overview.get("cost_unknown_count") or 0)
+            if metric_key == "total_cost_usd" and unpriced:
+                # Known cost is only a floor while some calls are unpriced.
+                if rule.operator.strip() not in LOWER_BOUND_OPERATORS:
+                    continue
+                note = (
+                    f"excludes {unpriced} call(s) with unknown pricing; "
+                    "the actual cost may be higher"
+                )
+
             metric_val = extract_metric_value(overview, rule.metric_type)
             if not compare_operator(metric_val, rule.operator, rule.threshold_value):
                 continue
@@ -208,12 +237,13 @@ class AlertEvaluator:
                 logger.debug("Rule '%s' already claimed by a concurrent evaluation", rule.name)
                 continue
 
-            sent_ok = cls.dispatch_webhook(rule, metric_val, now)
+            message = cls.build_message(rule, metric_val, note)
+            sent_ok = cls.dispatch_webhook(rule, metric_val, now, message)
             history = AlertHistory(
                 rule_id=rule.id if rule.id is not None else 0,
                 rule_name=rule.name,
                 triggered_value=round(metric_val, 4),
-                message=cls.build_message(rule, metric_val),
+                message=message,
                 sent_successfully=sent_ok,
                 created_at=now,
             )

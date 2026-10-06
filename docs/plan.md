@@ -1,57 +1,45 @@
-# Plan: v0.4.0 — 비용 정확도
+# Plan: v0.5.0 — 알림·내보내기·집계 정합성, 단가표 갱신
 
-Status: done (2026-10-06 승인·구현, v0.4.0). 근거: [spec/cost.md](spec/cost.md), [spec/sdk.md](spec/sdk.md)의 Areas of concern.
-목표: "모르면 `계산 불가`, 알면 정확히" 원칙을 깨는 결함 4건을 고친다. 2026-10-06 모두 재현 확인.
+Status: in progress (2026-10-06 승인: "다음 작업도 순서대로 진행"). 이전 계획(v0.4.0)은 git 이력과 [CHANGELOG](../CHANGELOG.md).
+근거: 각 spec의 Areas of concern. 아래 순서대로 하나씩 테스트 → 구현 → 커밋한다.
 
-| # | 결함 | 재현 |
-| :--- | :--- | :--- |
-| 1 | 부분 문자열 매칭이 다른 모델 단가를 씌움 | `openai/gpt-4.5-preview` → `gpt-4` 단가, `pricing_table` |
-| 2 | 유료 API의 오픈 웨이트 모델명을 무료 처리 | `mistral/mistral-large-latest`, `deepseek/deepseek-chat` → `local_free` |
-| 3 | SDK가 OpenAI 캐시 토큰을 놓침 | `prompt_tokens_details.cached_tokens` 미인식, 캐시 할인 누락 |
-| 4 | SDK가 Gemini 캐시 토큰을 이중 계산 | `prompt_token_count`에 캐시분 포함된 채 전송 |
+| # | 항목 | spec | 결정 |
+| :--- | :--- | :--- | :--- |
+| 1 | 빈 시간 창에서 알림 오발동 | [alerts](spec/alerts.md) | 창에 요청이 0건이면 **비율·지연 지표**(에러율, 평균/P50/P95/P99)는 평가하지 않는다. 건수·합계 지표(요청 수, 비용, 토큰)는 0이 실제 값이므로 평가한다 — 무트래픽 감시(`total_requests < 1`)는 계속 동작. |
+| 1b | 비용 규칙이 미상 비용을 모름 | [alerts](spec/alerts.md) | 창에 `계산 불가` 건이 있으면 알려진 비용은 **하한값**이다. `>`·`>=`는 하한이 넘으면 실제도 넘으므로 평가하고 메시지에 "단가 미상 N건 제외"를 붙인다. `<`·`<=`·`==`·`!=`는 판정할 수 없으므로 건너뛴다. |
+| 2 | CSV 수식 주입 | [ingestion](spec/ingestion.md) | 문자열 컬럼 값이 `=` `+` `-` `@` 탭·CR로 시작하면 앞에 `'`를 붙인다 (OWASP 권고). 숫자 컬럼은 건드리지 않는다. |
+| 3 | v0.1.0 잔존 추정 비용이 합계에 섞임 | [metrics](spec/metrics.md) | 저장값은 바꾸지 않고(파괴적 마이그레이션 금지) **집계에서** `cost_source='unknown'` 행의 비용을 0으로 본다. overview·timeseries·breakdown 모두. |
+| 4 | 운영 DB에 데모 트래픽 | [dashboard](spec/dashboard.md) | `/system/info`의 `environment`가 `production`이면 데모 버튼을 숨긴다. 정보를 못 받으면(인증 실패 등) 숨긴다 — 기본은 안전한 쪽. |
+| 5 | 단가표 노후·기준일 없음 | [cost](spec/cost.md) | 공식 가격 페이지에서 **확인된 모델만** 추가한다. 확인 못 한 모델은 넣지 않는다(`계산 불가` 유지). 단가표 기준일 `PRICING_AS_OF`를 두고 `/system/pricing`에 공개. |
 
 ## Files that change
 
-- `backend/app/services/cost.py` — 매칭 규칙, 오픈 웨이트 0원 단가의 적용 조건
-- `backend/app/routers/system.py` — `/system/pricing`에 `local_free_providers`
-- `backend/tests/test_cost.py`, `backend/tests/test_cost_source.py`, `backend/tests/test_system.py` — 회귀 테스트
-- `sdk/python/aimonitor/client.py` — `extract_usage` 캐시 보정
-- `sdk/python/tests/test_sdk_usage.py` — 형태별 테스트
-- `docs/spec/cost.md`, `docs/spec/sdk.md` — 결정 반영, Areas of concern 정리
-- `CHANGELOG.md`, 버전 문자열 5곳(`core/config.py`, `pyproject.toml`, `sdk/python/pyproject.toml`, `sdk/python/aimonitor/__init__.py`, `docker-compose.yml` 이미지 태그)
+- 1: `backend/app/services/alert.py`, `backend/app/core/metrics_catalog.py`, `backend/tests/test_alert_lifecycle.py`
+- 2: `backend/app/routers/traces.py`, `backend/tests/test_export.py`
+- 3: `backend/app/services/aggregator.py`, `backend/tests/test_cost_source.py`
+- 4: `frontend/src/App.tsx`, `frontend/src/components/Header.tsx`, 새 `frontend/src/components/Header.test.tsx`
+- 5: `backend/app/services/cost.py`, `backend/app/routers/system.py`, `backend/tests/test_cost_source.py`, `backend/tests/test_system.py`
+- 공통: 해당 `docs/spec/*.md`, `CHANGELOG.md`, 버전 문자열(0.5.0)
 
 ## Order of work
 
-1. **테스트 먼저** — 위 4건을 실패하는 테스트로 고정한다.
-2. **매칭(1)** — 키 뒤에 오는 문자가 버전 접미사일 때만 일치로 본다. 결정: 날짜(`YYYYMMDD`, `YYYY-MM-DD`), 3–4자리 리비전, `latest`, Bedrock/Vertex `vN[:M]`, 구분자 `-`/`@`만 허용. `-preview`는 단가가 다를 수 있어 **허용하지 않음.** 키 앞에는 `/`·`.` 라우팅 접두사 허용.
-3. **무료 처리(2)** — 결정: 단가 0인 오픈 웨이트 항목을 단가표에서 **제거**하고 무료 여부는 `LOCAL_PROVIDERS`로만 판단. `/system/pricing`에 `local_free_providers` 공개.
-4. **SDK(3, 4)** — OpenAI: `prompt_tokens_details.cached_tokens`를 읽고 `prompt_tokens`에서 뺀다. Google: `prompt_token_count − cached_content_token_count`. Anthropic은 그대로.
-5. 스펙·CHANGELOG 갱신, 버전 0.4.0.
+1. 알림(1, 1b) → 2. CSV → 3. 집계 → 4. 대시보드 → 5. 단가표. 항목마다 실패 테스트 먼저, 통과 후 spec 갱신·커밋.
+6. 버전 0.5.0, CHANGELOG, README.
 
 ## Risks
 
-- **가장 깨지기 쉬운 곳: 매칭 규칙 변경.** 지금 단가가 붙던 모델명이 `unknown`으로 바뀌면 대시보드에서 `계산 불가`가 늘어난다. 기존 테스트의 모델명 전부와 `scripts/simulate.py`·데모 버튼의 모델명이 계속 매칭되는지 확인한다.
-- 과거 데이터는 재계산하지 않는다 (COST-5). 이미 잘못 계산된 행은 남는다 — CHANGELOG에 명시.
-- SDK 보정은 서버보다 먼저 배포된 구버전 SDK에는 적용되지 않는다. 서버 쪽 보정은 provider 응답을 모르므로 하지 않는다.
-- 단가표 자체의 노후화(Claude 4.x, GPT-5 등 미등록)는 이번 범위가 아니다. 단가 출처·기준일 확인이 필요해 별도 결정으로 둔다.
+- **1이 가장 깨지기 쉽다.** 지표를 "비율/지연"과 "건수/합계"로 나누는 기준을 카탈로그 한 곳에 두지 않으면 별칭(`p95`, `latency` 등)이 새어 나간다. 별칭 전부를 테스트로 확인한다.
+- 1b로 `<` 비용 규칙이 미상 건이 있는 동안 침묵한다. 의도된 동작이며 spec에 명시한다.
+- 2의 `'` 접두사는 CSV를 다시 읽는 프로그램에서 값이 달라 보인다. 스프레드시트 안전을 우선한다.
+- 3은 v0.1.0 DB를 업그레이드한 경우에만 숫자가 바뀐다 (합계가 줄어듦 = 정상화).
+- 5는 외부 가격 정보에 의존한다. 출처 URL과 확인일을 코드 주석에 남기고, 불확실하면 넣지 않는다.
 
 ## Proof
 
 ```bash
-python -m pytest -q backend/tests/test_cost.py backend/tests/test_cost_source.py sdk/python/tests/test_sdk_usage.py
-python -m pytest -q          # 전체 회귀
+python -m pytest -q
 ruff check .
+cd frontend && npm ci && npm run typecheck && npm test && npm run build
 ```
 
-- 완료 기준: 위 재현 표의 4개 입력이 각각 `unknown`, `unknown`, 캐시 할인 반영, 이중 계산 없음으로 테스트에서 확인된다.
-- 기존 테스트 전부 통과 (기준선 2026-10-06: `152 passed, 1 skipped`).
-- 결과(2026-10-06): `python -m pytest -q` → `179 passed, 1 skipped`, `ruff check .` → `All checks passed!`.
-  의도된 테스트 변경 1건: `test_normalize_model_name`의 `ollama/llama3:8b → ollama` 단언 (ollama 키 제거로 의미가 없어짐).
-
-## 후속 후보 (이번 범위 아님, 승인 시 새 plan)
-
-- 알림: 빈 시간 창 처리, 비용 규칙의 미상 비용 ([spec/alerts.md](spec/alerts.md))
-- 수집: CSV 수식 주입 이스케이프 ([spec/ingestion.md](spec/ingestion.md))
-- 집계: v0.1.0 잔존 추정 비용의 합계 제외 ([spec/metrics.md](spec/metrics.md))
-- 대시보드: 운영 환경에서 데모 트래픽 버튼 숨김 ([spec/dashboard.md](spec/dashboard.md))
-- 단가표 갱신 + 기준일 기록 ([spec/cost.md](spec/cost.md))
+- 기준선(2026-10-06): 백엔드 `179 passed, 1 skipped`.

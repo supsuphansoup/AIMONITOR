@@ -63,6 +63,17 @@ METRIC_UNITS: Dict[str, str] = {
 
 VALID_METRIC_TYPES = frozenset(METRIC_FIELD_MAP.keys())
 
+#: Overview keys that are undefined - not zero - when a window has no requests:
+#: there is no latency to rank and no error rate to divide out. Counts and sums
+#: (requests, cost, tokens) really are 0, so "traffic stopped" rules still work.
+UNDEFINED_WITHOUT_TRAFFIC = frozenset(
+    {"error_rate_pct", "p50_latency_ms", "p95_latency_ms", "p99_latency_ms", "avg_latency_ms"}
+)
+
+#: Comparisons a lower bound can settle: if the known part is already over the
+#: line, the full total is too. Anything else needs the full total.
+LOWER_BOUND_OPERATORS = frozenset({">", ">="})
+
 
 def resolve_metric_key(metric_type: str) -> str:
     """Map a user-supplied metric name onto an overview field key."""
