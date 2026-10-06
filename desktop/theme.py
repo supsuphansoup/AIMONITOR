@@ -50,6 +50,23 @@ def font(size: int = FONT_BODY, weight: str = "normal", family: str = FONT_SANS)
     return ctk.CTkFont(family=family, size=size, weight=weight)
 
 
+def observe(widget, callback):
+    """Share CTk's mode notifications, including OS changes, without backend polling."""
+    import customtkinter as ctk
+
+    ctk.AppearanceModeTracker.add(callback, widget)
+
+    def unsubscribe():
+        ctk.AppearanceModeTracker.remove(callback)
+
+    def on_destroy(event):
+        if event.widget is widget:
+            unsubscribe()
+
+    widget.bind("<Destroy>", on_destroy, add="+")
+    return unsubscribe
+
+
 def install() -> None:
     """Set in-memory control defaults; no theme/config file is written."""
     import customtkinter as ctk

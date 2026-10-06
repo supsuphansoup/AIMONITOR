@@ -1,6 +1,7 @@
 """Desktop application configuration management."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -17,6 +18,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "poll_interval_ms": 3000,
     "claude_watch_enabled": True,
     "backend_url": "http://127.0.0.1:8000",
+    "api_key": None,  # Decrypted in memory only; save_config seals it on disk.
     "krw_rate_source": None,
     "krw_rate_as_of": None,
     # Widget items the user picked (ids from desktop.display.widget_entries); None = defaults.
@@ -39,6 +41,13 @@ def load_config() -> Dict[str, Any]:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 config.update(data)
+                if data.get("api_key_sealed"):
+                    from backend.app.services.secret_store import unseal
+
+                    config["api_key"] = unseal(data.get("api_key_scheme", ""), data["api_key_sealed"])
+                elif data.get("api_key"):
+                    # Migrate a manually configured/legacy clear-text value.
+                    save_config(config)
                 for key in OBSOLETE_KEYS:
                     config.pop(key, None)
     except Exception:
@@ -49,10 +58,27 @@ def load_config() -> Dict[str, Any]:
 def save_config(config: Dict[str, Any]) -> None:
     """Save config to disk."""
     try:
+        from backend.app.services.secret_store import restrict_file, seal
+
+        data = dict(config)
+        key = data.pop("api_key", None)
+        if key:
+            data["api_key_scheme"], data["api_key_sealed"] = seal(str(key).strip())
+        else:
+            data.pop("api_key_scheme", None)
+            data.pop("api_key_sealed", None)
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+        CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        restrict_file(CONFIG_FILE)
     except Exception:
         pass
+
+
+def backend_headers(config: Dict[str, Any] = None) -> Dict[str, str]:
+    """Resolve the server key, independently from provider/OAuth credentials."""
+    settings = load_config() if config is None else config
+    key = str(settings.get("api_key") or "").strip() or os.environ.get("AIMONITOR_API_KEY", "").strip()
+    return {"X-API-Key": key} if key else {}
 
 
 def attach_to_default_desktop() -> bool:

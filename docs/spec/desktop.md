@@ -6,6 +6,8 @@
 - DESK-2 로컬 Claude Code·Copilot·Antigravity 로그에서는 카운터와 상태만 수집한다. 원문을 전송하지 않는다.
 - DESK-3 공식 한도·청구액과 로컬 기록의 추정 비용을 구별하고, 없는 값은 `확인 불가`/`계산 불가`로 표시한다.
 - DESK-4 API 키는 Windows 사용자 범위 DPAPI로 암호화하여 저장한다. 암호화를 지원하지 않는 플랫폼은 파일 저장을 거부하고 환경 변수 키만 사용한다.
+- DESK-5 OS 또는 앱의 라이트·다크 모드 변경은 백엔드 폴링을 기다리지 않고 메인 창·위젯·차트·트레이 아이콘에 반영한다. 팔레트와 배치는 유지한다.
+- DESK-6 서버 인증 키는 config의 `api_key`, 환경 변수 `AIMONITOR_API_KEY` 순서로 선택한다. 없으면 헤더 없이 요청하고, 401/403은 `인증 필요`로 표시하며 다음 폴링을 계속한다.
 
 ## Design
 
@@ -35,8 +37,29 @@ watcher는 데스크톱 프로세스에서 시작하며 백엔드 lifespan에서
 
 읽기·쓰기 인증은 기존 `require_read_auth`/`require_write_auth` 규칙을 따른다.
 데스크톱 직접 키 관리는 `api_key_manager`를 import하여 사용한다.
-데스크톱 HTTP 클라이언트는 현재 서버 인증 헤더를 전달하지 않으므로 기본 로컬 개방 모드가 필요하다.
-`API_KEY` 또는 `REQUIRE_AUTH_FOR_READS`가 켜진 서버 연동은 후속 과제다.
+모든 AIMONITOR 백엔드 HTTP 요청(health·조회·watcher 수집)에 `X-API-Key`를 붙인다.
+공급자 API 키 및 Anthropic OAuth 키와는 별개이며 OAuth·Ollama·환율 서버에는 서버 인증 키를 보내지 않는다.
+`API_KEY`가 설정되면 수집은 키가 필요하고, `REQUIRE_AUTH_FOR_READS=true`면 조회에도 같은 키가 필요하다.
+401/403은 메인 상태 표시줄·위젯에 `인증 필요`로 표시한다. 수집 watcher는 같은 문구를 로그에 남기며 실패한 수집을 성공으로 처리하지 않는다.
+
+환경 변수 `AIMONITOR_API_KEY`에 백엔드의 `API_KEY` 값을 설정하거나,
+저장소 루트에서 다음 명령으로 config에 저장한다(입력은 화면에 표시되지 않는다).
+
+```python
+from getpass import getpass
+from desktop.config import load_config, save_config
+config = load_config()
+config["api_key"] = getpass("AIMONITOR server key: ")
+save_config(config)
+```
+
+config 키는 메모리에서만 복호화하며 파일에는 `api_key_scheme`·`api_key_sealed`로 DPAPI 암호화하여 쓴다.
+인증 키는 화면이나 오류 문자열에 출력하지 않는다. 암호화 미지원 환경에서는 환경 변수를 사용한다.
+
+테마는 CustomTkinter의 `AppearanceModeTracker` 콜백을 공유한다. 앱 모드 변경 시 즉시,
+OS 모드 변경 시 라이브러리의 가벼운 감지 루프에서 반영하며 백엔드 요청은 추가하지 않는다.
+위젯은 캐시된 데이터로 다시 그리며 트레이는 `pystray.Icon.icon` 이미지를 교체한다.
+창 파괴와 트레이 중지 시 콜백을 해제한다.
 
 `active_contexts`는 정확한 쉼표 구분 태그 `claude-code`·`copilot`·`antigravity`로 도구를 구분하며,
 나머지는 `<provider>_api`로 묶는다. 오늘·이번 달 경계는 백엔드 PC의 로컬 시각,
@@ -50,7 +73,6 @@ Gemini 키는 URL에 넣지 않고 `x-goog-api-key` 헤더로 보낸다. 키 검
 
 ## Open questions
 
-- 인증을 설정한 백엔드용 데스크톱 인증 헤더 지원.
 - 웹의 `ApiKeyModal.tsx`·`ConnectedAICards.tsx` 및 `/metrics/connected_ais`는 이번 이식 범위 밖이다.
 
 ## Areas of concern

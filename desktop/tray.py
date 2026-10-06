@@ -51,6 +51,7 @@ class TrayManager:
         self.is_topmost = initial_topmost
         self._icon: Optional[pystray.Icon] = None
         self._thread: Optional[threading.Thread] = None
+        self._unsubscribe_theme: Optional[Callable[[], None]] = None
 
     def _menu_toggle_topmost(self, icon, item):
         self.is_topmost = not self.is_topmost
@@ -76,15 +77,24 @@ class TrayManager:
             pystray.MenuItem("❌ 종료", lambda icon, item: self.stop()),
         )
 
-    def start(self) -> None:
+    def start(self, master=None) -> None:
         """Start tray icon in a dedicated daemon thread."""
         img = create_tray_icon_image()
         self._icon = pystray.Icon("aimonitor", img, "AIMONITOR - AI Observability", menu=self._build_menu())
+        if master is not None:
+            self._unsubscribe_theme = theme.observe(master, self._on_theme_changed)
         self._thread = threading.Thread(target=self._icon.run, daemon=True, name="TrayThread")
         self._thread.start()
 
+    def _on_theme_changed(self, _mode: str) -> None:
+        if self._icon is not None:
+            self._icon.icon = create_tray_icon_image()
+
     def stop(self) -> None:
         """Stop tray icon and notify exit."""
+        if self._unsubscribe_theme is not None:
+            self._unsubscribe_theme()
+            self._unsubscribe_theme = None
         if self._icon:
             self._icon.stop()
         if self.on_exit:

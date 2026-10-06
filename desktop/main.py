@@ -19,7 +19,7 @@ import httpx
 
 from desktop.ai_watcher import UnifiedAIWatcher
 from desktop.app_gui import DesktopMainWindow
-from desktop.config import attach_to_default_desktop, load_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config
 from desktop.single_instance import SingleInstance
 from desktop.tray import TrayManager
 from desktop.widget import FloatingWidget
@@ -46,7 +46,7 @@ class DesktopApp:
     def ensure_backend(self) -> None:
         """Ensure backend server is running."""
         try:
-            with httpx.Client(timeout=1.5) as client:
+            with httpx.Client(timeout=1.5, headers=backend_headers()) as client:
                 res = client.get(f"{self.backend_url}/health")
                 if res.status_code == 200:
                     logger.info("Backend is already running at %s", self.backend_url)
@@ -87,7 +87,7 @@ class DesktopApp:
         for _ in range(12):
             time.sleep(0.5)
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=1.0, headers=backend_headers()) as client:
                     if client.get(f"{self.backend_url}/health").status_code == 200:
                         logger.info("Backend server ready.")
                         return
@@ -100,7 +100,7 @@ class DesktopApp:
         failures = 0
         while not self._stop_event.wait(10.0):
             try:
-                with httpx.Client(timeout=2.0) as client:
+                with httpx.Client(timeout=2.0, headers=backend_headers()) as client:
                     healthy = client.get(f"{self.backend_url}/health").status_code == 200
             except Exception:
                 healthy = False
@@ -150,7 +150,7 @@ class DesktopApp:
             on_exit=self.shutdown,
             initial_topmost=self.config.get("always_on_top", True),
         )
-        self.tray_manager.start()
+        self.tray_manager.start(self.main_window)
 
         # Center main window on screen
         sw = self.main_window.winfo_screenwidth()

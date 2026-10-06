@@ -19,7 +19,7 @@ import httpx
 
 from desktop import theme
 from desktop.ai_detector import detect_connected_ais
-from desktop.config import attach_to_default_desktop, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import select_entries, widget_entries
 from desktop.rate_fetcher import shared_updater
@@ -62,6 +62,7 @@ class FloatingWidget:
         self.is_connected = False
         self._connected_ais: Optional[List[Dict[str, Any]]] = None
         self._fetching = False
+        self._auth_required = False
         self._rows_sig: Any = None
 
         self.font_bold = tkfont.Font(family=theme.FONT_SANS, size=-theme.FONT_SM, weight="bold")
@@ -82,6 +83,7 @@ class FloatingWidget:
         self._build_ui()
         self._bind_events()
         self._place()
+        theme.observe(self.root, lambda _mode: self._render())
         self.root.after(200, self.schedule_update)
 
     # ------------------------------------------------------------------ layout
@@ -379,14 +381,17 @@ class FloatingWidget:
     def _fetch_worker(self) -> None:
         summary: Dict[str, Any] = {}
         ok = False
+        auth_required = False
         try:
             if self._connected_ais is None:
                 self._connected_ais = detect_connected_ais()
-            with httpx.Client(timeout=3.0) as client:
+            with httpx.Client(timeout=3.0, headers=backend_headers()) as client:
                 res = client.get(f"{self.backend_url}/api/v1/metrics/active_contexts")
+                auth_required = res.status_code in (401, 403)
                 spend: Dict[str, Any] = {}
                 if any(a["key"].endswith("_api") for a in self._connected_ais):
                     r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
+                    auth_required = auth_required or r_sp.status_code in (401, 403)
                     if r_sp.status_code == 200:
                         spend = r_sp.json()
             if res.status_code == 200:
@@ -403,12 +408,13 @@ class FloatingWidget:
         finally:
             self._fetching = False
         try:
-            self.root.after(0, lambda: self._on_data(summary, ok))
+            self.root.after(0, lambda: self._on_data(summary, ok, auth_required))
         except RuntimeError:
             pass  # window already destroyed
 
-    def _on_data(self, summary: Dict[str, Any], ok: bool) -> None:
+    def _on_data(self, summary: Dict[str, Any], ok: bool, auth_required: bool = False) -> None:
         self.is_connected = ok
+        self._auth_required = auth_required
         if ok:
             self.summary_data = summary
             self.entries = widget_entries(summary)
@@ -431,9 +437,20 @@ class FloatingWidget:
             self._bind_events()
         if hasattr(self, "lbl_status"):
             self.lbl_status.config(
-                fg=theme.color(theme.SUCCESS) if self.is_connected else theme.color(theme.ERROR)
+                fg=theme.color(theme.SUCCESS)
+                if self.is_connected and not getattr(self, "_auth_required", False)
+                else theme.color(theme.ERROR)
             )
         visible = self._visible()
+
+        if getattr(self, "_auth_required", False):
+            if self.mode == "mini":
+                self.mini_text.config(text="인증 필요")
+                self._resize()
+                return
+            self.lbl_footer.config(text="인증 필요", fg=theme.color(theme.ERROR))
+        elif hasattr(self, "lbl_footer"):
+            self.lbl_footer.config(text=self.rate_updater.describe(), fg=theme.color(theme.FAINT))
 
         if self.mode == "mini":
             if not self.entries:
@@ -491,7 +508,6 @@ class FloatingWidget:
                     bg=theme.color(theme.CARD),
                     font=self.font_small,
                 ).pack(side="right")
-        self.lbl_footer.config(text=self.rate_updater.describe())
         self._bind_events()
         self._resize()
 

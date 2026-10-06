@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from desktop.config import backend_headers
+
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
 
 
@@ -551,11 +553,13 @@ class UnifiedAIWatcher:
         url = f"{self.backend_url}/api/v1/traces/batch"
         chunk_size = 200
         try:
-            with httpx.Client(timeout=8.0) as client:
+            with httpx.Client(timeout=8.0, headers=backend_headers()) as client:
                 for i in range(0, len(traces), chunk_size):
                     chunk = traces[i : i + chunk_size]
                     res = client.post(url, json={"traces": chunk})
                     if res.status_code >= 300:
+                        if res.status_code in (401, 403):
+                            logger.warning("인증 필요: 백엔드 수집 권한을 확인하세요")
                         logger.warning("Backend rejected %d traces: HTTP %d", len(chunk), res.status_code)
                         return False
             logger.info("Auto-ingested %d traces across Antigravity, Claude, and GPT", len(traces))

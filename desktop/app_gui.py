@@ -43,7 +43,7 @@ if sys.platform == "win32":
 
 from backend.app.services.api_key_manager import api_key_manager
 from desktop.ai_detector import detect_connected_ais, scan_all_ai_status
-from desktop.config import attach_to_default_desktop, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     GREY,
@@ -1357,11 +1357,13 @@ class DesktopMainWindow(ctk.CTk):
         traces = []
         act_contexts = {}
         ok = False
+        auth_required = False
 
         try:
-            with httpx.Client(timeout=3.0) as client:
+            with httpx.Client(timeout=3.0, headers=backend_headers(config)) as client:
                 try:
                     r_ov = client.get(url_ov)
+                    auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
                         overview = r_ov.json()
                         ok = True
@@ -1370,6 +1372,7 @@ class DesktopMainWindow(ctk.CTk):
 
                 try:
                     r_bd = client.get(url_bd)
+                    auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
                         breakdown = r_bd.json()
                         ok = True
@@ -1378,6 +1381,7 @@ class DesktopMainWindow(ctk.CTk):
 
                 try:
                     r_tr = client.get(url_tr)
+                    auth_required = auth_required or r_tr.status_code in (401, 403)
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
                         traces = tr_data if isinstance(tr_data, list) else tr_data.get("items", [])
@@ -1386,6 +1390,7 @@ class DesktopMainWindow(ctk.CTk):
 
                 try:
                     r_act = client.get(url_act)
+                    auth_required = auth_required or r_act.status_code in (401, 403)
                     if r_act.status_code == 200:
                         act_contexts = r_act.json()
                 except Exception as e:
@@ -1394,6 +1399,7 @@ class DesktopMainWindow(ctk.CTk):
                 if any(a["key"].endswith("_api") for a in ais):
                     try:
                         r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
+                        auth_required = auth_required or r_sp.status_code in (401, 403)
                         if r_sp.status_code == 200:
                             self.official_spend = r_sp.json()
                     except Exception as e:
@@ -1421,7 +1427,7 @@ class DesktopMainWindow(ctk.CTk):
             self._is_updating = False
 
         try:
-            self.after(0, lambda: self._apply_data(overview, breakdown, traces, summary, ok))
+            self.after(0, lambda: self._apply_data(overview, breakdown, traces, summary, ok, auth_required))
         except RuntimeError:
             # 창이 이미 닫혀 mainloop가 끝난 경우
             pass
@@ -1433,10 +1439,13 @@ class DesktopMainWindow(ctk.CTk):
         tr: List[Dict[str, Any]],
         summary: Optional[Dict[str, Any]],
         ok: bool,
+        auth_required: bool = False,
     ) -> None:
         self.is_connected = ok
         if not ok or summary is None:
-            self.lbl_status_msg.configure(text="연결 대기 중...", text_color=theme.ERROR)
+            self.lbl_status_msg.configure(
+                text="인증 필요" if auth_required else "연결 대기 중...", text_color=theme.ERROR
+            )
             self._schedule_refresh()
             return
 
@@ -1517,7 +1526,8 @@ class DesktopMainWindow(ctk.CTk):
 
         # Update statusbar
         self.lbl_status_msg.configure(
-            text=f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)", text_color=theme.SUCCESS
+            text="인증 필요" if auth_required else f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)",
+            text_color=theme.ERROR if auth_required else theme.SUCCESS,
         )
         self.lbl_last_time.configure(text=f"마지막 갱신: {datetime.now().strftime('%H:%M:%S')}")
 

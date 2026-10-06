@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from desktop.config import backend_headers
+
 logger = logging.getLogger("aimonitor.desktop.claude_watcher")
 
 
@@ -198,13 +200,15 @@ class ClaudeWatcher:
         to_send = traces[-1000:] if total > 1000 else traces
 
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=10.0, headers=backend_headers()) as client:
                 for i in range(0, len(to_send), chunk_size):
                     chunk = to_send[i : i + chunk_size]
                     res = client.post(url, json={"traces": chunk})
                     if res.status_code in (200, 201):
                         ingested += len(chunk)
                     else:
+                        if res.status_code in (401, 403):
+                            logger.warning("인증 필요: 백엔드 수집 권한을 확인하세요")
                         logger.warning("Failed to ingest Claude chunk: HTTP %s", res.status_code)
             logger.info("Ingested %d Claude Code traces into AIMONITOR (out of %d found)", ingested, total)
         except Exception as e:
