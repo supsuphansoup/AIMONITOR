@@ -7,7 +7,11 @@ from sqlmodel import Session
 from backend.app.core.config import settings
 from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.db.session import check_db, get_session
-from backend.app.services.cost import MODEL_PRICING_USD_PER_1M, PROVIDER_CACHE_MULTIPLIERS
+from backend.app.services.cost import (
+    LOCAL_PROVIDERS,
+    MODEL_PRICING_USD_PER_1M,
+    PROVIDER_CACHE_MULTIPLIERS,
+)
 from backend.app.services.retention import purge_older_than
 from backend.app.services.scheduler import scheduler
 
@@ -39,6 +43,8 @@ def pricing_table() -> Dict[str, Any]:
     """The rate card used for cost calculation, so numbers can be audited."""
     return {
         "unit": "USD per 1,000,000 tokens",
+        # Self-hosted inference is free by provider, whatever the model name.
+        "local_free_providers": sorted(LOCAL_PROVIDERS),
         "provider_cache_multipliers": {
             provider: {"cache_write": write, "cache_read": read}
             for provider, (write, read) in PROVIDER_CACHE_MULTIPLIERS.items()

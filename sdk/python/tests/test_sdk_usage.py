@@ -61,6 +61,56 @@ def test_extract_google_shape():
     assert usage["completion_tokens"] == 200
 
 
+def test_extract_openai_cached_tokens_are_split_out_of_prompt():
+    """OpenAI's prompt_tokens includes the cached part, reported in a nested field."""
+    response = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=10,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+    ))
+    usage = extract_usage(response)
+    assert usage["prompt_tokens"] == 200
+    assert usage["cache_read_tokens"] == 800
+
+
+def test_extract_openai_responses_api_shape():
+    usage = extract_usage({"usage": {
+        "input_tokens": 1000,
+        "output_tokens": 10,
+        "input_tokens_details": {"cached_tokens": 600},
+    }})
+    assert usage["prompt_tokens"] == 400
+    assert usage["completion_tokens"] == 10
+    assert usage["cache_read_tokens"] == 600
+
+
+def test_extract_openai_without_cache_details():
+    """The SDKs send prompt_tokens_details=None on models without caching."""
+    response = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=120, completion_tokens=45, prompt_tokens_details=None,
+    ))
+    usage = extract_usage(response)
+    assert usage["prompt_tokens"] == 120
+    assert usage["cache_read_tokens"] == 0
+
+
+def test_extract_google_cached_tokens_are_not_counted_twice():
+    """Gemini's prompt_token_count already includes cached_content_token_count."""
+    response = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=1000, candidates_token_count=10, cached_content_token_count=800,
+    ))
+    usage = extract_usage(response)
+    assert usage["prompt_tokens"] == 200
+    assert usage["cache_read_tokens"] == 800
+
+
+def test_extract_google_cache_count_none():
+    response = SimpleNamespace(usage_metadata=SimpleNamespace(
+        prompt_token_count=500, candidates_token_count=200, cached_content_token_count=None,
+    ))
+    assert extract_usage(response)["prompt_tokens"] == 500
+
+
 def test_extract_dict_shape():
     usage = extract_usage({"usage": {"prompt_tokens": 7, "completion_tokens": 3}})
     assert usage["prompt_tokens"] == 7

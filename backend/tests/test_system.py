@@ -32,6 +32,9 @@ def test_pricing_table_is_auditable(client: TestClient):
     assert body["models"]["gpt-4o"]["input"] == 2.50
     assert body["models"]["claude-3-5-sonnet"]["cache_read"] == 0.30
     assert body["provider_cache_multipliers"]["anthropic"]["cache_read"] == 0.10
+    assert "ollama" in body["local_free_providers"]
+    # Open weights are free by provider, so no model in the rate card may be priced at zero.
+    assert all(m["input"] > 0 or m["output"] > 0 for m in body["models"].values())
 
 
 def test_purge_removes_only_old_rows(client: TestClient, session: Session):

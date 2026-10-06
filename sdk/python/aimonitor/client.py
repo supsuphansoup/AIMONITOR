@@ -50,14 +50,17 @@ def extract_usage(response: Any) -> Dict[str, int]:
     if source is None:
         return usage
 
+    def field(obj: Any, name: str) -> Any:
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
     def read(*names: str) -> int:
         for name in names:
-            value = source.get(name) if isinstance(source, dict) else getattr(source, name, None)
+            value = field(source, name)
             if isinstance(value, int):
                 return value
         return 0
 
-    # OpenAI: prompt_tokens/completion_tokens
+    # OpenAI: prompt_tokens/completion_tokens (Responses API: input_tokens/output_tokens)
     # Anthropic: input_tokens/output_tokens (+ cache counters)
     # Google: prompt_token_count/candidates_token_count
     usage["prompt_tokens"] = read("prompt_tokens", "input_tokens", "prompt_token_count")
@@ -68,6 +71,18 @@ def extract_usage(response: Any) -> Dict[str, int]:
         "cache_read_input_tokens", "cached_content_token_count", "cached_tokens"
     )
     usage["cache_write_tokens"] = read("cache_creation_input_tokens")
+
+    # The server prices prompt_tokens as *uncached* input. Anthropic already
+    # reports it that way; OpenAI and Google include the cached part in the
+    # prompt count, so it is split out here or it would be billed twice
+    # (Google) or at the full rate (OpenAI).
+    details = field(source, "prompt_tokens_details") or field(source, "input_tokens_details")
+    openai_cached = field(details, "cached_tokens") if details is not None else None
+    if isinstance(openai_cached, int):
+        usage["cache_read_tokens"] = openai_cached
+        usage["prompt_tokens"] = max(0, usage["prompt_tokens"] - openai_cached)
+    elif isinstance(field(source, "cached_content_token_count"), int):
+        usage["prompt_tokens"] = max(0, usage["prompt_tokens"] - usage["cache_read_tokens"])
     return usage
 
 

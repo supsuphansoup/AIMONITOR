@@ -2,6 +2,26 @@
 
 동작 규칙의 현재 상태는 [docs/spec/](docs/spec/README.md)에 있다. 이 파일은 버전별 변경과 업그레이드 주의사항만 기록한다.
 
+## v0.4.0 — 2026-10-06 · 비용 정확도
+
+"모르면 `계산 불가`, 알면 정확히" 원칙을 깨던 결함 4건을 고쳤다. 모두 재현 후 수정.
+
+**수정**
+- 모델명 부분 문자열 매칭이 다른 모델 단가를 씌움 (`gpt-4.5-preview` → `gpt-4` 단가, `o3-pro` → `o3`).
+  이제 단가표 키 뒤에는 날짜·리비전·`-latest`·Bedrock/Vertex 버전 태그만 허용하고, 그 외는 `unknown`.
+- 유료 API의 오픈 웨이트 모델(`mistral/mistral-large-latest`, `deepseek/deepseek-chat`)이 `local_free` $0으로 처리됨.
+  오픈 웨이트 0원 항목을 단가표에서 제거했다. 무료 여부는 provider(`ollama`, `vllm`, `llamacpp`, `lmstudio`, `local`)로만 판단한다.
+- SDK: OpenAI의 `prompt_tokens_details.cached_tokens`(Responses API는 `input_tokens_details`)를 읽지 못해 캐시 할인이 빠짐.
+- SDK: Gemini의 `prompt_token_count`에 포함된 캐시 토큰을 이중 계산함. OpenAI·Google 모두 `prompt_tokens`에서 캐시분을 뺀다.
+
+**추가**
+- `GET /system/pricing`에 `local_free_providers`.
+
+**동작 변경**: 지금까지 단가가 붙던 일부 모델명(`gpt-4-32k`, `*-preview` 등)이 `계산 불가`로 바뀐다.
+provider가 로컬이 아닌 오픈 웨이트 호출도 `계산 불가`가 된다 — 필요하면 SDK에서 `cost_usd`를 직접 전달할 것.
+
+**업그레이드**: 스키마 변경 없음. 과거 행의 비용은 재계산되지 않는다. SDK 보정은 SDK를 0.4.0으로 올려야 적용된다.
+
 ## v0.3.0 — 2026-08-28 · 2차 하드닝
 
 v0.2.0에서 새로 넣은 코드를 재감사했다. 수정한 결함은 모두 오류 없이 **조용히 틀린 결과**를 내는 종류였다.

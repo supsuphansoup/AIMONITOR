@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: aimonitor:0.3.0
+    image: aimonitor:0.4.0
     container_name: aimonitor
     restart: unless-stopped
     ports:

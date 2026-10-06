@@ -10,6 +10,7 @@ Two invariants this module exists to protect:
    premium to write a prompt into the cache and a steep discount to read it
    back; collapsing both into the plain input rate misprices every cached call.
 """
+import re
 from typing import Dict, NamedTuple, Optional, Tuple
 
 # --- Cost source markers ---------------------------------------------------
@@ -54,9 +55,9 @@ PROVIDER_CACHE_MULTIPLIERS: Dict[str, Tuple[float, float]] = {
 }
 DEFAULT_CACHE_MULTIPLIERS: Tuple[float, float] = (1.00, 1.00)
 
-# NOTE: insertion order matters. `normalize_model_name` matches the longest key
-# first and falls back to insertion order on ties, which is why "ollama" is
-# listed before "llama3" - reordering these entries changes matching behaviour.
+# Paid APIs only. Open-weight models are free when self-hosted, which is decided
+# by provider (LOCAL_PROVIDERS), never by model name: the same weights behind a
+# hosted API (mistral, deepseek, together, ...) have a price we do not know.
 MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     # OpenAI
     "gpt-4o": ModelPricing(2.50, 10.00),
@@ -98,32 +99,27 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gemini-1.5-pro": ModelPricing(1.25, 5.00),
     "gemini-1.5-flash": ModelPricing(0.075, 0.30),
     "gemini-1.5-flash-8b": ModelPricing(0.0375, 0.15),
-
-    # Self-hosted / open weights
-    "ollama": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "llama3": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "llama3.1": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "llama3.2": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "llama3.3": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "llama4": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "qwen": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "qwen2": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "qwen3": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "mistral": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "mixtral": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "phi3": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "phi4": ModelPricing(0.0, 0.0, 0.0, 0.0),
-    "deepseek": ModelPricing(0.0, 0.0, 0.0, 0.0),
 }
 
-_SORTED_PRICING_KEYS = sorted(MODEL_PRICING_USD_PER_1M.keys(), key=len, reverse=True)
+#: What may follow a pricing key for a name to still mean that model: dated
+#: snapshots, numbered revisions, "-latest" aliases and Bedrock/Vertex version
+#: tags. Anything else ("-preview", "-pro", ".5", "-32k") is a different model
+#: with its own price, so it must not inherit this one.
+_VERSION_SUFFIX = r"(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3,4}|latest|v\d+(?::\d+)?))*"
+
+#: Longest key first, so "gpt-4o-mini-2024-07-18" resolves to gpt-4o-mini, not gpt-4o.
+#: A key may be preceded by a routing prefix ("models/", "us.anthropic.").
+_PRICING_KEY_PATTERNS = [
+    (key, re.compile(r"(?:^|[/.])" + re.escape(key) + _VERSION_SUFFIX + "$"))
+    for key in sorted(MODEL_PRICING_USD_PER_1M.keys(), key=len, reverse=True)
+]
 
 
 def normalize_model_name(name: str) -> str:
-    """Map a raw model string onto a pricing key, preferring the longest match."""
+    """Map a raw model string onto a pricing key, or return it cleaned if none applies."""
     cleaned = name.strip().lower()
-    for key in _SORTED_PRICING_KEYS:
-        if key in cleaned:
+    for key, pattern in _PRICING_KEY_PATTERNS:
+        if pattern.search(cleaned):
             return key
     return cleaned
 
@@ -191,8 +187,7 @@ def calculate_cost_detail(
         + (cache_write_tokens / 1_000_000.0) * write_rate
         + (cache_read_tokens / 1_000_000.0) * read_rate
     )
-    is_free = pricing.input_per_1m == 0 and pricing.output_per_1m == 0
-    return CostResult(round(total, 6), SOURCE_LOCAL_FREE if is_free else SOURCE_PRICING_TABLE)
+    return CostResult(round(total, 6), SOURCE_PRICING_TABLE)
 
 
 def calculate_cost(

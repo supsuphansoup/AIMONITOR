@@ -29,9 +29,12 @@
 
 | 형태 | prompt | completion | cache read | cache write |
 | :--- | :--- | :--- | :--- | :--- |
-| OpenAI | `prompt_tokens` | `completion_tokens` | `cached_tokens`(최상위만) | — |
-| Anthropic | `input_tokens` | `output_tokens` | `cache_read_input_tokens` | `cache_creation_input_tokens` |
-| Google | `prompt_token_count` | `candidates_token_count` | `cached_content_token_count` | — |
+| OpenAI | `prompt_tokens − cached` | `completion_tokens` | `prompt_tokens_details.cached_tokens` | — |
+| OpenAI Responses | `input_tokens − cached` | `output_tokens` | `input_tokens_details.cached_tokens` | — |
+| Anthropic | `input_tokens` (원래 캐시 제외) | `output_tokens` | `cache_read_input_tokens` | `cache_creation_input_tokens` |
+| Google | `prompt_token_count − cached` | `candidates_token_count` | `cached_content_token_count` | — |
+
+서버는 `prompt_tokens`를 **캐시되지 않은 입력**으로 계산하므로, 캐시분을 포함해 보고하는 OpenAI·Google은 SDK에서 뺀다 (음수는 0).
 
 ## Open questions
 
@@ -40,10 +43,5 @@
 
 ## Areas of concern
 
-★ 2026-10-06 재현 확인. 서버 규칙("`prompt_tokens`는 캐시되지 않은 입력만")과 provider 응답 의미가 다르다.
-
-1. **OpenAI 캐시 토큰을 놓친다.** OpenAI는 캐시 토큰을 `usage.prompt_tokens_details.cached_tokens`(중첩)에 주는데 SDK는 최상위만 읽는다. 또 `prompt_tokens`가 캐시분을 **포함**하므로, 캐시 800/입력 1000 호출이 입력 1000 정가로 계산된다 (캐시 할인 누락).
-2. **Gemini 캐시 토큰을 이중 계산한다.** `prompt_token_count`가 `cached_content_token_count`를 포함하는데 둘 다 그대로 보내, 800 토큰이 정가 + 캐시 단가로 두 번 계산된다.
-3. Anthropic은 `input_tokens`가 이미 캐시 제외 값이라 정상.
-
-→ OpenAI·Google 형태에서는 `prompt_tokens = 전체 입력 − 캐시 읽기`로 보정해야 한다. [plan.md](../plan.md) 최우선 작업에 포함.
+- 보정은 SDK에서만 한다. 0.4.0 미만 SDK나 직접 HTTP로 보내는 클라이언트가 OpenAI·Google의 캐시 포함 값을 그대로 보내면 서버는 구분할 수 없다.
+- 해결됨(v0.4.0): OpenAI 캐시 토큰 누락, Gemini 캐시 토큰 이중 계산.
