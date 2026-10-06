@@ -3,6 +3,7 @@ import { Bell, Pause, Play, Plus, ShieldAlert, Trash2, X } from 'lucide-react';
 import { api, ApiError } from '../api';
 import { AlertHistory, AlertMetricOption, AlertRule } from '../types';
 import { formatRelative, formatTime } from '../format';
+import { useModalFocus } from './useModalFocus';
 
 interface AlertsModalProps {
   isOpen: boolean;
@@ -37,6 +38,7 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
   const [busyRuleId, setBusyRuleId] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [metricOptions, setMetricOptions] = useState<AlertMetricOption[]>(FALLBACK_METRICS);
+  const dialogRef = useModalFocus(isOpen, onClose);
 
   // The catalog is served by the backend so the form can never offer a metric
   // the evaluator would reject.
@@ -121,11 +123,22 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: '820px' }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        role="dialog"
+        ref={dialogRef}
+        tabIndex={-1}
+        aria-modal="true"
+        aria-labelledby="alerts-title"
+        style={{ maxWidth: '820px' }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Bell size={20} color="#f59e0b" />
-            <h3 style={{ fontSize: '18px', fontWeight: 600 }}>Alerts &amp; Anomaly Detection</h3>
+            <Bell size={20} color="var(--accent-blue)" />
+            <h3 id="alerts-title" style={{ fontSize: 'var(--font-title)', fontWeight: 600 }}>
+              Alerts &amp; Anomaly Detection
+            </h3>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button
@@ -135,7 +148,7 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
               style={{ fontSize: '12px', padding: '6px 12px' }}
               title="쿨다운을 무시하고 지금 평가합니다. Webhook 도 전송되며, 쿨다운 자체는 변경되지 않습니다."
             >
-              <Play size={12} color="#10b981" />
+              <Play size={12} />
               {isEvaluating ? 'Evaluating...' : 'Evaluate Now'}
             </button>
             <button className="icon-button" onClick={onClose} aria-label="닫기">
@@ -273,7 +286,7 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                       disabled={busyRuleId === rule.id}
                       title={rule.is_active ? '일시 중지' : '재개'}
                     >
-                      {rule.is_active ? <Pause size={14} /> : <Play size={14} color="#10b981" />}
+                      {rule.is_active ? <Pause size={14} /> : <Play size={14} />}
                     </button>
                     <button
                       className="icon-button"
@@ -281,7 +294,7 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                       disabled={busyRuleId === rule.id}
                       title="Delete Rule"
                     >
-                      <Trash2 size={14} color="#ef4444" />
+                      <Trash2 size={14} color="var(--status-error)" />
                     </button>
                   </div>
                 </div>
@@ -295,27 +308,27 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
             <h4>Triggered Alert History ({histories.length})</h4>
           </div>
           <div className="table-container" style={{ maxHeight: '220px', overflowY: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Delivery</th>
-                  <th>Rule Name</th>
-                  <th>Value</th>
-                  <th>Message</th>
-                  <th>Triggered</th>
+            <table className="data-table" role="table" aria-label="Triggered Alert History">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th scope="col" role="columnheader">Delivery</th>
+                  <th scope="col" role="columnheader">Rule Name</th>
+                  <th scope="col" role="columnheader">Value</th>
+                  <th scope="col" role="columnheader">Message</th>
+                  <th scope="col" role="columnheader">Triggered</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody role="rowgroup">
                 {histories.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="table-empty">
+                  <tr role="row">
+                    <td colSpan={5} className="table-empty" role="cell">
                       No alerts triggered yet. System operating normally.
                     </td>
                   </tr>
                 ) : (
                   histories.map((hist) => (
-                    <tr key={hist.id}>
-                      <td>
+                    <tr key={hist.id} role="row">
+                      <td data-label="Delivery" role="cell">
                         {/* A failed webhook still records the alert; the two are
                             tracked separately so a broken hook is visible. */}
                         <span
@@ -330,12 +343,12 @@ export const AlertsModal: React.FC<AlertsModalProps> = ({
                           {hist.sent_successfully ? 'TRIGGERED' : 'SEND FAILED'}
                         </span>
                       </td>
-                      <td>
+                      <td data-label="Rule Name" role="cell">
                         <strong>{hist.rule_name}</strong>
                       </td>
-                      <td>{hist.triggered_value}</td>
-                      <td style={{ color: 'var(--text-muted)' }}>{hist.message}</td>
-                      <td>{formatTime(hist.created_at)}</td>
+                      <td data-label="Value" role="cell">{hist.triggered_value}</td>
+                      <td data-label="Message" role="cell" style={{ color: 'var(--text-muted)' }}>{hist.message}</td>
+                      <td data-label="Triggered" role="cell">{formatTime(hist.created_at)}</td>
                     </tr>
                   ))
                 )}

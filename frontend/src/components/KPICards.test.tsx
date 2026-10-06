@@ -91,9 +91,38 @@ describe('prompt cache card', () => {
 });
 
 describe('loading state', () => {
-  it('renders zeros rather than crashing before the first response', () => {
+  it('distinguishes a missing response from measured zeros', () => {
     render(<KPICards metrics={null} windowLabel="24H" />);
+    expect(screen.getAllByText('—')).toHaveLength(4);
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.0000')).not.toBeInTheDocument();
+    expect(screen.queryByText('0.0 ms')).not.toBeInTheDocument();
+  });
+
+  it('still renders measured zeros when the server reports no traffic', () => {
+    render(<KPICards metrics={metrics({
+      total_requests: 0, total_cost_usd: 0, error_rate_pct: 0,
+      avg_latency_ms: 0, p95_latency_ms: 0, p99_latency_ms: 0,
+      total_tokens: 0, prompt_tokens: 0, error_count: 0, success_count: 0,
+    })} windowLabel="24H" />);
     expect(screen.getByText('0.0%')).toBeInTheDocument();
+    expect(screen.getByText('$0.0000')).toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
+    expect(screen.getByText('0.0 ms')).toBeInTheDocument();
+    expect(screen.getByText('0 failed / 0 success')).toBeInTheDocument();
+  });
+
+  it('does not turn null latency, cost or error rate from a response into measured zeros', () => {
+    const unavailable = {
+      ...metrics(), avg_latency_ms: null, p95_latency_ms: null, p99_latency_ms: null,
+      total_cost_usd: null, error_rate_pct: null,
+    } as unknown as OverviewMetrics;
+    render(<KPICards metrics={unavailable} windowLabel="24H" />);
+    expect(screen.getAllByText('—')).toHaveLength(3);
+    expect(screen.getByText('P95 — · P99 —')).toBeInTheDocument();
+    expect(screen.queryByText('0.0 ms')).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.0000')).not.toBeInTheDocument();
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument();
   });
 });
 

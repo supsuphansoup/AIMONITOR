@@ -29,6 +29,12 @@ function renderHeader(showDemoTraffic: boolean) {
 }
 
 describe('demo traffic button', () => {
+  it('exposes the selected window to keyboard and screen reader users', () => {
+    renderHeader(false);
+    expect(screen.getByRole('button', { name: '1H' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '24H' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('is offered outside production', () => {
     expect(canGenerateDemoTraffic(info('development'))).toBe(true);
     expect(canGenerateDemoTraffic(info('staging'))).toBe(true);

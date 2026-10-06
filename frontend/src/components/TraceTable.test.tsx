@@ -1,8 +1,10 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { TraceTable } from './TraceTable';
 import { NOT_COMPUTABLE } from '../format';
 import { TraceEvent } from '../types';
+import { api } from '../api';
 
 function trace(overrides: Partial<TraceEvent> = {}): TraceEvent {
   return {
@@ -36,6 +38,7 @@ function renderTable(props: Partial<React.ComponentProps<typeof TraceTable>> = {
     onStatusChange: vi.fn(),
     onPageChange: vi.fn(),
     onSelectTrace: vi.fn(),
+    showDemoTraffic: true,
   };
   return { ...render(<TraceTable {...defaults} {...props} />), props: { ...defaults, ...props } };
 }
@@ -121,6 +124,13 @@ describe('empty state', () => {
   it('invites demo traffic on the first page', () => {
     renderTable({ traces: [], total: 0 });
     expect(screen.getByText(/No traces recorded yet/)).toBeInTheDocument();
+    expect(screen.getByText(/Generate Demo Traffic/)).toBeInTheDocument();
+  });
+
+  it('guides SDK integration when demo traffic is unavailable', () => {
+    renderTable({ traces: [], total: 0, showDemoTraffic: false });
+    expect(screen.getByText('No traces recorded yet. Connect the SDK or wait for incoming traffic.')).toBeInTheDocument();
+    expect(screen.queryByText(/Generate Demo Traffic/)).not.toBeInTheDocument();
   });
 
   it('disables export when there is nothing to export', () => {
@@ -130,11 +140,63 @@ describe('empty state', () => {
 });
 
 describe('row selection', () => {
+  it.each(['{Enter}', ' '])('opens the same trace once from the keyboard with %s', async (key) => {
+    const user = userEvent.setup();
+    const onSelectTrace = vi.fn();
+    const row = trace({ trace_id: 'keyboard-trace' });
+    renderTable({ traces: [row], onSelectTrace });
+    screen.getByRole('button', { name: '트레이스 상세 keyboard-trace' }).focus();
+    await user.keyboard(key);
+    expect(onSelectTrace).toHaveBeenCalledExactlyOnceWith(row);
+  });
+
   it('passes the clicked trace up', () => {
     const onSelectTrace = vi.fn();
     const row = trace({ trace_id: 'clicked-one' });
     renderTable({ traces: [row], onSelectTrace });
     fireEvent.click(screen.getByText('gpt-4o'));
     expect(onSelectTrace).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('CSV export', () => {
+  it('describes the provider condition when a status filter is also selected', () => {
+    renderTable({ selectedProvider: 'anthropic', selectedStatus: 'ERROR' });
+    expect(screen.getByRole('button', { name: 'CSV' })).toHaveAttribute('title', 'Provider 필터 기준 CSV 내보내기');
+  });
+
+  it('downloads with the provider filter and prevents duplicate exports while busy', async () => {
+    const user = userEvent.setup();
+    let resolve!: (value: Blob) => void;
+    const exportCsv = vi.spyOn(api, 'exportCsv').mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const createObjectURL = vi.fn().mockReturnValue('blob:test-export');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    try {
+      renderTable({ selectedProvider: 'anthropic', selectedStatus: 'ERROR' });
+      await user.click(screen.getByRole('button', { name: 'CSV' }));
+      const busy = screen.getByRole('button', { name: '내보내는 중...' });
+      expect(busy).toBeDisabled();
+      await user.click(busy);
+      expect(exportCsv).toHaveBeenCalledExactlyOnceWith({ provider: 'anthropic' });
+      const blob = new Blob(['trace_id\ntrace-0001'], { type: 'text/csv' });
+      await act(async () => resolve(blob));
+      expect(createObjectURL).toHaveBeenCalledExactlyOnceWith(blob);
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:test-export');
+      expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows an export failure and re-enables retry', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(api, 'exportCsv').mockRejectedValue(new Error('Export failed'));
+    renderTable();
+    await user.click(screen.getByRole('button', { name: 'CSV' }));
+    expect(await screen.findByText('CSV 내보내기에 실패했습니다.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CSV' })).toBeEnabled();
   });
 });

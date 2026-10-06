@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { AlertOctagon, Database, Tag, X } from 'lucide-react';
 import { TraceEvent } from '../types';
 import { formatCost, formatDateTime, formatMs, formatNumber, NOT_COMPUTABLE } from '../format';
+import { useModalFocus } from './useModalFocus';
 
 interface TraceDetailModalProps {
   trace: TraceEvent | null;
@@ -16,13 +17,7 @@ const COST_SOURCE_LABEL: Record<string, string> = {
 };
 
 export const TraceDetailModal: React.FC<TraceDetailModalProps> = ({ trace, onClose }) => {
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  const dialogRef = useModalFocus(trace !== null, onClose);
 
   if (!trace) return null;
 
@@ -30,10 +25,18 @@ export const TraceDetailModal: React.FC<TraceDetailModalProps> = ({ trace, onClo
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        role="dialog"
+        ref={dialogRef}
+        tabIndex={-1}
+        aria-modal="true"
+        aria-labelledby="trace-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <div>
-            <h3 style={{ fontSize: '17px', fontWeight: 600 }}>Trace Details</h3>
+            <h3 id="trace-title" style={{ fontSize: 'var(--font-title)', fontWeight: 600 }}>Trace Details</h3>
             <p style={{ fontSize: '12px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
               ID: {trace.trace_id}
             </p>
@@ -92,7 +95,7 @@ export const TraceDetailModal: React.FC<TraceDetailModalProps> = ({ trace, onClo
               className="metric-value"
               style={{
                 color:
-                  trace.cost_source === 'unknown' ? 'var(--text-faint)' : 'var(--status-success)',
+                  trace.cost_source === 'unknown' ? 'var(--text-faint)' : 'var(--text-main)',
               }}
             >
               {formatCost(trace.cost_usd, trace.cost_source, 6)}

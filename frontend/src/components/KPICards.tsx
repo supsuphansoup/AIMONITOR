@@ -21,23 +21,24 @@ export const KPICards: React.FC<KPICardsProps> = ({ metrics, windowLabel }) => {
       <div className="kpi-card">
         <div className="kpi-header">
           <span>Total Ingested Calls · {windowLabel}</span>
-          <Zap size={16} color="#3b82f6" />
+          <Zap size={16} />
         </div>
-        <div className="kpi-value">{formatNumber(totalReq)}</div>
+        <div className="kpi-value">{metrics ? formatNumber(totalReq) : '—'}</div>
         <div className="kpi-sub">
-          <span>{formatNumber(metrics?.total_tokens)} total tokens processed</span>
+          <span>{metrics ? formatNumber(metrics.total_tokens) : '—'} total tokens processed</span>
         </div>
       </div>
 
       <div className="kpi-card">
         <div className="kpi-header">
           <span>Latency (Avg / P95)</span>
-          <Clock size={16} color="#06b6d4" />
+          <Clock size={16} />
         </div>
-        <div className="kpi-value">{formatMs(metrics?.avg_latency_ms)}</div>
+        <div className="kpi-value">{metrics?.avg_latency_ms == null ? '—' : formatMs(metrics.avg_latency_ms)}</div>
         <div className="kpi-sub">
           <span>
-            P95 {formatMs(metrics?.p95_latency_ms)} · P99 {formatMs(metrics?.p99_latency_ms)}
+            P95 {metrics?.p95_latency_ms == null ? '—' : formatMs(metrics.p95_latency_ms)} · P99{' '}
+            {metrics?.p99_latency_ms == null ? '—' : formatMs(metrics.p99_latency_ms)}
           </span>
           {metrics?.latency_sampled && (
             <span className="kpi-flag" title="표본이 잘려 백분위수는 근사치입니다">
@@ -50,11 +51,11 @@ export const KPICards: React.FC<KPICardsProps> = ({ metrics, windowLabel }) => {
       <div className="kpi-card">
         <div className="kpi-header">
           <span>Estimated Total Cost</span>
-          <DollarSign size={16} color="#10b981" />
+          <DollarSign size={16} />
         </div>
         <div className="kpi-value">
           {/* A missing rate card is reported, never rounded down to $0. */}
-          {allUnpriced ? NOT_COMPUTABLE : formatUsd(metrics?.total_cost_usd ?? 0)}
+          {allUnpriced ? NOT_COMPUTABLE : metrics?.total_cost_usd == null ? '—' : formatUsd(metrics.total_cost_usd)}
         </div>
         <div className="kpi-sub">
           {unpriced > 0 ? (
@@ -62,7 +63,7 @@ export const KPICards: React.FC<KPICardsProps> = ({ metrics, windowLabel }) => {
               {formatNumber(unpriced)}건 {NOT_COMPUTABLE}
             </span>
           ) : (
-            <span>Prompt {formatNumber(metrics?.prompt_tokens)} tkn</span>
+            <span>Prompt {metrics ? formatNumber(metrics.prompt_tokens) : '—'} tkn</span>
           )}
         </div>
       </div>
@@ -70,17 +71,18 @@ export const KPICards: React.FC<KPICardsProps> = ({ metrics, windowLabel }) => {
       <div className="kpi-card">
         <div className="kpi-header">
           <span>Error Rate</span>
-          <AlertTriangle size={16} color={errorRate > 0 ? '#ef4444' : '#10b981'} />
+          <AlertTriangle size={16} />
         </div>
         <div
           className="kpi-value"
           style={{ color: errorRate > 0 ? 'var(--status-error)' : 'var(--text-main)' }}
         >
-          {errorRate.toFixed(1)}%
+          {metrics?.error_rate_pct == null ? '—' : `${errorRate.toFixed(1)}%`}
         </div>
         <div className="kpi-sub">
           <span>
-            {formatNumber(metrics?.error_count)} failed / {formatNumber(metrics?.success_count)} success
+            {metrics ? formatNumber(metrics.error_count) : '—'} failed /{' '}
+            {metrics ? formatNumber(metrics.success_count) : '—'} success
           </span>
         </div>
       </div>
@@ -89,7 +91,7 @@ export const KPICards: React.FC<KPICardsProps> = ({ metrics, windowLabel }) => {
         <div className="kpi-card">
           <div className="kpi-header">
             <span>Prompt Cache</span>
-            <Database size={16} color="#a855f7" />
+            <Database size={16} />
           </div>
           <div className="kpi-value">{formatNumber(cacheRead)}</div>
           <div className="kpi-sub">

@@ -57,10 +57,10 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="brand-title">AIMONITOR</span>
         </div>
         <span className="brand-badge">{version ? `v${version}` : 'OBSERVABILITY ENGINE'}</span>
-        <span
-          className={`status-dot ${isConnected ? 'status-dot-ok' : 'status-dot-down'}`}
-          title={isConnected ? '백엔드 연결됨' : '백엔드 연결 끊김'}
-        />
+        <span className="header-connection" title={isConnected ? '백엔드 연결됨' : '백엔드 연결 끊김'}>
+          <span className={`status-dot ${isConnected ? 'status-dot-ok' : 'status-dot-down'}`} />
+          <span className="connection-label">{isConnected ? 'Connected' : 'Disconnected'}</span>
+        </span>
         {lastUpdated && isConnected && (
           <span className="header-meta">최근 갱신 {formatTime(lastUpdated.toISOString())}</span>
         )}
@@ -72,6 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               key={w.label}
               className={`window-option ${index === windowIndex ? 'window-option-active' : ''}`}
+              aria-pressed={index === windowIndex}
               onClick={() => onWindowChange(index)}
             >
               {w.label}
@@ -80,7 +81,7 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         <button className="btn btn-secondary btn-badge-host" onClick={onOpenAlerts}>
-          <Bell size={14} color="#f59e0b" />
+          <Bell size={14} />
           Alerts
           {activeRuleCount > 0 && <span className="btn-subcount">{activeRuleCount}</span>}
           {alertCount > 0 && <span className="btn-badge">{alertCount}</span>}
@@ -88,7 +89,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {showDemoTraffic && (
           <button className="btn btn-secondary" onClick={onSimulate} disabled={isSimulating}>
-            <Play size={14} color="#10b981" />
+            <Play size={14} />
             {isSimulating ? 'Simulating Traffic...' : 'Generate Demo Traffic'}
           </button>
         )}

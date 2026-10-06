@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { KeyRound, X } from 'lucide-react';
 import { getApiKey, setApiKey } from '../api';
 import { SystemInfo } from '../types';
+import { useModalFocus } from './useModalFocus';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -17,6 +18,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSaved,
 }) => {
   const [keyValue, setKeyValue] = useState('');
+  const dialogRef = useModalFocus(isOpen, onClose);
 
   useEffect(() => {
     if (isOpen) setKeyValue(getApiKey());
@@ -34,11 +36,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-content"
+        role="dialog"
+        ref={dialogRef}
+        tabIndex={-1}
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        style={{ maxWidth: '560px' }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <KeyRound size={18} color="#3b82f6" />
-            <h3 style={{ fontSize: '17px', fontWeight: 600 }}>설정</h3>
+            <KeyRound size={18} color="var(--accent-blue)" />
+            <h3 id="settings-title" style={{ fontSize: 'var(--font-title)', fontWeight: 600 }}>설정</h3>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="닫기">
             <X size={20} />

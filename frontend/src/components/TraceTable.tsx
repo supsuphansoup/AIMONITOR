@@ -15,12 +15,7 @@ interface TraceTableProps {
   onStatusChange: (status: string) => void;
   onPageChange: (page: number) => void;
   onSelectTrace: (trace: TraceEvent) => void;
-}
-
-function rowTint(status: string): string | undefined {
-  if (status === 'ERROR') return 'rgba(239, 68, 68, 0.06)';
-  if (status === 'TIMEOUT' || status === 'RATE_LIMITED') return 'rgba(245, 158, 11, 0.06)';
-  return undefined;
+  showDemoTraffic: boolean;
 }
 
 function badgeClass(status: string): string {
@@ -40,6 +35,7 @@ export const TraceTable: React.FC<TraceTableProps> = ({
   onStatusChange,
   onPageChange,
   onSelectTrace,
+  showDemoTraffic,
 }) => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -80,7 +76,7 @@ export const TraceTable: React.FC<TraceTableProps> = ({
             className="btn btn-secondary pager-btn"
             onClick={handleExport}
             disabled={isExporting || total === 0}
-            title="현재 필터 조건으로 CSV 내보내기"
+            title="Provider 필터 기준 CSV 내보내기"
           >
             <Download size={13} />
             {isExporting ? '내보내는 중...' : 'CSV'}
@@ -115,47 +111,54 @@ export const TraceTable: React.FC<TraceTableProps> = ({
       </div>
 
       <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Trace ID</th>
-              <th>Provider / Model</th>
-              <th>Tokens</th>
-              <th>Latency</th>
-              <th>Cost (USD)</th>
-              <th>Time</th>
+        <table className="data-table trace-table" role="table" aria-label="Live Trace Stream">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th scope="col" role="columnheader">Status</th>
+              <th scope="col" role="columnheader">Trace ID</th>
+              <th scope="col" role="columnheader">Provider / Model</th>
+              <th scope="col" role="columnheader">Tokens</th>
+              <th scope="col" role="columnheader">Latency</th>
+              <th scope="col" role="columnheader">Cost (USD)</th>
+              <th scope="col" role="columnheader">Time</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {traces.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="table-empty">
+              <tr role="row">
+                <td colSpan={7} className="table-empty" role="cell">
                   {page > 0
                     ? '이 페이지에는 트레이스가 없습니다.'
-                    : 'No traces recorded yet. Click "Generate Demo Traffic" to stream live events!'}
+                    : showDemoTraffic
+                      ? 'No traces recorded yet. Click "Generate Demo Traffic" to stream live events!'
+                      : 'No traces recorded yet. Connect the SDK or wait for incoming traffic.'}
                 </td>
               </tr>
             ) : (
               traces.map((trace) => (
                 <tr
                   key={trace.id}
+                  role="row"
                   onClick={() => onSelectTrace(trace)}
-                  style={{ backgroundColor: rowTint(trace.status) }}
+                  data-status={trace.status}
                 >
-                  <td>
+                  <td data-label="Status" role="cell">
                     <span className={badgeClass(trace.status)}>{trace.status}</span>
                   </td>
-                  <td style={{ color: 'var(--accent-cyan)' }}>
-                    {trace.trace_id.length > 14
-                      ? `${trace.trace_id.substring(0, 14)}...`
-                      : trace.trace_id}
+                  <td data-label="Trace ID" role="cell">
+                    <button className="trace-link" aria-label={`트레이스 상세 ${trace.trace_id}`}>
+                      {trace.trace_id.length > 14
+                        ? `${trace.trace_id.substring(0, 14)}...`
+                        : trace.trace_id}
+                    </button>
                   </td>
-                  <td>
-                    <span style={{ color: 'var(--text-muted)' }}>{trace.provider} / </span>
-                    <strong>{trace.model_name}</strong>
+                  <td data-label="Provider / Model" role="cell">
+                    <div>
+                      <span style={{ color: 'var(--text-muted)' }}>{trace.provider} / </span>
+                      <strong>{trace.model_name}</strong>
+                    </div>
                   </td>
-                  <td>
+                  <td data-label="Tokens" role="cell">
                     {formatNumber(trace.total_tokens)}
                     {trace.cache_read_tokens > 0 && (
                       <span className="cell-note" title="프롬프트 캐시에서 읽은 토큰">
@@ -163,14 +166,16 @@ export const TraceTable: React.FC<TraceTableProps> = ({
                       </span>
                     )}
                   </td>
-                  <td>{formatMs(trace.latency_ms)}</td>
+                  <td data-label="Latency" role="cell">{formatMs(trace.latency_ms)}</td>
                   <td
+                    data-label="Cost (USD)"
+                    role="cell"
                     className={trace.cost_source === 'unknown' ? 'cost-unknown' : undefined}
                     style={{
                       color:
                         trace.cost_source === 'unknown'
                           ? 'var(--text-faint)'
-                          : 'var(--status-success)',
+                          : 'var(--text-main)',
                     }}
                     title={
                       trace.cost_source === 'unknown'
@@ -180,7 +185,7 @@ export const TraceTable: React.FC<TraceTableProps> = ({
                   >
                     {formatCost(trace.cost_usd, trace.cost_source)}
                   </td>
-                  <td style={{ color: 'var(--text-muted)' }}>{formatTime(trace.timestamp)}</td>
+                  <td data-label="Time" role="cell" style={{ color: 'var(--text-muted)' }}>{formatTime(trace.timestamp)}</td>
                 </tr>
               ))
             )}

@@ -176,6 +176,7 @@ export const App: React.FC = () => {
   };
 
   const activeRuleCount = rules.filter((r) => r.is_active).length;
+  const showDemoTraffic = canGenerateDemoTraffic(systemInfo);
 
   return (
     <div className="app-container">
@@ -194,14 +195,21 @@ export const App: React.FC = () => {
         windows={TIME_WINDOWS}
         windowIndex={windowIndex}
         onWindowChange={setWindowIndex}
-        showDemoTraffic={canGenerateDemoTraffic(systemInfo)}
+        showDemoTraffic={showDemoTraffic}
       />
 
       <main className="main-content">
         <ConnectionBanner error={error} onOpenSettings={() => setIsSettingsOpen(true)} />
+        <div className="page-heading">
+          <div>
+            <h1>Overview</h1>
+            <p>AI 호출의 성능, 비용, 상태를 한눈에 확인하세요.</p>
+          </div>
+          <span className="page-window">Last {timeWindow.label}</span>
+        </div>
         <KPICards metrics={metrics} windowLabel={timeWindow.label} />
         <Suspense fallback={<div className="charts-grid"><div className="card chart-placeholder" /><div className="card chart-placeholder" /></div>}>
-          <Charts timeseries={timeseries} breakdown={breakdown} windowLabel={timeWindow.label} />
+          <Charts timeseries={timeseries} breakdown={breakdown} windowLabel={timeWindow.label} showDemoTraffic={showDemoTraffic} />
         </Suspense>
         <TraceTable
           traces={traces}
@@ -220,6 +228,7 @@ export const App: React.FC = () => {
           }}
           onPageChange={setPage}
           onSelectTrace={setSelectedTrace}
+          showDemoTraffic={showDemoTraffic}
         />
       </main>
 
