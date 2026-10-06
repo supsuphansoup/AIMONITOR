@@ -5,6 +5,7 @@ into Python, and even that is capped. The previous implementation materialized
 every matching row as an ORM object to add up four integers, which is fine for a
 demo and fatal for a table that has been collecting traffic for a month.
 """
+
 import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence
@@ -13,7 +14,7 @@ from sqlalchemy import Select, case, func
 from sqlmodel import Session, col, select
 
 from backend.app.core.config import settings
-from backend.app.core.timeutil import to_aware_utc, utc_now
+from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.models.trace import TraceEvent
 from backend.app.services.cost import SOURCE_UNKNOWN
 
@@ -34,6 +35,7 @@ EMPTY_OVERVIEW: Dict[str, Any] = {
     "cache_write_tokens": 0,
     "cost_unknown_count": 0,
     "latency_sampled": False,
+    "latency_measured_count": 0,
 }
 
 
@@ -76,6 +78,9 @@ def _apply_filters(
     return query
 
 
+WATCHER_TAGS = {"claude": "claude-code", "antigravity": "antigravity", "copilot": "copilot"}
+
+
 class MetricAggregator:
     @staticmethod
     def get_overview_metrics(
@@ -95,7 +100,8 @@ class MetricAggregator:
                 func.sum(col(TraceEvent.completion_tokens)),
                 func.sum(col(TraceEvent.cache_read_tokens)),
                 func.sum(col(TraceEvent.cache_write_tokens)),
-                func.avg(col(TraceEvent.latency_ms)),
+                func.avg(case((col(TraceEvent.latency_measured), col(TraceEvent.latency_ms)), else_=None)),
+                func.sum(case((col(TraceEvent.latency_measured), 1), else_=0)),
             ),
             start_time,
             end_time,
@@ -112,6 +118,7 @@ class MetricAggregator:
             cache_read_tokens,
             cache_write_tokens,
             avg_latency,
+            latency_measured_count,
         ) = row
 
         if not total_requests:
@@ -127,9 +134,7 @@ class MetricAggregator:
         error_count = session.exec(error_query).one() or 0
 
         unpriced_query = _apply_filters(
-            select(func.count(col(TraceEvent.id))).where(
-                TraceEvent.cost_source == SOURCE_UNKNOWN
-            ),
+            select(func.count(col(TraceEvent.id))).where(TraceEvent.cost_source == SOURCE_UNKNOWN),
             start_time,
             end_time,
             provider,
@@ -141,13 +146,17 @@ class MetricAggregator:
         # describe recent behaviour. Without the ordering the database returns
         # rows in storage order, so a capped query reported last month latency as
         # if it were current.
-        latency_query = _apply_filters(
-            select(col(TraceEvent.latency_ms)),
-            start_time,
-            end_time,
-            provider,
-            model_name,
-        ).order_by(col(TraceEvent.timestamp).desc()).limit(settings.MAX_AGGREGATION_ROWS)
+        latency_query = (
+            _apply_filters(
+                select(col(TraceEvent.latency_ms)).where(col(TraceEvent.latency_measured).is_(True)),
+                start_time,
+                end_time,
+                provider,
+                model_name,
+            )
+            .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+            .limit(settings.MAX_AGGREGATION_ROWS)
+        )
         latencies = list(session.exec(latency_query).all())
 
         success_count = total_requests - error_count
@@ -156,10 +165,10 @@ class MetricAggregator:
             "success_count": success_count,
             "error_count": error_count,
             "error_rate_pct": round((error_count / total_requests) * 100.0, 2),
-            "avg_latency_ms": round(float(avg_latency or 0.0), 2),
-            "p50_latency_ms": round(percentile(latencies, 50), 2),
-            "p95_latency_ms": round(percentile(latencies, 95), 2),
-            "p99_latency_ms": round(percentile(latencies, 99), 2),
+            "avg_latency_ms": round(float(avg_latency), 2) if avg_latency is not None else None,
+            "p50_latency_ms": round(percentile(latencies, 50), 2) if latencies else None,
+            "p95_latency_ms": round(percentile(latencies, 95), 2) if latencies else None,
+            "p99_latency_ms": round(percentile(latencies, 99), 2) if latencies else None,
             "total_cost_usd": round(float(total_cost or 0.0), 6),
             "total_tokens": int(total_tokens or 0),
             "prompt_tokens": int(prompt_tokens or 0),
@@ -169,7 +178,8 @@ class MetricAggregator:
             "cost_unknown_count": int(cost_unknown_count),
             # True when the percentile sample was truncated, so the dashboard can
             # say so instead of presenting an approximation as exact.
-            "latency_sampled": len(latencies) < total_requests,
+            "latency_sampled": len(latencies) < latency_measured_count,
+            "latency_measured_count": int(latency_measured_count or 0),
         }
 
     @staticmethod
@@ -187,18 +197,23 @@ class MetricAggregator:
         # Descending, so a truncated window drops the OLDEST events. Ascending
         # order silently amputated the right-hand edge of the chart - the part a
         # monitoring dashboard exists to show.
-        query = _apply_filters(
-            select(
-                col(TraceEvent.timestamp),
-                col(TraceEvent.status),
-                col(TraceEvent.latency_ms),
-                KNOWN_COST,
-                col(TraceEvent.total_tokens),
-            ),
-            start_time=cutoff,
-            provider=provider,
-            model_name=model_name,
-        ).order_by(col(TraceEvent.timestamp).desc()).limit(settings.MAX_AGGREGATION_ROWS)
+        query = (
+            _apply_filters(
+                select(
+                    col(TraceEvent.timestamp),
+                    col(TraceEvent.status),
+                    col(TraceEvent.latency_ms),
+                    KNOWN_COST,
+                    col(TraceEvent.total_tokens),
+                    col(TraceEvent.latency_measured),
+                ),
+                start_time=cutoff,
+                provider=provider,
+                model_name=model_name,
+            )
+            .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+            .limit(settings.MAX_AGGREGATION_ROWS)
+        )
 
         rows = list(session.exec(query).all())
         if not rows:
@@ -206,37 +221,37 @@ class MetricAggregator:
         truncated = len(rows) >= settings.MAX_AGGREGATION_ROWS
 
         buckets: Dict[datetime, List[Any]] = {}
-        for ts, status, latency, cost, tokens in rows:
+        for ts, status, latency, cost, tokens, measured in rows:
             if ts is None:
                 continue
             # Bucket on minutes-since-midnight so intervals that do not divide 60
             # still produce evenly spaced, non-overlapping buckets.
             minutes_of_day = ts.hour * 60 + ts.minute
             floored = (minutes_of_day // interval_minutes) * interval_minutes
-            bucket_dt = ts.replace(
-                hour=floored // 60, minute=floored % 60, second=0, microsecond=0
-            )
-            buckets.setdefault(bucket_dt, []).append((status, latency, cost, tokens))
+            bucket_dt = ts.replace(hour=floored // 60, minute=floored % 60, second=0, microsecond=0)
+            buckets.setdefault(bucket_dt, []).append((status, latency if measured else None, cost, tokens))
 
         ordered = sorted(buckets)
         results: List[Dict[str, Any]] = []
         for index, bucket_dt in enumerate(ordered):
             entries = buckets[bucket_dt]
             count = len(entries)
-            lats = [e[1] for e in entries]
+            lats = [e[1] for e in entries if e[1] is not None]
             aware = to_aware_utc(bucket_dt)
-            results.append({
-                "timestamp": aware.isoformat() if aware else "",
-                "request_count": count,
-                "error_count": sum(1 for e in entries if e[0] != "SUCCESS"),
-                "avg_latency_ms": round(sum(lats) / count, 2),
-                "p95_latency_ms": round(percentile(lats, 95), 2),
-                "total_cost_usd": round(sum(e[2] for e in entries), 6),
-                "total_tokens": sum(e[3] for e in entries),
-                # The row cap cuts into the oldest bucket, so its counts are a
-                # floor rather than a total. Flagged instead of quietly shipped.
-                "partial": truncated and index == 0,
-            })
+            results.append(
+                {
+                    "timestamp": aware.isoformat() if aware else "",
+                    "request_count": count,
+                    "error_count": sum(1 for e in entries if e[0] != "SUCCESS"),
+                    "avg_latency_ms": round(sum(lats) / len(lats), 2) if lats else None,
+                    "p95_latency_ms": round(percentile(lats, 95), 2) if lats else None,
+                    "total_cost_usd": round(sum(e[2] for e in entries), 6),
+                    "total_tokens": sum(e[3] for e in entries),
+                    # The row cap cuts into the oldest bucket, so its counts are a
+                    # floor rather than a total. Flagged instead of quietly shipped.
+                    "partial": truncated and index == 0,
+                }
+            )
         return results
 
     @staticmethod
@@ -255,7 +270,7 @@ class MetricAggregator:
                 func.count(col(TraceEvent.id)),
                 func.sum(col(TraceEvent.total_tokens)),
                 func.sum(KNOWN_COST),
-                func.avg(col(TraceEvent.latency_ms)),
+                func.avg(case((col(TraceEvent.latency_measured), col(TraceEvent.latency_ms)), else_=None)),
                 func.sum(case((TraceEvent.status != "SUCCESS", 1), else_=0)),
                 func.sum(case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0)),
             )
@@ -278,14 +293,121 @@ class MetricAggregator:
                 error_count,
                 unpriced_count,
             ) = row
-            results.append({
-                "provider": row_provider,
-                "model_name": model,
-                "count": int(count or 0),
-                "total_tokens": int(tokens or 0),
-                "total_cost_usd": round(float(cost or 0.0), 6),
-                "error_count": int(error_count or 0),
-                "avg_latency_ms": round(float(avg_latency or 0.0), 2),
-                "cost_unknown_count": int(unpriced_count or 0),
-            })
+            results.append(
+                {
+                    "provider": row_provider,
+                    "model_name": model,
+                    "count": int(count or 0),
+                    "total_tokens": int(tokens or 0),
+                    "total_cost_usd": round(float(cost or 0.0), 6),
+                    "error_count": int(error_count or 0),
+                    "avg_latency_ms": round(float(avg_latency), 2) if avg_latency is not None else None,
+                    "cost_unknown_count": int(unpriced_count or 0),
+                }
+            )
+        return results
+
+    @staticmethod
+    def get_active_contexts(session: Session, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Usage per AI on this PC, keyed the way the desktop detector keys AIs.
+
+        Watcher rows are grouped by the tool that produced them (Claude Code,
+        Antigravity, Copilot), not by provider: Copilot also calls Claude models,
+        and those calls are not Claude Code usage. Every other row is grouped as
+        `<provider>_api`.
+
+        Windows: rolling 5 hours, today and this month in the PC's local time,
+        and the last 7 days. Cost sums only priced rows; `cost_unknown` counts
+        the rest so a caller can say "계산 불가" instead of showing a low total.
+        """
+        now_utc = to_aware_utc(now) if now else to_aware_utc(utc_now())
+        local_now = now_utc.astimezone()
+        local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_month = local_midnight.replace(day=1)
+        windows = {
+            "5h": now_utc - timedelta(hours=5),
+            "today": local_midnight,
+            "7d": now_utc - timedelta(days=7),
+            "month": local_month,
+        }
+
+        tags = "," + func.coalesce(col(TraceEvent.tags), "") + ","
+        groups: List[tuple] = [
+            (key, "watcher", [tags.like(f"%,{tag},%")]) for key, tag in WATCHER_TAGS.items()
+        ]
+        not_watcher = [~tags.like(f"%,{tag},%") for tag in WATCHER_TAGS.values()]
+        providers = session.exec(select(TraceEvent.provider).where(*not_watcher).distinct()).all()
+        groups += [
+            (f"{prov}_api", "api", not_watcher + [col(TraceEvent.provider) == prov]) for prov in providers
+        ]
+
+        results: Dict[str, Any] = {}
+        for key, kind, filters in groups:
+            latest = session.exec(
+                select(TraceEvent)
+                .where(*filters)
+                .where(col(TraceEvent.timestamp) <= to_naive_utc(now_utc))
+                .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+                .limit(1)
+            ).first()
+            if latest is None:
+                continue
+
+            win_out: Dict[str, Any] = {}
+            for name, since in windows.items():
+                row = session.exec(
+                    select(
+                        func.count(col(TraceEvent.id)),
+                        func.coalesce(func.sum(col(TraceEvent.total_tokens)), 0),
+                        func.coalesce(
+                            func.sum(
+                                case(
+                                    (col(TraceEvent.cost_source) != SOURCE_UNKNOWN, col(TraceEvent.cost_usd)),
+                                    else_=0.0,
+                                )
+                            ),
+                            0.0,
+                        ),
+                        func.coalesce(
+                            func.sum(case((col(TraceEvent.cost_source) == SOURCE_UNKNOWN, 1), else_=0)), 0
+                        ),
+                        func.min(col(TraceEvent.timestamp)),
+                    )
+                    .where(*filters)
+                    .where(col(TraceEvent.timestamp) >= to_naive_utc(since))
+                    .where(col(TraceEvent.timestamp) <= to_naive_utc(now_utc))
+                ).first() or (0, 0, 0.0, 0, None)
+                win_out[name] = {
+                    "since": to_aware_utc(since).isoformat(),
+                    "requests": int(row[0] or 0),
+                    "tokens": int(row[1] or 0),
+                    "cost_usd": round(float(row[2] or 0.0), 6),
+                    "cost_unknown": int(row[3] or 0),
+                    "earliest": to_aware_utc(row[4]).isoformat() if row[4] else None,
+                }
+
+            ts = to_aware_utc(latest.timestamp)
+            mins_ago = int((now_utc - ts).total_seconds() // 60) if ts else None
+            # The input of the last request is the conversation's size at that point.
+            # Copilot rows are session totals and Antigravity rows are text-length
+            # estimates, so neither says anything about a context window.
+            context_tokens = None
+            if key == "claude" or kind == "api":
+                context_tokens = (
+                    (latest.prompt_tokens or 0)
+                    + (latest.cache_read_tokens or 0)
+                    + (latest.cache_write_tokens or 0)
+                )
+            results[key] = {
+                "key": key,
+                "kind": kind,
+                "provider": latest.provider,
+                "model_name": latest.model_name,
+                "session_id": latest.session_id,
+                "context_tokens": context_tokens,
+                "timestamp": ts.isoformat() if ts else None,
+                "mins_ago": mins_ago,
+                "is_active": mins_ago is not None and mins_ago <= 15,
+                "windows": win_out,
+            }
         return results

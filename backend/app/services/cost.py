@@ -30,6 +30,7 @@ class ModelPricing(NamedTuple):
     output_per_1m: float
     cache_write_per_1m: Optional[float] = None
     cache_read_per_1m: Optional[float] = None
+    cache_write_1h_per_1m: Optional[float] = None
 
 
 class CostResult(NamedTuple):
@@ -72,8 +73,8 @@ def _openai(input_rate: float, output_rate: float, cached: Optional[float]) -> M
 
 
 def _anthropic(input_rate: float, output_rate: float, write_5m: float, read: float) -> ModelPricing:
-    # One cache-write field: priced at the 5-minute rate (1-hour writes cost 2x input).
-    return ModelPricing(input_rate, output_rate, write_5m, read)
+    # PRICING_SOURCES["anthropic"], verified 2026-10-06: 1-hour writes cost 2x input.
+    return ModelPricing(input_rate, output_rate, write_5m, read, input_rate * 2)
 
 
 def _gemini(input_rate: float, output_rate: float, cached: float) -> ModelPricing:
@@ -240,6 +241,7 @@ def calculate_cost_detail(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     custom_cost_usd: Optional[float] = None,
+    cache_write_1h_tokens: int = 0,
 ) -> CostResult:
     """Price a single call, reporting where the number came from.
 
@@ -264,10 +266,15 @@ def calculate_cost_detail(
     cache_read_tokens = max(0, cache_read_tokens)
     cache_write_tokens = max(0, cache_write_tokens)
 
+    cache_write_1h_tokens = min(max(0, cache_write_1h_tokens), cache_write_tokens)
+    if cache_write_1h_tokens and pricing.cache_write_1h_per_1m is None:
+        return CostResult(0.0, SOURCE_UNKNOWN)
+
     total = (
         (prompt_tokens / 1_000_000.0) * pricing.input_per_1m
         + (completion_tokens / 1_000_000.0) * pricing.output_per_1m
-        + (cache_write_tokens / 1_000_000.0) * write_rate
+        + ((cache_write_tokens - cache_write_1h_tokens) / 1_000_000.0) * write_rate
+        + (cache_write_1h_tokens / 1_000_000.0) * (pricing.cache_write_1h_per_1m or 0.0)
         + (cache_read_tokens / 1_000_000.0) * read_rate
     )
     return CostResult(round(total, 6), SOURCE_PRICING_TABLE)
@@ -281,6 +288,7 @@ def calculate_cost(
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
     custom_cost_usd: Optional[float] = None,
+    cache_write_1h_tokens: int = 0,
 ) -> float:
     """Cost in USD; 0.0 when unpriced.
 
@@ -295,4 +303,5 @@ def calculate_cost(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         custom_cost_usd=custom_cost_usd,
+        cache_write_1h_tokens=cache_write_1h_tokens,
     ).cost_usd

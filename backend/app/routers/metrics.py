@@ -72,3 +72,9 @@ def get_model_breakdown(
     return MetricAggregator.get_model_breakdown(
         session=session, hours_back=hours_back, provider=provider
     )
+
+
+@router.get("/active_contexts", response_model=Dict[str, Any])
+def get_active_contexts(session: Session = Depends(get_session)):
+    """Per-tool usage windows and the latest context estimate for the desktop."""
+    return MetricAggregator.get_active_contexts(session=session)

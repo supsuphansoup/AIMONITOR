@@ -75,7 +75,7 @@ def test_new_columns_are_added_to_an_old_database(legacy_engine):
     ensure_schema(legacy_engine)
 
     columns = {c["name"] for c in inspect(legacy_engine).get_columns("trace_events")}
-    assert {"cache_read_tokens", "cache_write_tokens", "cost_source"} <= columns
+    assert {"cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens", "latency_measured", "cost_source"} <= columns
 
     rule_columns = {c["name"] for c in inspect(legacy_engine).get_columns("alert_rules")}
     assert {"cooldown_minutes", "last_triggered_at"} <= rule_columns
@@ -157,3 +157,14 @@ def test_ensure_schema_works_without_the_models_imported():
         capture_output=True, text=True, cwd=str(repo_root), env=env,
     )
     assert "RESULT True" in result.stdout, result.stderr
+
+
+def test_desktop_columns_defaults_and_index_are_backfilled(legacy_engine):
+    ensure_schema(legacy_engine)
+    with legacy_engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT cache_write_1h_tokens, latency_measured, latency_ms FROM trace_events"
+        )).one()
+    assert tuple(row) == (0, 1, 200.0)
+    indexes = {i["name"]: i["column_names"] for i in inspect(legacy_engine).get_indexes("trace_events")}
+    assert indexes["ix_trace_events_measured_timestamp"] == ["latency_measured", "timestamp", "id"]

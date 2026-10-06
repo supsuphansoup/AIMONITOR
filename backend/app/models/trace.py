@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
 from backend.app.core.config import settings
@@ -36,6 +37,8 @@ class TraceEventBase(SQLModel):
         default=0, ge=0, description="Input tokens served from the provider prompt cache"
     )
     cache_write_tokens: int = Field(default=0, ge=0, description="Input tokens written into the prompt cache")
+    cache_write_1h_tokens: int = Field(default=0, ge=0, description="1-hour subset of cache_write_tokens")
+    latency_measured: bool = Field(default=True, description="Whether the source measured latency")
     total_tokens: int = Field(default=0, ge=0)
     latency_ms: float = Field(default=0.0, ge=0.0, description="End-to-end latency in milliseconds")
     cost_usd: float = Field(default=0.0, ge=0.0, description="Cost in USD; 0.0 when cost_source is 'unknown'")
@@ -55,6 +58,7 @@ class TraceEventBase(SQLModel):
 class TraceEvent(TraceEventBase, table=True):
     """Database table model for storing trace events."""
     __tablename__ = "trace_events"
+    __table_args__ = (Index("ix_trace_events_measured_timestamp", "latency_measured", "timestamp", "id"),)
 
     id: Optional[int] = Field(default=None, primary_key=True)
     # Stored as naive UTC; see backend.app.core.timeutil for why.
@@ -72,8 +76,9 @@ class TraceEventCreate(BaseModel):
     completion_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    cache_write_1h_tokens: int = 0
     total_tokens: Optional[int] = None
-    latency_ms: float = 0.0
+    latency_ms: Optional[float] = None
     cost_usd: Optional[float] = None
     status: str = "SUCCESS"
     error_message: Optional[str] = None
@@ -134,6 +139,11 @@ class TraceEventRead(TraceEventBase):
     """Response schema for trace event queries."""
     id: int
     timestamp: datetime
+    latency_ms: Optional[float] = None
+
+    @field_serializer("latency_ms")
+    def serialize_latency(self, value: float, _info: Any) -> Optional[float]:
+        return value if self.latency_measured else None
 
     @field_serializer("timestamp")
     def serialize_timestamp(self, value: datetime, _info: Any) -> str:

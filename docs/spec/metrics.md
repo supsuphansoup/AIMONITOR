@@ -7,6 +7,8 @@
 - MET-3 `GET /metrics/breakdown`: 모델·provider별 요청 수·비용 점유.
 - MET-4 근사치는 근사치라고 밝힌다. 비용 미상 건수(`cost_unknown_count`)와 표본 여부(`latency_sampled`, `partial`)를 함께 반환한다.
 - MET-5 데이터가 많아도 대시보드 폴링 한 번이 프로세스를 멈추게 하지 않는다.
+- MET-6 `latency_measured=false` 행은 평균·백분위에서 제외하고 overview에 `latency_measured_count`를 반환한다. 요청은 있으나 측정값이 없으면 지연은 `null`이다. 지연 표본 여부는 측정 행 수를 기준으로 판단한다.
+- MET-7 `/metrics/active_contexts`의 도구별 사용량은 [desktop.md](desktop.md)를 따른다.
 
 ## Design
 

@@ -13,6 +13,7 @@
 | [dashboard.md](dashboard.md) | React 대시보드 | `frontend/src/` |
 | [security-ops.md](security-ops.md) | 인증, 원문 보호, 보관, 스키마 업그레이드, 배포 | `core/security.py`, `db/session.py`, `services/retention.py`, `Dockerfile` |
 | [sdk.md](sdk.md) | Python SDK | `sdk/python/aimonitor/client.py` |
+| [desktop.md](desktop.md) | Windows 데스크톱·위젯·키 관리·사용량 | `desktop/`, `routers/api_keys.py`, `services/provider_spend.py` |
 
 ## 공통 규칙
 

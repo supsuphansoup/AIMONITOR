@@ -16,6 +16,7 @@ from backend.app.core.logging import configure_logging
 from backend.app.core.security import warn_if_insecure
 from backend.app.db.session import engine, init_db
 from backend.app.routers.alerts import router as alerts_router
+from backend.app.routers.api_keys import router as api_keys_router
 from backend.app.routers.metrics import router as metrics_router
 from backend.app.routers.system import router as system_router
 from backend.app.routers.traces import router as traces_router
@@ -162,6 +163,7 @@ async def api_v1_health_check():
 app.include_router(traces_router, prefix=settings.API_V1_STR)
 app.include_router(metrics_router, prefix=settings.API_V1_STR)
 app.include_router(alerts_router, prefix=settings.API_V1_STR)
+app.include_router(api_keys_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
 
 

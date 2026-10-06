@@ -37,6 +37,7 @@
 
 - 모델 메타데이터와 실제 스키마를 비교해 **누락 컬럼은 `ALTER TABLE ADD COLUMN`, 누락 인덱스는 `CREATE INDEX`.** 삭제·타입 변경은 하지 않으며 멱등.
 - 모델 import를 명시적으로 수행(`_load_model_metadata`)해 import 순서에 의존하지 않는다.
+- 데스크톱 필드 `cache_write_1h_tokens DEFAULT 0`, `latency_measured DEFAULT 1`과 복합 인덱스 `(latency_measured, timestamp, id)`도 같은 업그레이드 경로로 추가한다. 과거 지연 값은 보존한다.
 - SQLite: WAL, `busy_timeout=15000`, `PRAGMA foreign_keys=ON`.
 
 ### 배포

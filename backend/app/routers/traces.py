@@ -36,6 +36,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     completion_tokens = max(0, payload.completion_tokens)
     cache_read_tokens = max(0, payload.cache_read_tokens)
     cache_write_tokens = max(0, payload.cache_write_tokens)
+    cache_write_1h_tokens = min(max(0, payload.cache_write_1h_tokens), cache_write_tokens)
 
     total_tokens = (
         payload.total_tokens
@@ -50,6 +51,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
         completion_tokens=completion_tokens,
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
+        cache_write_1h_tokens=cache_write_1h_tokens,
         custom_cost_usd=payload.cost_usd,
     )
 
@@ -62,8 +64,10 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
         "completion_tokens": completion_tokens,
         "cache_read_tokens": cache_read_tokens,
         "cache_write_tokens": cache_write_tokens,
+        "cache_write_1h_tokens": cache_write_1h_tokens,
         "total_tokens": max(0, total_tokens),
-        "latency_ms": max(0.0, payload.latency_ms),
+        "latency_ms": max(0.0, payload.latency_ms) if payload.latency_ms is not None else 0.0,
+        "latency_measured": payload.latency_ms is not None,
         "cost_usd": cost.cost_usd,
         "cost_source": cost.source,
         "status": payload.status.upper(),

@@ -228,6 +228,9 @@ class AlertEvaluator:
                     "the actual cost may be higher"
                 )
 
+            if overview.get(metric_key) is None:
+                continue
+
             metric_val = extract_metric_value(overview, rule.metric_type)
             if not compare_operator(metric_val, rule.operator, rule.threshold_value):
                 continue

@@ -25,8 +25,9 @@
 | `prompt_tokens` | 캐시되지 않은 입력 토큰. 음수는 0으로 보정 |
 | `completion_tokens` | 출력 토큰. 음수는 0 |
 | `cache_read_tokens` / `cache_write_tokens` | 캐시 읽기/쓰기 토큰. 음수는 0 |
+| `cache_write_1h_tokens` | 전체 캐시 쓰기 중 1시간 TTL 부분집합, 0 이상·전체 쓰기 이하로 보정 |
 | `total_tokens` | 미전달 시 위 네 값의 합 |
-| `latency_ms` | ≥ 0 |
+| `latency_ms` / `latency_measured` | 입력 생략·null은 미측정. DB는 0 + false, 응답은 null. 명시적 0ms는 true |
 | `cost_usd` / `cost_source` | [cost.md](cost.md). `unknown`이면 `cost_usd=0.0`이지만 금액으로 취급하지 않는다 |
 | `status` | `SUCCESS`·`ERROR`·`TIMEOUT`·`RATE_LIMITED` (대소문자 무시, 그 외 422) |
 | `error_message` | 최대 `MAX_ERROR_MESSAGE_CHARS`(2000)자로 절단 |
