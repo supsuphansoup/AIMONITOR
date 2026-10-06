@@ -1,4 +1,4 @@
-# Spec: AIMONITOR (v0.4.0)
+# Spec: AIMONITOR (v0.5.0)
 
 [intent.md](../intent.md)의 의도를 기능별 규칙과 수치로 바꾼 명세다. 각 파일은
 `Requirements / Design / Open questions / Areas of concern` 구조를 따른다.

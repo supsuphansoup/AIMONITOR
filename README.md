@@ -4,7 +4,7 @@
 
 AIMONITOR는 OpenAI, Anthropic, Gemini, 로컬 Ollama 등 다양한 LLM 호출의 **지연 시간(P50/P95/P99), 토큰 사용량, 실시간 비용, 에러율 및 이상 징후 알림**을 추적하고 대시보드로 시각화하는 셀프호스팅 모니터링 시스템입니다.
 
-**현재 버전: v0.4.0** — 비용 정확도 릴리스. 다른 모델의 단가를 빌려 쓰거나 유료 API를 무료로 처리하던 매칭 결함과, SDK의 OpenAI·Gemini 캐시 토큰 처리 결함을 고쳤습니다.
+**현재 버전: v0.5.0** — 단가표를 공식 가격(2026-10-06 기준)으로 갱신하고, 데이터가 없거나 비용을 모르는 구간에서 알림이 잘못 울리던 문제, CSV 수식 주입, 운영 화면의 데모 버튼을 고쳤습니다.
 변경 내역: [CHANGELOG.md](CHANGELOG.md) · 기획·명세: [docs/intent.md](docs/intent.md) → [docs/spec/](docs/spec/README.md) → [docs/plan.md](docs/plan.md)
 
 ---
@@ -158,7 +158,9 @@ with AIMonitor() as mon:
 | `local_free` | 로컬 추론(Ollama 등), 토큰 과금 없음 | `$0.00000` |
 | `unknown` | **단가 정보 없음** | **`계산 불가`** |
 
-프롬프트 캐시는 쓰기와 읽기 단가가 다릅니다(예: Anthropic 은 쓰기 1.25배, 읽기 0.1배). AIMONITOR는 이 둘을 합산하지 않고 각각의 단가로 계산합니다. 적용 중인 단가는 `GET /api/v1/system/pricing` 으로 확인할 수 있습니다.
+프롬프트 캐시는 쓰기와 읽기 단가가 다르고, 할인율도 모델마다 다릅니다(예: Claude Opus 5.5 읽기 0.05배, gpt-4o 0.5배, gpt-5 0.1배). AIMONITOR는 이 둘을 합산하지 않고 모델별 공식 단가로 각각 계산합니다. 적용 중인 단가와 확인일(`as_of`)·출처는 `GET /api/v1/system/pricing` 으로 확인할 수 있습니다.
+
+비용은 **표준 단가 기준 추정치**입니다. Batch 할인, 긴 프롬프트 구간 요금, 1시간 캐시, 클라우드 파트너 가격 등은 반영하지 않습니다 ([docs/spec/cost.md](docs/spec/cost.md)).
 
 ---
 

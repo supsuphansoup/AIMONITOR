@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # --- Identity -------------------------------------------------------
     PROJECT_NAME: str = "AIMONITOR"
-    VERSION: str = "0.4.0"
+    VERSION: str = "0.5.0"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"

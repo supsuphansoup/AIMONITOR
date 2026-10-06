@@ -1,6 +1,6 @@
 # Plan: v0.5.0 — 알림·내보내기·집계 정합성, 단가표 갱신
 
-Status: in progress (2026-10-06 승인: "다음 작업도 순서대로 진행"). 이전 계획(v0.4.0)은 git 이력과 [CHANGELOG](../CHANGELOG.md).
+Status: done (2026-10-06 승인: "다음 작업도 순서대로 진행", 구현 완료 v0.5.0). 이전 계획(v0.4.0)은 git 이력과 [CHANGELOG](../CHANGELOG.md).
 근거: 각 spec의 Areas of concern. 아래 순서대로 하나씩 테스트 → 구현 → 커밋한다.
 
 | # | 항목 | spec | 결정 |
@@ -43,3 +43,14 @@ cd frontend && npm ci && npm run typecheck && npm test && npm run build
 ```
 
 - 기준선(2026-10-06): 백엔드 `179 passed, 1 skipped`.
+- 최종 검증(2026-10-06): 백엔드 `219 passed`, `ruff check .` 통과, 프론트엔드 typecheck·`58 passed`·build 통과.
+- 결정 변경 1건: 1b의 알림 메시지는 기존 메시지와 맞춰 영어(`excludes N call(s) with unknown pricing; ...`)로 했다.
+- 5의 의도된 테스트 변경: `gpt-4o-2024-05-13 → gpt-4o` 단언 2건(공식 가격이 달라 별도 키), `o3-pro → unknown` 단언(이제 공식 단가 보유), 캐시 대체 규칙 테스트 2건의 예시 모델(`gpt-4o`에 캐시 단가가 명시돼 대체 규칙을 타지 않음).
+
+## 다음 후보 (승인 시 새 plan)
+
+- 2027-01-01 전 단가표 갱신 (Gemini 프로모션 종료) — [spec/cost.md](spec/cost.md)
+- 긴 프롬프트 구간·1시간 캐시·Batch 할인 반영 여부 — [spec/cost.md](spec/cost.md)
+- 키 이름 기반 원문 차단의 한계, API 키 회전 절차 — [spec/security-ops.md](spec/security-ops.md)
+- `cost_hourly` 별칭의 의미 불일치 — [spec/alerts.md](spec/alerts.md)
+- `localStorage` API 키 저장 — [spec/dashboard.md](spec/dashboard.md)

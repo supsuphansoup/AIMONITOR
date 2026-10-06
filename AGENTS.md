@@ -48,6 +48,7 @@ core/: config · security(API 키) · sanitize · timeutil · metrics_catalog   
 - `ORDER BY ... ASC LIMIT n`으로 상한을 걸어 **최신 데이터를 잘라냄.** 상한은 항상 최신 우선(`DESC`)으로, 잘렸으면 `partial`/`latency_sampled`로 알린다.
 - 오프셋 없는 datetime을 응답해 대시보드가 9시간 어긋남.
 - 모르는 모델에 임의 단가를 붙이거나, 유료 API를 오픈 웨이트 모델명만 보고 `local_free`로 처리함.
+- 단가를 기억으로 적거나 provider 캐시 배수를 가정함. 공식 가격 페이지(`PRICING_SOURCES`)에서 확인하고 `PRICING_AS_OF`를 갱신한다.
 - 쿨다운을 파이썬에서 읽고 나중에 써서 다중 워커에서 알림 중복. 발동 권한은 조건부 UPDATE(`claim_rule`)로만 얻는다.
 - 수동 평가(`ignore_cooldown`)가 다른 규칙의 쿨다운 상태를 건드림. 수동 평가는 상태를 바꾸지 않는다.
 - `ALTER TABLE ADD COLUMN`만 하고 인덱스를 빠뜨림.
