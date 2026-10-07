@@ -18,10 +18,12 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from desktop import theme
+from desktop.accounts import list_accounts
 from desktop.ai_detector import detect_connected_ais
 from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
-from desktop.display import select_entries, widget_entries
+from desktop.display import AccountQuotaView, account_tools, attach_accounts, select_entries, widget_entries
+from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
 ROW_HEIGHT = theme.ROW_HEIGHT
@@ -395,6 +397,8 @@ class FloatingWidget:
                     if r_sp.status_code == 200:
                         spend = r_sp.json()
             if res.status_code == 200:
+                account_rows = list_accounts()
+                self._connected_ais = account_tools(self._connected_ais, account_rows)
                 summary = get_connected_ai_summary(
                     self._connected_ais,
                     usage_by_ai=res.json(),
@@ -402,6 +406,14 @@ class FloatingWidget:
                     config=self.config,
                     official_spend=spend,
                 )
+                try:
+                    quotas = account_quotas(registry=AccountQuotaView(account_rows)) if any(
+                        i["key"] in ("claude", "codex", "antigravity", "copilot", "cursor")
+                        for i in summary.get("items", [])
+                    ) else []
+                except Exception:
+                    quotas = []
+                attach_accounts(summary, res.json(), account_rows, quotas, self.rate_updater.rate)
                 ok = True
         except Exception:
             pass

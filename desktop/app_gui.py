@@ -22,13 +22,15 @@ import logging
 import sys
 import threading
 from datetime import datetime
+from pathlib import Path
+from tkinter import filedialog
 from typing import Any, Callable, Dict, List, Optional
 
 import customtkinter as ctk
 import httpx
 import matplotlib
 
-from desktop import autostart, theme
+from desktop import accounts, autostart, theme
 
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -47,6 +49,13 @@ from desktop.config import attach_to_default_desktop, backend_headers, load_conf
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     GREY,
+    AccountQuotaView,
+    account_label,
+    account_options,
+    account_query,
+    account_tools,
+    account_usage_lines,
+    attach_accounts,
     format_num,
     format_reset_suffix,  # noqa: F401  (re-exported for older imports)
     krw,
@@ -55,6 +64,7 @@ from desktop.display import (
     usage_cost_text,
     window_text,
 )
+from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
 theme.install()
@@ -131,6 +141,11 @@ class DesktopMainWindow(ctk.CTk):
         self.log_filter_provider = "전체"
         self.log_filter_status = "전체"
         self.log_filter_search = ""
+        self.account_rows = accounts.list_accounts()
+        self.connected_ais = account_tools(self.connected_ais, self.account_rows)
+        self.account_choices = account_options(self.account_rows)
+        self.log_account_selection = "전체"
+        self.chart_account_selection = "전체"
 
         self.official_spend: Dict[str, Any] = {}
         self.rate_updater.add_listener(self._on_rate_updated)
@@ -153,9 +168,11 @@ class DesktopMainWindow(ctk.CTk):
             for item in self.cached_summary["items"]:
                 widgets = self.ai_card_widgets.get(item["key"])
                 if widgets:
-                    self._render_quota_rows(widgets, item["quota_windows"])
+                    if self._render_account_card(widgets, item):
+                        continue
+                    self._render_quota_rows(widgets, item["quota_windows"] or [])
                     context = item.get("context")
-                    if context:
+                    if context and context.get("used_pct") is not None:
                         widgets["prog_ctx"].configure(
                             progress_color=remaining_color(100 - context["used_pct"])
                         )
@@ -175,7 +192,7 @@ class DesktopMainWindow(ctk.CTk):
 
     def rescan_ais(self) -> None:
         """Trigger re-scan of PC connected and paid AIs."""
-        self.connected_ais = detect_connected_ais()
+        self.connected_ais = account_tools(detect_connected_ais(), accounts.list_accounts())
         self._rebuild_unified_cards()
         self._refresh_visibility_list()
         self._refresh_diagnostic_table()
@@ -421,6 +438,8 @@ class DesktopMainWindow(ctk.CTk):
             quota_box = ctk.CTkFrame(card, fg_color="transparent")
             quota_box.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_HALF)
 
+            account_box = ctk.CTkScrollableFrame(card, fg_color="transparent", width=300, height=330)
+
             ctx_box = ctk.CTkFrame(card, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
             ctx_box.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_1)
             lbl_ctx = ctk.CTkLabel(
@@ -472,6 +491,10 @@ class DesktopMainWindow(ctk.CTk):
                 "lbl_plan": lbl_plan,
                 "lbl_session_status": lbl_session_status,
                 "quota_box": quota_box,
+                "account_box": account_box,
+                "account_signature": None,
+                "ctx_box": ctx_box,
+                "cost_box": cost_box,
                 "quota_rows": {},
                 "quota_ids": [],
                 "lbl_ctx": lbl_ctx,
@@ -527,6 +550,10 @@ class DesktopMainWindow(ctk.CTk):
     # =========================================================================
     def _init_analytics_tab(self) -> None:
         parent = self.tab_analytics
+        self.chart_account_menu = ctk.CTkOptionMenu(
+            parent, values=list(self.account_choices), width=320, command=self._on_chart_account_changed,
+        )
+        self.chart_account_menu.pack(anchor="w", padx=theme.SPACE_4, pady=(theme.SPACE_2, 0))
 
         lbl_sec = ctk.CTkLabel(
             parent,
@@ -639,6 +666,10 @@ class DesktopMainWindow(ctk.CTk):
         # Filter bar
         filt_card = ctk.CTkFrame(parent, fg_color=theme.CARD, corner_radius=theme.RADIUS_MD)
         filt_card.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
+        self.log_account_menu = ctk.CTkOptionMenu(
+            filt_card, values=list(self.account_choices), width=320, command=self._on_log_account_changed,
+        )
+        self.log_account_menu.pack(anchor="w", padx=theme.SPACE_3, pady=(theme.SPACE_2, 0))
 
         f_row = ctk.CTkFrame(filt_card, fg_color="transparent")
         f_row.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_3)
@@ -701,6 +732,8 @@ class DesktopMainWindow(ctk.CTk):
         self._on_filter_changed()
 
     def _clear_log_filters(self) -> None:
+        self.log_account_menu.set("전체")
+        self._on_log_account_changed("전체")
         self.opt_filter_prov.set("전체")
         self.opt_filter_stat.set("전체")
         self.entry_search_logs.delete(0, "end")
@@ -711,6 +744,37 @@ class DesktopMainWindow(ctk.CTk):
         self.log_filter_status = self.opt_filter_stat.get()
         self.log_filter_search = self.entry_search_logs.get().strip().lower()
         self._render_filtered_logs()
+
+    def _on_log_account_changed(self, selection: str) -> None:
+        self.log_account_selection = selection
+        self.traces_data = []
+        self._render_filtered_logs()
+        self.refresh_data()
+
+    def _on_chart_account_changed(self, selection: str) -> None:
+        self.chart_account_selection = selection
+        self._update_native_charts([])
+        self._render_breakdown([])
+        self.refresh_data()
+
+    def _refresh_account_choices(self) -> None:
+        choices = account_options(self.account_rows)
+        # Include IDs found in traces even when this desktop has no registered folder.
+        for trace in self.traces_data:
+            aid = trace.get("account_id")
+            if aid and aid not in choices.values():
+                choices[f"{account_label(aid, self.account_rows)} · {aid}"] = aid
+        old = self.account_choices
+        self.account_choices = choices
+        for menu, attr in ((self.log_account_menu, "log_account_selection"),
+                           (self.chart_account_menu, "chart_account_selection")):
+            selection = getattr(self, attr)
+            aid = old.get(selection)
+            if aid:
+                selection = next((label for label, value in choices.items() if value == aid), "전체")
+            menu.configure(values=list(choices))
+            menu.set(selection)
+            setattr(self, attr, selection)
 
     def _open_trace_detail_dialog(self, t: Dict[str, Any]) -> None:
         """Open detailed modal inspection dialog for a single trace."""
@@ -832,8 +896,11 @@ class DesktopMainWindow(ctk.CTk):
         self.byok_opt_prov = ctk.CTkOptionMenu(r_form, values=list(BYOK_PROVIDERS), width=210, height=34)
         self.byok_opt_prov.pack(side="left", padx=(0, theme.SPACE_3))
 
+        self.byok_entry_label = ctk.CTkEntry(r_form, placeholder_text="키 라벨 (40자 이내)", width=150)
+        self.byok_entry_label.pack(side="left", padx=(0, theme.SPACE_2))
+
         self.byok_entry_key = ctk.CTkEntry(
-            r_form, placeholder_text="API 키 입력 (sk-... / AIza...)", width=300, height=34, show="•"
+            r_form, placeholder_text="API 키 입력", width=230, height=34, show="•"
         )
         self.byok_entry_key.pack(side="left", padx=(0, theme.SPACE_2))
 
@@ -852,8 +919,8 @@ class DesktopMainWindow(ctk.CTk):
 
         btn_save_key = ctk.CTkButton(
             r_form,
-            text="키 등록 & 즉시 검증 🚀",
-            width=160,
+            text="키 추가",
+            width=100,
             height=34,
             fg_color=theme.ACCENT,
             hover_color=theme.ACCENT_HOVER,
@@ -896,8 +963,14 @@ class DesktopMainWindow(ctk.CTk):
             return
 
         try:
-            api_key_manager.set_key(prov, val)
-            ver = api_key_manager.verify_key(prov)
+            if hasattr(self, "byok_entry_label"):
+                api_key_manager.add_key(prov, val, self.byok_entry_label.get().strip() or "기본")
+                self.byok_entry_label.delete(0, "end")
+                ver = {}
+            else:
+                # Older embedders used the single-key form.
+                api_key_manager.set_key(prov, val)
+                ver = api_key_manager.verify_key(prov)
             self.byok_entry_key.delete(0, "end")
             msg = f"✓ {prov.upper()} API 키가 등록되었습니다."
             if ver.get("valid"):
@@ -911,106 +984,63 @@ class DesktopMainWindow(ctk.CTk):
             self.lbl_status_msg.configure(text=f"키 저장 실패 ({type(e).__name__})", text_color=theme.ERROR)
 
     def _refresh_keys_list(self) -> None:
-        """Render registered keys with masked display, balance, and action buttons."""
+        """Only masked metadata reaches widgets; bills are joined by provider and key ID."""
         for child in self.byok_keys_scroll.winfo_children():
             child.destroy()
+        spend = {(s["provider"], s["key_id"]): s
+                 for s in self.official_spend.get("items", [])}
+        for provider in api_key_manager.list_keys():
+            keys = provider.get("keys") or []
+            if not keys:
+                continue
+            ctk.CTkLabel(self.byok_keys_scroll, text=provider["name"],
+                         font=theme.font(theme.FONT_TITLE, weight="bold"),
+                         text_color=theme.TEXT).pack(anchor="w", padx=theme.SPACE_3, pady=theme.SPACE_2)
+            for key in keys:
+                prov, kid = key["provider"], key["key_id"]
+                card = ctk.CTkFrame(self.byok_keys_scroll, fg_color=theme.SUBTLE)
+                card.pack(fill="x", padx=theme.SPACE_2, pady=theme.SPACE_1)
+                row = ctk.CTkFrame(card, fg_color="transparent")
+                row.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_2)
+                label = ctk.CTkEntry(row, width=160)
+                label.insert(0, key["label"])
+                label.pack(side="left", padx=(0, theme.SPACE_2))
+                ctk.CTkLabel(row, text=key.get("masked") or key.get("masked_key") or "마스킹 없음",
+                             font=theme.font(theme.FONT_SM, family=theme.FONT_MONO),
+                             text_color=theme.ACCENT, width=170).pack(side="left")
+                ctk.CTkLabel(row, text=key.get("status") or "미검증", text_color=theme.MUTED,
+                             width=100).pack(side="left")
+                bill = spend.get((prov, kid))
+                bill_text = (spend_text(bill, self.krw_rate) if bill and bill.get("amount") is not None
+                             else "청구액 확인 불가")
+                ctk.CTkLabel(card, text=bill_text, text_color=theme.MUTED,
+                             font=theme.font(theme.FONT_SM)).pack(anchor="w", padx=theme.SPACE_3)
+                if key.get("source") != "env":
+                    ctk.CTkButton(row, text="라벨 저장", width=80,
+                                  command=lambda p=prov, k=kid, e=label:
+                                  self._rename_key_action(p, k, e.get())).pack(
+                                      side="right", padx=theme.SPACE_1)
+                    ctk.CTkButton(row, text="삭제", width=60, fg_color=theme.ERROR_SOFT,
+                                  text_color=theme.ERROR,
+                                  command=lambda p=prov, k=kid: self._delete_key_action(p, k)).pack(
+                                      side="right")
+                else:
+                    label.configure(state="disabled")
+                    ctk.CTkLabel(row, text="환경변수 · 읽기 전용", text_color=theme.FAINT).pack(side="right")
+        if not self.byok_keys_scroll.winfo_children():
+            ctk.CTkLabel(self.byok_keys_scroll, text="등록된 API 키가 없습니다.",
+                         text_color=theme.FAINT).pack(pady=theme.SPACE_4)
 
-        keys = api_key_manager.list_keys()
-        for k in keys:
-            prov = k["provider"]
-            name = k["name"]
-            has_key = k["has_key"]
-            masked = k["masked_key"]
-            bal = k.get("balance_info") or ("미검증" if has_key else "키 미등록")
-            if has_key and k.get("protection"):
-                bal = f"{bal} · {k['protection']}"
-
-            card = ctk.CTkFrame(self.byok_keys_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
-            card.pack(fill="x", padx=theme.SPACE_1, pady=theme.SPACE_1)
-
-            row = ctk.CTkFrame(card, fg_color="transparent")
-            row.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_3)
-
-            # Left: Provider Name & Status
-            ctk.CTkLabel(
-                row,
-                text=name,
-                font=theme.font(theme.FONT_TITLE, weight="bold"),
-                text_color=theme.TEXT,
-                width=140,
-                anchor="w",
-            ).pack(side="left")
-
-            if has_key:
-                stat_badge = ctk.CTkLabel(
-                    row,
-                    text="연동됨",
-                    font=theme.font(theme.FONT_XS),
-                    text_color=theme.SUCCESS,
-                    fg_color=theme.CARD,
-                    corner_radius=theme.RADIUS_SM,
-                    padx=theme.SPACE_2,
-                    pady=theme.SPACE_HALF,
-                )
-            else:
-                stat_badge = ctk.CTkLabel(
-                    row,
-                    text="미등록",
-                    font=theme.font(theme.FONT_XS),
-                    text_color=theme.FAINT,
-                    fg_color=theme.CARD,
-                    corner_radius=theme.RADIUS_SM,
-                    padx=theme.SPACE_2,
-                    pady=theme.SPACE_HALF,
-                )
-            stat_badge.pack(side="left", padx=(0, theme.SPACE_4))
-
-            # Masked Key
-            key_display = masked if has_key else "연동된 키 없음"
-            ctk.CTkLabel(
-                row,
-                text=key_display,
-                font=theme.font(theme.FONT_SM, family=theme.FONT_MONO),
-                text_color=theme.ACCENT if has_key else theme.FAINT,
-                width=180,
-                anchor="w",
-            ).pack(side="left", padx=(0, theme.SPACE_4))
-
-            # Balance info
-            ctk.CTkLabel(
-                row,
-                text=f"잔액/상태: {bal}",
-                font=theme.font(theme.FONT_SM),
-                text_color=theme.MUTED,
-                width=220,
-                anchor="w",
-            ).pack(side="left", padx=(0, theme.SPACE_3))
-
-            # Right buttons
-            if has_key:
-                btn_verify = ctk.CTkButton(
-                    row,
-                    text="검증",
-                    width=70,
-                    height=28,
-                    fg_color=theme.HOVER,
-                    hover_color=theme.GRID,
-                    command=lambda p=prov: self._verify_key_action(p),
-                    text_color=theme.TEXT,
-                )
-                btn_verify.pack(side="right", padx=(theme.SPACE_1, 0))
-
-                btn_del = ctk.CTkButton(
-                    row,
-                    text="🗑 삭제",
-                    width=70,
-                    height=28,
-                    fg_color=theme.ERROR_SOFT,
-                    hover_color=theme.ERROR_SOFT,
-                    command=lambda p=prov: self._delete_key_action(p),
-                    text_color=theme.ERROR,
-                )
-                btn_del.pack(side="right", padx=(0, theme.SPACE_1))
+    def _rename_key_action(self, provider: str, key_id: str, label: str) -> None:
+        try:
+            result = api_key_manager.update_label(provider, key_id, label.strip())
+            if result is None:
+                raise ValueError("missing key")
+            self.lbl_status_msg.configure(text="키 라벨을 변경했습니다.", text_color=theme.SUCCESS)
+            self._refresh_keys_list()
+        except Exception:
+            self.lbl_status_msg.configure(text="라벨 변경 실패 · 40자 이내, 이메일·키 원문 제외",
+                                          text_color=theme.ERROR)
 
     def _verify_key_action(self, prov: str) -> None:
         ver = api_key_manager.verify_key(prov)
@@ -1024,8 +1054,11 @@ class DesktopMainWindow(ctk.CTk):
             )
         self._refresh_keys_list()
 
-    def _delete_key_action(self, prov: str) -> None:
-        api_key_manager.delete_key(prov)
+    def _delete_key_action(self, prov: str, key_id: Optional[str] = None) -> None:
+        if key_id is None:
+            api_key_manager.delete_key(prov)
+        else:
+            api_key_manager.delete_key(prov, key_id)
         self.lbl_status_msg.configure(text=f"{prov.upper()} 키가 삭제되었습니다.", text_color=theme.ACCENT)
         self._refresh_keys_list()
         self._refresh_diagnostic_table()
@@ -1034,6 +1067,109 @@ class DesktopMainWindow(ctk.CTk):
     # =========================================================================
     # TAB 5: ⚙️ 시스템 진단 & 환경설정
     # =========================================================================
+    def _init_accounts_settings(self, parent: Any) -> None:
+        section = ctk.CTkFrame(parent, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
+        section.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_3)
+        ctk.CTkLabel(section, text="계정", font=theme.font(theme.FONT_TITLE, weight="bold"),
+                     text_color=theme.TEXT).pack(anchor="w", padx=theme.SPACE_3, pady=theme.SPACE_2)
+        ctk.CTkLabel(section,
+                     text="계정 전환 전 기록이나 앱이 꺼진 사이 전환된 기록은 ‘계정 미상’으로 남습니다.\n"
+                     "라벨에는 이메일·토큰을 넣지 마세요. 수동 폴더 삭제는 사용 기록을 지우지 않습니다.",
+                     justify="left", text_color=theme.FAINT,
+                     font=theme.font(theme.FONT_XS)).pack(anchor="w", padx=theme.SPACE_3)
+        form = ctk.CTkFrame(section, fg_color="transparent")
+        form.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_2)
+        self.account_tool_menu = ctk.CTkOptionMenu(form, values=["claude_code", "codex"], width=140)
+        self.account_tool_menu.pack(side="left", padx=(0, theme.SPACE_2))
+        self.account_folder_entry = ctk.CTkEntry(form, placeholder_text="수동 설정 폴더 절대 경로", width=260)
+        self.account_folder_entry.pack(side="left", padx=(0, theme.SPACE_2))
+        ctk.CTkButton(form, text="폴더 선택", width=80, command=self._choose_account_folder).pack(side="left")
+        self.account_label_entry = ctk.CTkEntry(form, placeholder_text="라벨 (선택)", width=150)
+        self.account_label_entry.pack(side="left", padx=theme.SPACE_2)
+        ctk.CTkButton(form, text="폴더 추가", width=90, command=self._add_account_folder).pack(side="left")
+        self.accounts_list_frame = ctk.CTkFrame(section, fg_color="transparent")
+        self.accounts_list_frame.pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_2)
+        self._refresh_accounts_list()
+
+    def _choose_account_folder(self) -> None:
+        directory = filedialog.askdirectory(parent=self, title="AI 설정 폴더 선택")
+        if directory:
+            self.account_folder_entry.delete(0, "end")
+            self.account_folder_entry.insert(0, directory)
+
+    def _refresh_accounts_list(self) -> None:
+        self.account_rows = accounts.list_accounts()
+        for child in self.accounts_list_frame.winfo_children():
+            child.destroy()
+        for account in sorted(self.account_rows, key=lambda a: (a["tool"], a["label"])):
+            row = ctk.CTkFrame(self.accounts_list_frame, fg_color=theme.CARD)
+            row.pack(fill="x", pady=theme.SPACE_1)
+            head = ctk.CTkFrame(row, fg_color="transparent")
+            head.pack(fill="x", padx=theme.SPACE_2, pady=theme.SPACE_1)
+            entry = ctk.CTkEntry(head, width=160)
+            entry.insert(0, account["label"])
+            entry.pack(side="left", padx=(0, theme.SPACE_2))
+            source = "수동" if account["source"] == "manual" else "자동"
+            observed = account.get("last_seen")
+            try:
+                observed = datetime.fromisoformat(observed).astimezone().strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError):
+                observed = "확인 불가"
+            ctk.CTkLabel(head, text=f"{account['tool']} · {source} · 마지막 관측 {observed}",
+                         text_color=theme.MUTED, font=theme.font(theme.FONT_XS)).pack(side="left")
+            ctk.CTkButton(head, text="라벨 저장", width=80,
+                          command=lambda a=account["account_id"], e=entry:
+                          self._rename_account(a, e.get())).pack(side="right", padx=theme.SPACE_1)
+            if account["source"] == "manual":
+                ctk.CTkButton(head, text="폴더 삭제", width=80, fg_color=theme.ERROR_SOFT,
+                              text_color=theme.ERROR, command=lambda p=account["config_dir"]:
+                              self._remove_account_folder(p)).pack(side="right")
+            ctk.CTkLabel(row, text=account["config_dir"], text_color=theme.FAINT,
+                         font=theme.font(theme.FONT_XS), wraplength=900, justify="left").pack(
+                             anchor="w", padx=theme.SPACE_2, pady=(0, theme.SPACE_1))
+        if not self.account_rows:
+            ctk.CTkLabel(self.accounts_list_frame,
+                         text="감지된 계정이 없습니다. 수집 후 새로고침하거나 폴더를 추가하세요.",
+                         text_color=theme.FAINT).pack(pady=theme.SPACE_2)
+        if hasattr(self, "log_account_menu"):
+            self._refresh_account_choices()
+
+    def _account_changed(self) -> None:
+        self._refresh_accounts_list()
+        self.connected_ais = account_tools(detect_connected_ais(), accounts.list_accounts())
+        self.refresh_data()
+        if self.on_visibility_changed:
+            self.on_visibility_changed()
+
+    def _rename_account(self, account_id: str, label: str) -> None:
+        try:
+            accounts.rename_account(account_id, label.strip())
+            self._account_changed()
+        except Exception:
+            self.lbl_status_msg.configure(text="계정 라벨 변경 실패 · 이메일·토큰을 제외하세요.",
+                                          text_color=theme.ERROR)
+
+    def _add_account_folder(self) -> None:
+        try:
+            path = Path(self.account_folder_entry.get().strip())
+            if not path.is_absolute():
+                raise ValueError("absolute path required")
+            accounts.add_folder(self.account_tool_menu.get(), path,
+                                self.account_label_entry.get().strip() or None)
+            self.account_folder_entry.delete(0, "end")
+            self.account_label_entry.delete(0, "end")
+            self._account_changed()
+        except Exception:
+            self.lbl_status_msg.configure(text="폴더 추가 실패 · 경로와 라벨을 확인하세요.",
+                                          text_color=theme.ERROR)
+
+    def _remove_account_folder(self, path: str) -> None:
+        try:
+            accounts.remove_folder(Path(path))
+            self._account_changed()
+        except Exception:
+            self.lbl_status_msg.configure(text="수동 폴더 삭제 실패", text_color=theme.ERROR)
+
     def _init_settings_tab(self) -> None:
         parent = self.tab_settings
 
@@ -1047,6 +1183,7 @@ class DesktopMainWindow(ctk.CTk):
 
         s_scroll = ctk.CTkScrollableFrame(parent, fg_color=theme.CARD, corner_radius=theme.RADIUS_MD)
         s_scroll.pack(fill="both", expand=True, padx=theme.SPACE_4, pady=(0, theme.SPACE_3))
+        self._init_accounts_settings(s_scroll)
 
         startup = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
         startup.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
@@ -1191,6 +1328,7 @@ class DesktopMainWindow(ctk.CTk):
     def _on_tab_changed(self) -> None:
         if self.tabview.get() == "환경설정":
             self._refresh_autostart_status()
+            self._refresh_accounts_list()
 
     def _refresh_autostart_status(self) -> None:
         try:
@@ -1424,6 +1562,11 @@ class DesktopMainWindow(ctk.CTk):
         url_bd = f"{self.backend_url}/api/v1/metrics/breakdown?hours_back=168"
         url_tr = f"{self.backend_url}/api/v1/traces?limit=50"
         url_act = f"{self.backend_url}/api/v1/metrics/active_contexts"
+        selections = (getattr(self, "log_account_selection", "전체"),
+                      getattr(self, "chart_account_selection", "전체"))
+        choices = getattr(self, "account_choices", {})
+        log_params = account_query(selections[0], choices)
+        chart_params = account_query(selections[1], choices)
 
         overview = {}
         breakdown = []
@@ -1435,7 +1578,7 @@ class DesktopMainWindow(ctk.CTk):
         try:
             with httpx.Client(timeout=3.0, headers=backend_headers(config)) as client:
                 try:
-                    r_ov = client.get(url_ov)
+                    r_ov = client.get(url_ov, params=chart_params)
                     auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
                         overview = r_ov.json()
@@ -1444,7 +1587,7 @@ class DesktopMainWindow(ctk.CTk):
                     logger.debug("overview fetch err: %s", type(e).__name__)
 
                 try:
-                    r_bd = client.get(url_bd)
+                    r_bd = client.get(url_bd, params=chart_params)
                     auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
                         breakdown = r_bd.json()
@@ -1453,7 +1596,7 @@ class DesktopMainWindow(ctk.CTk):
                     logger.debug("breakdown fetch err: %s", type(e).__name__)
 
                 try:
-                    r_tr = client.get(url_tr)
+                    r_tr = client.get(url_tr, params=log_params)
                     auth_required = auth_required or r_tr.status_code in (401, 403)
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
@@ -1469,7 +1612,8 @@ class DesktopMainWindow(ctk.CTk):
                 except Exception as e:
                     logger.debug("active_contexts fetch err: %s", type(e).__name__)
 
-                if any(a["key"].endswith("_api") for a in ais):
+                if (any(a["key"].endswith("_api") for a in ais)
+                        or any(a.get("has_key") for a in api_key_manager.list_keys())):
                     try:
                         r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
                         auth_required = auth_required or r_sp.status_code in (401, 403)
@@ -1485,6 +1629,9 @@ class DesktopMainWindow(ctk.CTk):
             if ok:
                 # 여기서 만든다: 공식 사용량 조회(네트워크)와 로그 읽기가 들어 있어
                 # UI 스레드에서 돌리면 창 전체가 멈춘다.
+                self.account_rows = accounts.list_accounts()
+                ais = account_tools(ais, self.account_rows)
+                self.connected_ais = ais
                 summary = get_connected_ai_summary(
                     ais,
                     usage_by_ai=act_contexts,
@@ -1492,6 +1639,14 @@ class DesktopMainWindow(ctk.CTk):
                     config=config,
                     official_spend=self.official_spend,
                 )
+                try:
+                    quotas = account_quotas(registry=AccountQuotaView(self.account_rows)) if any(
+                        i["key"] in ("claude", "codex", "antigravity", "copilot", "cursor")
+                        for i in summary.get("items", [])
+                    ) else []
+                except Exception:
+                    quotas = []
+                attach_accounts(summary, act_contexts, self.account_rows, quotas, krw_rate)
         except Exception as e:
             logger.debug("summary build err: %s", type(e).__name__)
             ok = False
@@ -1500,7 +1655,13 @@ class DesktopMainWindow(ctk.CTk):
             self._is_updating = False
 
         try:
-            self.after(0, lambda: self._apply_data(overview, breakdown, traces, summary, ok, auth_required))
+            def apply_current() -> None:
+                if selections != (getattr(self, "log_account_selection", "전체"),
+                                  getattr(self, "chart_account_selection", "전체")):
+                    self._schedule_refresh(0)
+                    return
+                self._apply_data(overview, breakdown, traces, summary, ok, auth_required)
+            self.after(0, apply_current)
         except RuntimeError:
             # 창이 이미 닫혀 mainloop가 끝난 경우
             pass
@@ -1525,6 +1686,11 @@ class DesktopMainWindow(ctk.CTk):
         self.overview_data = ov
         self.breakdown_data = bd
         self.traces_data = tr
+        self._refresh_account_choices()
+        key_signature = repr((api_key_manager.list_keys(), self.official_spend.get("items")))
+        if key_signature != getattr(self, "_key_signature", None):
+            self._key_signature = key_signature
+            self._refresh_keys_list()
 
         self.cached_summary = summary
         self.cached_breakdown = bd
@@ -1536,14 +1702,21 @@ class DesktopMainWindow(ctk.CTk):
             w = self.ai_card_widgets.get(item["key"])
             if not w:
                 continue
-            w["lbl_plan"].configure(text=item["plan_name"])
-            w["lbl_session_status"].configure(text=item["session_status"])
+            groups = item.get("accounts") or []
+            w["lbl_plan"].configure(text=f"계정별 사용량 · {len(groups)}개" if len(groups) > 1
+                                    else item["plan_name"])
+            status = item["session_status"]
+            if len(groups) == 1 and groups[0].get("account_id") is None:
+                status = f"계정 미상 · {status}"
+            w["lbl_session_status"].configure(text=status)
+            if self._render_account_card(w, item):
+                continue
             windows = item["quota_windows"]
-            if windows:
-                self._render_quota_rows(w, windows)
+            self._render_quota_rows(w, windows or [{"id": "unavailable", "label": "한도",
+                                                   "source": "unavailable", "remaining_pct": None}])
 
             ctx = item.get("context")
-            if ctx:
+            if ctx and ctx.get("max_tokens") and ctx.get("used_pct") is not None:
                 w["lbl_ctx"].configure(
                     text=(
                         f"컨텍스트 (추정): {format_num(ctx['tokens'])} / "
@@ -1562,12 +1735,13 @@ class DesktopMainWindow(ctk.CTk):
 
             u = item["usage"]
             meaning = item["cost_meaning"]
-            w["lbl_cost_today"].configure(
-                text=f"오늘 {u['today']['requests']:,}회 · {usage_cost_text(u['today'], meaning)}"
-            )
-            w["lbl_cost_month"].configure(
-                text=f"이번 달 {u['month']['requests']:,}회 · {usage_cost_text(u['month'], meaning)}"
-            )
+            for window, label, target in (("today", "오늘", "lbl_cost_today"),
+                                          ("month", "이번 달", "lbl_cost_month")):
+                block = u.get(window) or {}
+                count = block.get("requests")
+                text = (f"{label} {count:,}회 · {usage_cost_text(block, meaning)}"
+                        if count is not None else f"{label} · 기록 없음")
+                w[target].configure(text=text)
             w["lbl_spend"].configure(text=spend_text(item.get("official_spend"), self.krw_rate) or "")
             w["lbl_billing_note"].configure(text=item["billing_note"])
 
@@ -1606,6 +1780,40 @@ class DesktopMainWindow(ctk.CTk):
 
         # Schedule next refresh
         self._schedule_refresh()
+
+    def _render_account_card(self, w: dict, item: dict) -> bool:
+        groups = item.get("accounts") or []
+        multiple = len(groups) > 1
+        signature = repr((groups, item.get("cost_meaning"), ctk.get_appearance_mode()))
+        if signature == w.get("account_signature"):
+            return multiple
+        w["account_signature"] = signature
+        for child in w["account_box"].winfo_children():
+            child.destroy()
+        if not multiple:
+            w["account_box"].pack_forget()
+            w["quota_box"].pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_HALF)
+            w["ctx_box"].pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_1)
+            w["cost_box"].pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_1)
+            return False
+        for box in ("quota_box", "ctx_box", "cost_box"):
+            w[box].pack_forget()
+        w["account_box"].pack(fill="x", padx=theme.SPACE_3, pady=theme.SPACE_HALF)
+        for account in groups:
+            block = ctk.CTkFrame(w["account_box"], fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_SM)
+            block.pack(fill="x", pady=theme.SPACE_1)
+            ctk.CTkLabel(block, text=account.get("label") or "계정 미상", text_color=theme.TEXT, height=20,
+                         font=theme.font(theme.FONT_BODY, weight="bold")).pack(anchor="w", padx=theme.SPACE_2)
+            windows = account.get("quota_windows") or []
+            quota_text = " · ".join(f"{q['label']} {window_text(q)[0]}" for q in windows) or "한도 확인 불가"
+            ctk.CTkLabel(block, text=quota_text, text_color=theme.ACCENT,
+                         wraplength=300, justify="left", height=20,
+                         font=theme.font(theme.FONT_XS)).pack(anchor="w", padx=theme.SPACE_2)
+            lines = account_usage_lines(account, item["cost_meaning"])
+            ctk.CTkLabel(block, text="\n".join(lines), text_color=theme.MUTED, height=1,
+                         font=theme.font(theme.FONT_XS), wraplength=300, justify="left").pack(
+                             anchor="w", padx=theme.SPACE_2, pady=(0, theme.SPACE_1))
+        return True
 
     def _render_breakdown(self, bd: List[Dict[str, Any]]) -> None:
         """Per-model rows in Tab 2; rebuilt only when a value actually changed."""
@@ -1684,6 +1892,7 @@ class DesktopMainWindow(ctk.CTk):
         label("time", "left", 6, font=self._font_log, text_color=theme.FAINT, width=65)
         label("stat", "left", 4, font=self._font_log_bold, width=65)
         label("model", "left", 6, font=self._font_log_main, text_color=theme.TEXT, width=180, anchor="w")
+        label("account", "left", 6, font=self._font_log, text_color=theme.MUTED, width=120, anchor="w")
         label("tokens", "left", 10, font=self._font_log_normal, text_color=theme.MUTED)
         ctk.CTkButton(
             frame,
@@ -1761,6 +1970,7 @@ class DesktopMainWindow(ctk.CTk):
                 f"토큰: {t.get('total_tokens', 0):,}",
                 f"￦ {c_krw:,}원" if t.get("cost_source") != "unknown" else "계산 불가",
                 f"{int(t.get('latency_ms', 0.0))}ms" if t.get("latency_measured", True) else "-",
+                account_label(t.get("account_id"), self.account_rows),
             )
             if vals != r["vals"]:
                 r["vals"] = vals
@@ -1772,6 +1982,7 @@ class DesktopMainWindow(ctk.CTk):
                 r["tokens"].configure(text=vals[3])
                 r["cost"].configure(text=vals[4])
                 r["latency"].configure(text=vals[5])
+                r["account"].configure(text=vals[6])
             if not r["shown"]:
                 # Hidden rows are always a suffix, so re-packing in index order keeps the order.
                 r["frame"].pack(fill="x", pady=theme.SPACE_HALF, padx=theme.SPACE_HALF)

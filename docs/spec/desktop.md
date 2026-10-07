@@ -25,6 +25,56 @@ watcher는 데스크톱 프로세스에서 시작하며 백엔드 lifespan에서
 `~/.aimonitor/api_keys.json`에는 암호화된 키만 쓴다. 이전 평문 키는 조회 전에 암호화하여 이관한다.
 원본 앱과 단일 인스턴스·watcher 잠금을 공유하므로 두 체크아웃을 동시에 실행하지 않는다.
 
+### 여러 계정·수집 폴더
+
+`desktop.accounts.AccountRegistry`는 `~/.aimonitor/accounts.json`의 계정 목록을 관리한다.
+각 항목은 `account_id`, `tool`, `config_dir`, `label`, `source(auto/manual)`,
+`first_seen`, `last_seen`을 가진다. 기본 라벨은 `Claude 1`, `Codex 1`처럼 도구명과 번호이며
+공급자의 이메일·이름·토큰을 복사하지 않는다. 계정 식별자는 `<tool>:<sha256 앞 12자리>`이고,
+Claude의 `oauthAccount.accountUuid` 또는 Codex 인증의 계정 ID를 읽기만 하여 해시한다.
+고유값이 없으면 실제 설정 폴더 경로의 해시를 사용한 `<tool>:dir-<12자리>`다.
+
+Claude·Codex 기본 폴더, `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 홈의 `.claude-*`·`.codex-*`
+폴더를 탐색하며 각각 `projects/`·`sessions/` 구조가 있어야 자동 등록한다.
+수동 등록은 `accounts.json`에서 읽는다. 설정 폴더와 데이터 폴더의 심볼릭 링크·Windows 정션을
+해석하여 같은 실제 수집 경로는 한 번만 읽는다. 수동 Antigravity·Copilot 폴더도 기존 파서로 수집한다.
+Claude·Codex 파일은 `projects/`·`sessions/` 아래 상대경로를 정체성 키로 사용하여
+다른 폴더의 복사본도 한 번만 읽는다. `(st_dev, st_ino)`가 같은 하드링크·정션 파일도 같은 그룹으로
+묶으며 파일 식별자가 0이면 물리적 동일성을 추측하지 않는다. 그룹의 가장 긴 복사본을 읽되,
+계정 귀속은 탐색 순서의 첫 폴더를 따른다. 서로 다른 계정이 같은 그룹을 공유하는 경우는
+watcher의 `file_alias_conflicts`에 계정 해시·설정 경로·정체성 해시로 기록하여 검토할 수 있다.
+Cursor에는 신뢰할 수 있는 호출별 사용량이 없어 트레이스를 만들어 내지 않는다.
+
+`account_timeline.json`은 `config_dir_hash`, `account_id`, `since(UTC 오프셋 ISO)`만 저장한다.
+로그의 원래 timestamp로 계정을 정하며 첫 관측 이전·시각 누락·오프셋 없는 시각은 `null`이다.
+로그인 변경을 관측하면 마지막 관측부터 새 관측 사이를 미상으로 표시하고 이후 새 계정에 귀속한다.
+재시작 시에는 같은 계정이어도 마지막 관측부터 재시작 사이를 미상으로 남긴다.
+앱 종료 중에 계정이 바뀌었다가 돌아왔을 가능성도 있기 때문이다.
+
+통합 watcher는 Claude 응답의 내용 블록 중복을 기존 `ai_seen_claude.json`으로 제거하고,
+Codex `token_count`의 `last_token_usage`를 수집하되 반복된 누적 토큰 스냅샷은 다시 세지 않는다.
+트레이스는 `account_id`를 포함하며 원문 메시지를 보내지 않는다.
+폴더별 커서는 `folder_offsets/<tool>-<config_dir_hash>.json`으로 분리한다.
+기존 `ai_offsets.json`·폴더별 상태의 절대 로그 경로·커서 및 `claude_offsets.json`의 커서는
+`claude:session:<상대경로>`·`codex:session:<상대경로>` 키로 이전하며 동일 그룹의 최댓값을 사용한다.
+물리적 별칭의 상대경로가 달라도 모든 별칭에 같은 커서를 저장하므로 첫 폴더가 없어져도 재전송하지 않는다.
+`ai_seen_claude.json`도 유지한다. 기존 상태 파일은 하위 호환용으로 유지하고 전송 실패 시
+커서·중복 상태를 되돌린다. 아직 개행이 없는 Claude·Codex 줄은 다음 주기에 읽는다.
+Codex와 응답 ID가 없는 Claude의 `trace_id`는 절대경로 대신 세션 정체성 키와 줄 시작 커서로 만든다.
+Claude 응답 ID가 있으면 이미 내용 기반인 기존 `trace_id`와 seen 키를 유지한다.
+
+UI용 함수는 `list_accounts()`, `rename_account(account_id, label)`,
+`add_folder(tool, config_dir, label=None)`, `remove_folder(config_dir)`이며 같은 이름의
+`AccountRegistry` 메서드로 임시 홈·상태 경로를 주입할 수 있다.
+`refresh()`는 현재 감지한 폴더의 계정 목록을 반환하고 `account_at(config_dir, timestamp)`는
+기록 시각의 계정을 반환한다. 수동 등록 삭제는 자동 감지 폴더를 차단하지 않는다.
+
+`desktop.quota.account_quotas(registry=None, force=False, now=None)`는
+`[{account_id, tool, label, config_dir, quota_windows}]`를 제공한다.
+Claude 자격 증명·캐시는 계정별로 나누고 Codex 한도는 각 폴더의 공식 로그 스냅샷에서 읽는다.
+Codex 스냅샷의 귀속이 미상이거나 이전 계정이면 현재 계정에 붙이지 않고 별도 항목으로 제공한다.
+기존 `windows_for()`·`get_official_claude_quota()`와 화면의 도구별 구조는 유지한다.
+
 ### Windows 시작 시 자동 실행
 
 환경설정 탭의 `Windows 시작 시 자동 실행` 토글로 등록하거나 해제한다.
@@ -94,6 +144,17 @@ Copilot 세션 합계와 Antigravity 추정 토큰은 컨텍스트 크기로 사
 공식 청구액 조회는 Anthropic·OpenAI 관리자 키, OpenRouter 사용액, DeepSeek 잔액을 지원한다.
 15분 캐시를 사용하며 API가 없거나 조회 실패하면 `kind=unavailable`, `amount=null`이다.
 Gemini 키는 URL에 넣지 않고 `x-goog-api-key` 헤더로 보낸다. 키 검증 오류는 요청·응답 원문을 반환하지 않는다.
+
+
+### 다중 계정 화면
+
+계정 한도 조회에는 등록 목록의 읽기 전용 `AccountQuotaView`를 전달한다. GUI/위젯의 폴링은 수집기의 관측 타임라인을 갱신하지 않는다. 기본 폴더가 없는 수동·별도 폴더 계정도 도구 카드에 표시하며 요금제를 임의로 붙이지 않는다. 여러 계정 카드의 내부 세로 스크롤로 모든 계정 기록을 확인할 수 있다.
+
+- 환경설정의 계정 영역은 등록 목록을 도구별로 정렬하여 라벨·도구·설정 경로·자동/수동·마지막 관측을 표시한다. 공급자 로그인 이름·이메일·토큰은 표시하지 않는다. 라벨 변경과 수동 Claude/Codex 폴더 추가·삭제는 `desktop.accounts` 공개 함수를 사용한다. 삭제는 수집 등록만 해제하며 기록을 삭제하지 않는다.
+- PC 연결 AI 카드에서 계정이 하나면 기존 카드 배치를 유지한다. 계정이 둘 이상이면 카드 안에 계정별 5시간/오늘/7일/월의 요청·토큰·비용과 한도를 나눈다. `account_id=null`은 ‘계정 미상’으로 독립 표시하며, 계정별 한도 부재는 ‘확인 불가’다. 도구 기본 한도를 다른 계정에 복사하지 않는다. 등록만 있고 사용 기록이 없으면 ‘기록 없음’이다.
+- 위젯은 여러 계정인 도구마다 등록 목록 순서로 최대 3개 계정의 라벨·첫 한도 창을 표시한다. 나머지는 `+N개 · 메인 창` 줄로 안내한다. 더블 클릭은 기존처럼 메인 창을 연다. 기존 도구별 표시 항목 선택도 계정 줄에 적용된다.
+- API 키 관리에서 provider별 키를 별도 행으로 표시하며 라벨·마스킹·상태·키별 공식 청구/잔액을 보여 준다. 라벨을 붙여 추가하고 개별 라벨 변경·삭제를 제공한다. 환경변수 키는 읽기 전용이다. 저장 성공 즉시 키 입력칸을 비운다. 키별 청구 조회 실패는 ‘청구액 확인 불가’로 표시하며 다른 키 합계를 대신 붙이지 않는다.
+- 로그와 차트는 각각 전체/계정별/계정 미상 선택을 유지한다. 계정 선택은 `account_id`, 미상 선택은 `account_unknown=true` 백엔드 쿼리를 사용한다. 로그 행에 계정 라벨 열을 표시한다. 선택을 바꾸는 동안 이전 선택의 응답으로 새 화면을 덮지 않는다. 라벨 변경 후 같은 ID의 선택을 유지한다.
 
 ## Open questions
 
