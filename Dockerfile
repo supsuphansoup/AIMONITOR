@@ -1,19 +1,4 @@
-# ==============================================================================
-# Stage 1: Build the React dashboard
-# ==============================================================================
-FROM node:22-alpine AS frontend-builder
-
-WORKDIR /app/frontend
-
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
-
-COPY frontend/ ./
-RUN npm run build
-
-# ==============================================================================
-# Stage 2: Backend runtime, serving the API and the built dashboard
-# ==============================================================================
+# API-only runtime; the desktop UI runs on the user's PC.
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -28,7 +13,9 @@ COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ ./backend/
-COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+# The connected-AI API shares these standard-library/httpx desktop helpers.
+COPY desktop/config.py desktop/ai_detector.py desktop/context_manager.py desktop/quota.py ./desktop/
+COPY desktop/claude_quota_syncer.py ./desktop/
 
 # Run as a non-root user; /app/data is the only path that needs to be writable
 # and is where the SQLite volume mounts.

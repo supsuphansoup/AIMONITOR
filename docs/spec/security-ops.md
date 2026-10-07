@@ -6,7 +6,7 @@
 - OPS-2 프롬프트·응답 원문은 DB·로그·오류 응답·CSV 어디에도 남기지 않는다.
 - OPS-3 보관 기간을 지나면 트레이스와 알림 이력을 자동 삭제할 수 있다. 기본은 무제한 (업그레이드만으로 데이터를 잃지 않음).
 - OPS-4 이전 버전 DB를 그대로 두고 업그레이드해도 기동된다 (누락 컬럼·인덱스 자동 추가, 데이터 보존).
-- OPS-5 단일 컨테이너로 API와 대시보드를 서빙하고, liveness/readiness를 분리한다.
+- OPS-5 단일 컨테이너로 API만 서빙하고, liveness/readiness를 분리한다. UI는 별도 Windows 데스크톱 앱이다.
 
 ## Design
 
@@ -27,6 +27,7 @@
 - 미들웨어 순서: **CORS가 최외곽** — 오류 응답에도 CORS 헤더가 붙는다.
 - `CORS_ORIGINS`에 `*`가 있으면 credentials 자동 비활성화. 노출 헤더: `X-Request-ID`, `X-Total-Count`.
 - 모든 요청에 `X-Request-ID` (전달값 또는 16자 hex 발급).
+- CORS 기본 출처는 로컬 API 포트 8000이며 웹 개발 서버 출처는 없다. 정적 파일·SPA fallback은 없고 `GET /`는 JSON 404다. Swagger·ReDoc API 문서는 유지한다.
 
 ### 보관·정리 (`services/retention.py`)
 
@@ -42,10 +43,10 @@
 
 ### 배포
 
-- Dockerfile multi-stage: `node:22-alpine`에서 프론트 빌드 → `python:3.11-slim` 런타임, non-root `aimonitor` 사용자.
+- Dockerfile: `python:3.11-slim` API 전용 런타임, non-root `aimonitor` 사용자. 연결 AI API가 사용하는 데스크톱 공유 헬퍼만 포함하며 GUI는 실행하지 않는다.
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.
 - 시스템 API: `GET /system/info`(버전·인증 여부·스케줄러 상태), `GET /system/pricing`, `GET /system/ready`(DB 확인), `GET /health`(DB 미접근).
-- CI(`.github/workflows/ci.yml`): pytest(Python 3.10/3.11/3.12), ruff, 프론트 typecheck·test·build, Docker 빌드 후 readiness 확인.
+- CI(`.github/workflows/ci.yml`): pytest(Python 3.10/3.11/3.12), ruff, Docker 빌드 후 readiness 확인.
 
 ## Open questions
 
@@ -55,5 +56,5 @@
 ## Areas of concern
 
 - 원문 차단이 **키 이름 기반**이다. `{"note": "<프롬프트 원문>"}`처럼 무해한 키에 원문을 넣으면 통과한다. `error_message`도 업스트림 오류에 프롬프트 일부가 섞이면 그대로 저장된다(2000자 절단만).
-- 단일 공유 키라 키를 바꾸면 모든 SDK·대시보드를 동시에 갱신해야 한다. 키 회전 절차가 문서화돼 있지 않다.
+- 단일 공유 키라 키를 바꾸면 모든 SDK·데스크톱 앱을 동시에 갱신해야 한다. 키 회전 절차가 문서화돼 있지 않다.
 - 다중 워커(`uvicorn --workers N`)에서는 각 워커가 스케줄러를 띄운다. 알림 중복은 CAS로 막지만 보관 작업은 N번 실행된다(멱등이라 결과는 같음).

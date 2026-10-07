@@ -2,13 +2,11 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.app.core.config import settings
@@ -56,7 +54,7 @@ app = FastAPI(
 # Middleware order matters, and `add_middleware` makes the LAST registration the
 # outermost layer. These are registered innermost-first so that CORS ends up
 # outermost: an error response produced inside still picks up its headers on the
-# way out, without which a cross-origin dashboard sees an opaque network failure
+# way out, without which a cross-origin client sees an opaque network failure
 # instead of the actual status.
 async def request_context(request: Request, call_next):
     """Tag every request with an id and log its outcome.
@@ -165,27 +163,3 @@ app.include_router(metrics_router, prefix=settings.API_V1_STR)
 app.include_router(alerts_router, prefix=settings.API_V1_STR)
 app.include_router(api_keys_router, prefix=settings.API_V1_STR)
 app.include_router(system_router, prefix=settings.API_V1_STR)
-
-
-# Optional static frontend mounting, for the single-container deployment.
-frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-if not frontend_dist.exists():
-    frontend_dist = Path("frontend/dist")
-
-if frontend_dist.exists() and (frontend_dist / "index.html").exists():
-    assets_dir = frontend_dist / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def serve_spa(full_path: str):
-        if (full_path.startswith("api/") or full_path == "api"
-                or full_path in ("health", "docs", "redoc", "openapi.json")):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
-
-        # Resolve inside dist so a crafted path cannot escape the build output.
-        candidate = (frontend_dist / full_path).resolve()
-        root = frontend_dist.resolve()
-        if full_path and candidate.is_file() and candidate.is_relative_to(root):
-            return FileResponse(candidate)
-        return FileResponse(root / "index.html")

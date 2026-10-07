@@ -18,7 +18,7 @@ filterwarnings = [
 [tool.ruff]
 line-length = 110
 target-version = "py310"
-exclude = ["frontend", ".venv", "build", "dist"]
+exclude = [".venv", "build", "dist"]
 
 [tool.ruff.lint]
 # "UP" is deliberately excluded: the codebase annotates with typing.Optional /

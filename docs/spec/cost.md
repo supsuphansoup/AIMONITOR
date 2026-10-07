@@ -3,7 +3,7 @@
 ## Requirements
 
 - COST-1 모든 트레이스는 `cost_source`로 비용의 출처를 밝힌다.
-- COST-2 단가를 모르면 금액을 만들지 않는다. 대시보드 `계산 불가`, CSV 빈 칸, 집계에는 `cost_unknown_count`.
+- COST-2 단가를 모르면 금액을 만들지 않는다. 데스크톱 화면 `계산 불가`, CSV 빈 칸, 집계에는 `cost_unknown_count`.
 - COST-3 프롬프트 캐시 읽기·쓰기 토큰은 각각의 단가로 계산한다. 일반 입력과 합산하지 않는다.
 - COST-4 적용 중인 단가표, 무료 provider 목록, 단가 확인일(`as_of`)과 출처(`sources`)를 `GET /api/v1/system/pricing`으로 공개한다.
 - COST-5 과거 행의 비용은 단가표가 바뀌어도 재계산하지 않는다 (수집 시점 단가로 고정).

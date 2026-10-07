@@ -14,7 +14,7 @@ services:
       PROJECT_NAME: AIMONITOR
       ENVIRONMENT: production
       DATABASE_URL: sqlite:////app/data/aimonitor.db
-      CORS_ORIGINS: http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000
+      CORS_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
       # Set in a .env file next to this compose file, or export before `up`.
       API_KEY: ${API_KEY:-}
       REQUIRE_AUTH_FOR_READS: ${REQUIRE_AUTH_FOR_READS:-false}

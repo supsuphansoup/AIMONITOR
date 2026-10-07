@@ -16,14 +16,9 @@ env/
 .coverage
 htmlcov/
 
-# Node / Frontend artifacts
-node_modules/
-frontend/node_modules/
-frontend/dist/
+# Build artifacts
 dist/
 build/
-.npm
-npm-debug.log*
 
 # Database & local state
 aimonitor.db

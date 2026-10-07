@@ -1,4 +1,4 @@
-# Spec: AIMONITOR (v0.5.0)
+# Spec: AIMONITOR (v0.6 데스크톱 전용 UI)
 
 [intent.md](../intent.md)의 의도를 기능별 규칙과 수치로 바꾼 명세다. 각 파일은
 `Requirements / Design / Open questions / Areas of concern` 구조를 따른다.
@@ -10,10 +10,11 @@
 | [cost.md](cost.md) | 비용 계산, 단가표, 캐시 단가 | `services/cost.py` |
 | [metrics.md](metrics.md) | KPI·시계열·모델별 집계 | `services/aggregator.py`, `routers/metrics.py` |
 | [alerts.md](alerts.md) | 알림 규칙, 평가, 쿨다운, Webhook | `services/alert.py`, `models/alert.py`, `services/scheduler.py` |
-| [dashboard.md](dashboard.md) | React 대시보드 | `frontend/src/` |
 | [security-ops.md](security-ops.md) | 인증, 원문 보호, 보관, 스키마 업그레이드, 배포 | `core/security.py`, `db/session.py`, `services/retention.py`, `Dockerfile` |
 | [sdk.md](sdk.md) | Python SDK | `sdk/python/aimonitor/client.py` |
 | [desktop.md](desktop.md) | Windows 데스크톱·위젯·키 관리·사용량 | `desktop/`, `routers/api_keys.py`, `services/provider_spend.py` |
+
+웹 대시보드는 v0.6에서 제거되었다. 이전 문서 링크는 [dashboard.md](dashboard.md)의 제거 안내로 연결된다.
 
 ## 공통 규칙
 
@@ -30,4 +31,4 @@
 | PostgreSQL 정식 지원? | 이월: dialect 컴파일 테스트(`test_dialect_compat.py`)까지만. 실서버 검증은 수요가 생기면 진행. |
 | 사용자별 계정·권한? | 이월: 단일 공유 키로 소규모 팀 요구는 충족. 다중 테넌트 요구가 생기면 새 intent로. |
 | 단가표를 설정/DB로? | 이월: 현재 코드 상수. 단가 갱신 주기가 짧아 문제가 되고 있음 → [cost.md](cost.md) Areas of concern, [plan.md](../plan.md) 참고. |
-| WebSocket·알림 채널 확장? | 이월: 5초 폴링, Webhook(Slack/Discord)만. 요청 속도 제한은 리버스 프록시 계층으로 결정. |
+| WebSocket·알림 채널 확장? | 이월: 데스크톱 HTTP 폴링, Webhook(Slack/Discord)만. 요청 속도 제한은 리버스 프록시 계층으로 결정. |

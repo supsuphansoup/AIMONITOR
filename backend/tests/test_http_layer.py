@@ -2,10 +2,17 @@
 from fastapi.testclient import TestClient
 
 import backend.app.routers.metrics as metrics_router
-from backend.app.core.config import settings
+from backend.app.core.config import Settings, settings
 
-ORIGIN = {"Origin": "http://localhost:3000"}
+ORIGIN = {"Origin": "http://localhost:8000"}
 TRACE = {"provider": "openai", "model_name": "gpt-4o", "prompt_tokens": 10}
+
+
+def test_default_cors_origins_only_include_local_api(monkeypatch):
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    assert Settings(_env_file=None).cors_origin_list == [
+        "http://localhost:8000", "http://127.0.0.1:8000",
+    ]
 
 
 def test_cors_headers_present_on_success(client: TestClient):
@@ -14,7 +21,7 @@ def test_cors_headers_present_on_success(client: TestClient):
 
 
 def test_cors_headers_present_on_server_error(client: TestClient, monkeypatch):
-    """Without these, a cross-origin dashboard sees an opaque network failure.
+    """Without these, a cross-origin client sees an opaque network failure.
 
     The request-logging middleware builds the 500 response itself, so it has to
     sit inside CORSMiddleware for the headers to be applied on the way out.

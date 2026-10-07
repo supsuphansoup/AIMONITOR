@@ -16,12 +16,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./aimonitor.db"
 
     # --- CORS -----------------------------------------------------------
-    # Defaults to the local dev origins. Set CORS_ORIGINS=* only when the API
+    # Defaults to the local API origins. Set CORS_ORIGINS=* only when the API
     # is genuinely public; credentials are disabled automatically in that case
     # because browsers reject `Access-Control-Allow-Origin: *` with cookies.
     CORS_ORIGINS: Union[List[str], str] = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]

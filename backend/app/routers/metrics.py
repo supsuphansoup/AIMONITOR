@@ -98,7 +98,7 @@ def get_connected_ais(session: Session = Depends(get_session)):
         official_spend=spend_service.spend_all([ai["key"] for ai in ais if ai["key"].endswith("_api")]),
     )
     # The desktop detector's detail can contain filesystem exception strings.
-    # Neither it nor a local credential path belongs in the web response.
+    # Neither it nor a local credential path belongs in the API response.
     for item in summary["items"]:
         item.pop("path", None)
         item.pop("detail", None)

@@ -1,4 +1,4 @@
-"""Web cards reuse desktop summaries and SQL usage without exposing local secrets."""
+"""Connected-AI API reuses desktop summaries and SQL usage without exposing local secrets."""
 from datetime import datetime, timedelta
 
 import pytest
