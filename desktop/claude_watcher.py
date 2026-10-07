@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from desktop.accounts import AccountRegistry
 from desktop.config import backend_headers
 
 logger = logging.getLogger("aimonitor.desktop.claude_watcher")
@@ -32,6 +33,7 @@ class ClaudeWatcher:
         self.claude_dir = Path.home() / ".claude"
         self.state_file = state_file or (Path.home() / ".aimonitor" / "claude_offsets.json")
         self.poll_interval = poll_interval
+        self.accounts = AccountRegistry(state_dir=self.state_file.parent)
         self._offsets: Dict[str, int] = self._load_offsets()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -77,6 +79,7 @@ class ClaudeWatcher:
 
     def scan_and_ingest(self) -> int:
         """Scan Claude log files and ingest any new assistant events."""
+        self.accounts.refresh()
         if not self.claude_dir.exists():
             return 0
 
@@ -172,6 +175,7 @@ class ClaudeWatcher:
         session_id = fpath.stem
 
         return {
+            "account_id": self.accounts.account_at(self.claude_dir, data.get("timestamp")),
             "timestamp": ts_str,
             "session_id": session_id,
             "provider": "anthropic",

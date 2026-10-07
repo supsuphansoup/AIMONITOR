@@ -25,8 +25,9 @@ CACHE_TTL_SECONDS = 60.0  # 60s TTL matches Anthropic usage caching policy
 class ClaudeQuotaSyncer:
     """Fetches real-time official quota directly from Anthropic."""
 
-    def __init__(self):
-        self.cred_file = Path.home() / ".claude" / ".credentials.json"
+    def __init__(self, config_dir: Optional[Path] = None, cache_file: Optional[Path] = None):
+        self.cred_file = (config_dir or Path.home() / ".claude") / ".credentials.json"
+        self.cache_file = cache_file or CACHE_FILE
         self._last_result: Optional[Dict[str, Any]] = self._load_cache()
         self._last_fetch_time: float = 0.0
         self._retry_after: float = 0.0
@@ -34,16 +35,16 @@ class ClaudeQuotaSyncer:
 
     def _load_cache(self) -> Optional[Dict[str, Any]]:
         try:
-            if CACHE_FILE.exists():
-                return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if self.cache_file.exists():
+                return json.loads(self.cache_file.read_text(encoding="utf-8"))
         except Exception:
             pass
         return None
 
     def _save_cache(self, data: Dict[str, Any]) -> None:
         try:
-            CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            CACHE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            self.cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception:
             pass
 
@@ -103,11 +104,11 @@ class ClaudeQuotaSyncer:
             fh = data.get("five_hour") or {}
             sd = data.get("seven_day") or {}
 
-            fh_used = round(float(fh.get("utilization", 0.0)), 1)
-            fh_rem = round(max(0.0, 100.0 - fh_used), 1)
+            fh_used = round(float(fh["utilization"]), 1) if fh.get("utilization") is not None else None
+            fh_rem = round(max(0.0, 100.0 - fh_used), 1) if fh_used is not None else None
 
-            sd_used = round(float(sd.get("utilization", 0.0)), 1)
-            sd_rem = round(max(0.0, 100.0 - sd_used), 1)
+            sd_used = round(float(sd["utilization"]), 1) if sd.get("utilization") is not None else None
+            sd_rem = round(max(0.0, 100.0 - sd_used), 1) if sd_used is not None else None
 
             result = {
                 "five_hour_used_pct": fh_used,

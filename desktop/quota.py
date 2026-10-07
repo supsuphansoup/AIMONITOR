@@ -182,7 +182,8 @@ def _tail_lines(path: Path, max_bytes: int = _TAIL_BYTES) -> List[str]:
 
 
 def latest_codex_rate_limits(
-    codex_home: Optional[Path] = None, max_files: int = 20
+    codex_home: Optional[Path] = None, max_files: int = 20,
+    account_at: Optional[Callable[[Any], Optional[str]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Most recent `rate_limits` snapshot Codex CLI wrote into its session logs.
 
@@ -212,7 +213,10 @@ def latest_codex_rate_limits(
             payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else obj
             limits = payload.get("rate_limits") if isinstance(payload, dict) else None
             if isinstance(limits, dict) and (limits.get("primary") or limits.get("secondary")):
-                return {"rate_limits": limits, "timestamp": obj.get("timestamp")}
+                snapshot = {"rate_limits": limits, "timestamp": obj.get("timestamp")}
+                if account_at is not None:
+                    snapshot["account_id"] = account_at(obj.get("timestamp"))
+                return snapshot
     return None
 
 
@@ -426,3 +430,58 @@ def _fetch_claude_official() -> Optional[Dict[str, Any]]:
     from desktop.claude_quota_syncer import get_official_claude_quota
 
     return get_official_claude_quota()
+
+
+_account_syncers: Dict[str, Any] = {}
+_account_registry: Any = None
+
+
+def account_quotas(registry: Any = None, force: bool = False,
+                   now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """UI API: account_id/tool/label/config_dir/quota_windows for each active folder.
+
+    A Codex snapshot whose login cannot be established is exposed as account_id=None,
+    separately from the current account's unavailable windows.
+    """
+    from desktop.accounts import AccountRegistry, account_id_for, config_dir_hash
+    from desktop.claude_quota_syncer import ClaudeQuotaSyncer
+
+    global _account_registry
+    if registry is None:
+        if _account_registry is None:
+            _account_registry = AccountRegistry()
+        registry = _account_registry
+    result = []
+    for row in registry.refresh(now=now):
+        tool = row["tool"]
+        directory = Path(row["config_dir"])
+        windows = []
+        if tool == "claude_code":
+            # Read-only consumers may pass historical manifest rows. Current folder
+            # credentials must never be used to claim another account's quota.
+            identity_home = getattr(registry, "home", None)
+            if account_id_for(tool, directory, identity_home) != row["account_id"]:
+                result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
+                result[-1]["quota_windows"] = claude_windows(None, now)
+                continue
+            key = f"{registry.state_dir}:{row['account_id']}:{config_dir_hash(directory)}"
+            with _scan_lock:
+                syncer = _account_syncers.get(key)
+                if syncer is None:
+                    cache = registry.state_dir / "quota" / f"{row['account_id'].replace(':', '-')}.json"
+                    syncer = ClaudeQuotaSyncer(config_dir=directory, cache_file=cache)
+                    _account_syncers[key] = syncer
+            windows = claude_windows(syncer.get_quota(force=force), now)
+        elif tool == "codex":
+            snapshot = latest_codex_rate_limits(
+                directory, account_at=lambda ts, d=directory: registry.account_at(d, ts)
+            )
+            if snapshot and snapshot.get("account_id") != row["account_id"]:
+                result.append({"account_id": snapshot.get("account_id"), "tool": tool,
+                               "label": "계정 미상" if snapshot.get("account_id") is None else "이전 계정",
+                               "config_dir": str(directory), "quota_windows": codex_windows(snapshot, now)})
+                snapshot = None
+            windows = codex_windows(snapshot, now)
+        result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
+        result[-1]["quota_windows"] = windows
+    return result
