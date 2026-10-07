@@ -3,6 +3,9 @@
 import json
 import logging
 import os
+import re
+import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -68,6 +71,7 @@ class APIKeyManager:
 
     def __init__(self, filepath: Optional[Path] = None):
         self.filepath = filepath or KEYS_FILE
+        self._lock = threading.RLock()
 
     def _load_raw(self) -> Dict[str, Dict[str, Any]]:
         if self.filepath.exists():
@@ -80,12 +84,14 @@ class APIKeyManager:
         return {}
 
     def _save_raw(self, data: Dict[str, Dict[str, Any]]) -> None:
-        # Updating one provider must not re-write another provider's legacy
-        # plaintext key, including files with both old and sealed fields.
-        for entry in data.values():
-            legacy = entry.pop("key", None)
-            if legacy and not entry.get("sealed"):
-                entry["scheme"], entry["sealed"] = secret_store.seal(str(legacy).strip())
+        for provider, entries in list(data.items()):
+            if any(field in entries for field in ("key", "sealed", "scheme")):
+                entries = {"default": {**entries, "label": "기본"}}
+                data[provider] = entries
+            for entry in entries.values():
+                legacy = entry.pop("key", None)
+                if legacy and not entry.get("sealed"):
+                    entry["scheme"], entry["sealed"] = secret_store.seal(str(legacy).strip())
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         self.filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         secret_store.restrict_file(self.filepath)
@@ -94,120 +100,178 @@ class APIKeyManager:
     def _stored_secret(entry: Dict[str, Any]) -> Optional[str]:
         if entry.get("sealed"):
             return secret_store.unseal(entry.get("scheme", ""), entry["sealed"])
-        # Files written by older versions kept the key in plain text.
         return entry.get("key") or None
 
     def migrate_plaintext(self) -> int:
-        """Re-save keys from older plain-text files in sealed form. Returns how many."""
-        raw = self._load_raw()
-        moved = 0
-        for entry in raw.values():
-            if isinstance(entry, dict) and entry.get("key") and not entry.get("sealed"):
-                entry["scheme"], entry["sealed"] = secret_store.seal(str(entry.pop("key")).strip())
-                moved += 1
-        if moved:
-            self._save_raw(raw)
-        return moved
+        """Seal legacy secrets and migrate single-key entries, without inventing accounts."""
+        with self._lock:
+            raw = self._load_raw()
+            moved, changed = 0, False
+            for provider, entries in list(raw.items()):
+                if any(field in entries for field in ("key", "sealed", "scheme")):
+                    entries = {"default": {**entries, "label": "기본"}}
+                    raw[provider] = entries
+                    changed = True
+                for entry in entries.values():
+                    legacy = entry.pop("key", None)
+                    if legacy:
+                        changed = True
+                        if not entry.get("sealed"):
+                            entry["scheme"], entry["sealed"] = secret_store.seal(str(legacy).strip())
+                            moved += 1
+            if changed:
+                self._save_raw(raw)
+            return moved
 
-    def get_registered_key(self, provider: str) -> Optional[str]:
-        """Get the key for a provider if stored locally or in environment."""
-        self.migrate_plaintext()
-        raw = self._load_raw()
-        if provider in raw:
-            secret = self._stored_secret(raw[provider])
-            if secret:
-                return secret.strip()
-
-        # Check environment variables
-        for p_info in KNOWN_PROVIDERS:
-            if p_info["key"] == provider:
-                for ev in p_info["env_vars"]:
-                    val = os.environ.get(ev)
-                    if val and val.strip():
-                        return val.strip()
+    @staticmethod
+    def _env_key(provider: str) -> Optional[str]:
+        for info in KNOWN_PROVIDERS:
+            if info["key"] == provider:
+                for name in info["env_vars"]:
+                    value = os.environ.get(name)
+                    if value and value.strip():
+                        return value.strip()
         return None
 
-    def list_keys(self) -> List[Dict[str, Any]]:
-        """List all supported providers with registered/detected status and masked keys."""
-        self.migrate_plaintext()
-        raw = self._load_raw()
-        results = []
+    def get_key(self, provider: str, key_id: str) -> Optional[str]:
+        """Resolve one key; an unknown identity never falls back to another key."""
+        with self._lock:
+            self.migrate_plaintext()
+            entry = self._load_raw().get(provider, {}).get(key_id)
+            if entry is not None:
+                secret = self._stored_secret(entry)
+                return secret.strip() if secret else None
+            return self._env_key(provider) if key_id == "env" else None
 
-        for p_info in KNOWN_PROVIDERS:
-            prov = p_info["key"]
-            stored_entry = raw.get(prov, {})
-            stored_key = self._stored_secret(stored_entry) if stored_entry else None
+    def get_registered_key(self, provider: str) -> Optional[str]:
+        """Backward-compatible default or first usable stored key, then environment."""
+        with self._lock:
+            self.migrate_plaintext()
+            entries = self._load_raw().get(provider, {})
+            ids = (["default"] if "default" in entries else []) + [k for k in entries if k != "default"]
+            for key_id in ids:
+                secret = self._stored_secret(entries[key_id])
+                if secret:
+                    return secret.strip()
+            return self._env_key(provider)
 
-            # Check environment variables for auto-detection
-            detected_env = None
-            detected_key = None
-            for ev in p_info["env_vars"]:
-                val = os.environ.get(ev)
-                if val and val.strip():
-                    detected_env = ev
-                    detected_key = val.strip()
-                    break
+    def list_keys(self, provider: Optional[str] = None) -> List[Dict[str, Any]]:
+        """With a provider list individual keys; no argument preserves desktop cards."""
+        with self._lock:
+            self.migrate_plaintext()
+            raw = self._load_raw()
+            results = []
+            for info in KNOWN_PROVIDERS:
+                prov = info["key"]
+                if provider is not None and provider != prov:
+                    continue
+                entries = raw.get(prov, {})
+                individual = []
+                env_secret = self._env_key(prov)
+                detected = next((v for v in info["env_vars"] if os.environ.get(v, "").strip()), None)
+                for key_id, entry in entries.items():
+                    secret = self._stored_secret(entry)
+                    individual.append(self._key_view(prov, key_id, entry, secret, "stored"))
+                if env_secret:
+                    individual.append(self._key_view(prov, "env", {"label": "환경 변수"}, env_secret, "env"))
+                if provider is not None:
+                    results.extend(individual)
+                    continue
+                chosen = next((k for k in individual if k["key_id"] == "default" and k["has_key"]), None)
+                chosen = chosen or next((k for k in individual if k["has_key"]), None)
+                card = dict(chosen or self._key_view(prov, None, {}, None, "none"))
+                card.update({"name": info["name"], "placeholder": info["placeholder"],
+                             "detected_env_var": detected, "keys": individual})
+                results.append(card)
+            return results
 
-            active_key = stored_key or detected_key
-            source = "stored" if stored_key else ("env" if detected_key else "none")
+    @staticmethod
+    def _key_view(provider, key_id, entry, secret, source) -> Dict[str, Any]:
+        masked = mask_key(secret) if secret else ""
+        return {
+            "provider": provider, "key_id": key_id, "label": entry.get("label", "기본"),
+            "masked": masked, "masked_key": masked, "has_key": bool(secret), "source": source,
+            "status": entry.get("status", "connected" if secret else "unconfigured"),
+            "last_verified": entry.get("last_verified"), "balance_info": entry.get("balance_info"),
+            "protection": (
+                "Windows DPAPI 암호화" if entry.get("scheme") == secret_store.SCHEME_DPAPI else None
+            ),
+            "is_admin_key": provider in ADMIN_PROVIDERS,
+        }
 
-            results.append(
-                {
-                    "provider": prov,
-                    "name": p_info["name"],
-                    "placeholder": p_info["placeholder"],
-                    "has_key": bool(active_key),
-                    "masked_key": mask_key(active_key) if active_key else "",
-                    "source": source,
-                    "detected_env_var": detected_env,
-                    "balance_info": stored_entry.get("balance_info"),
-                    "status": stored_entry.get("status", "connected" if active_key else "unconfigured"),
-                    "last_verified": stored_entry.get("last_verified"),
-                    "protection": (
-                        "Windows DPAPI 암호화"
-                        if stored_entry.get("scheme") == secret_store.SCHEME_DPAPI
-                        else "평문 (OS 암호화 미지원)"
-                    )
-                    if stored_key
-                    else None,
-                    "is_admin_key": prov in ADMIN_PROVIDERS,
-                }
-            )
+    def _validate_label(self, label: str, new_secret: Optional[str] = None) -> str:
+        label = label.strip()
+        if not label or len(label) > 40:
+            raise ValueError("Invalid key label")
+        # Reject recognizable credentials, emails, and every secret this store can resolve.
+        if re.search(r"(?:sk-|gsk_|AIza|Bearer\s|@|[\r\n])", label, re.IGNORECASE):
+            raise ValueError("Invalid key label")
+        secrets = [new_secret] if new_secret else []
+        for info in KNOWN_PROVIDERS:
+            for entry in self.list_keys(info["key"]):
+                secret = self.get_key(info["key"], entry["key_id"])
+                if secret:
+                    secrets.append(secret)
+        if any(secret and secret in label for secret in secrets):
+            raise ValueError("Invalid key label")
+        return label
 
-        return results
-
-    def set_key(self, provider: str, key_value: str) -> Dict[str, Any]:
-        """Save a new or updated API key for a provider."""
+    def _write_key(self, provider: str, key_id: str, key_value: str, label: str) -> Dict[str, Any]:
         key_value = key_value.strip()
-        if not key_value:
-            raise ValueError("API key cannot be empty")
-
-        if provider not in {p["key"] for p in KNOWN_PROVIDERS}:
-            raise ValueError("Unknown provider")
-        raw = self._load_raw()
+        if not key_value or provider not in {p["key"] for p in KNOWN_PROVIDERS}:
+            raise ValueError("Invalid provider or key")
+        label = self._validate_label(label, key_value)
         scheme, sealed = secret_store.seal(key_value)
-        raw[provider] = {
-            "scheme": scheme,
-            "sealed": sealed,
-            "status": "connected",
-            "last_verified": None,
-            "balance_info": None,
+        raw = self._load_raw()
+        raw.setdefault(provider, {})[key_id] = {
+            "scheme": scheme, "sealed": sealed, "label": label,
+            "status": "connected", "last_verified": None, "balance_info": None,
         }
         self._save_raw(raw)
-        return {
-            "provider": provider,
-            "masked_key": mask_key(key_value),
-            "status": "connected",
-        }
+        return self._key_view(provider, key_id, raw[provider][key_id], key_value, "stored")
 
-    def delete_key(self, provider: str) -> bool:
-        """Remove a stored API key."""
-        raw = self._load_raw()
-        if provider in raw:
-            del raw[provider]
+    def add_key(self, provider: str, key_value: str, label: str = "기본") -> Dict[str, Any]:
+        if provider not in {p["key"] for p in KNOWN_PROVIDERS} or not key_value.strip():
+            raise ValueError("Invalid provider or key")
+        with self._lock:
+            self.migrate_plaintext()
+            return self._write_key(provider, uuid.uuid4().hex, key_value, label)
+
+    def set_key(self, provider: str, key_value: str) -> Dict[str, Any]:
+        """Desktop compatibility: replace the default or first key without losing others."""
+        if provider not in {p["key"] for p in KNOWN_PROVIDERS} or not key_value.strip():
+            raise ValueError("Invalid provider or key")
+        with self._lock:
+            self.migrate_plaintext()
+            entries = self._load_raw().get(provider, {})
+            key_id = "default" if "default" in entries else next(iter(entries), "default")
+            return self._write_key(provider, key_id, key_value, entries.get(key_id, {}).get("label", "기본"))
+
+    def update_label(self, provider: str, key_id: str, label: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            self.migrate_plaintext()
+            raw = self._load_raw()
+            entry = raw.get(provider, {}).get(key_id)
+            if entry is None:
+                return None
+            entry["label"] = self._validate_label(label)
+            self._save_raw(raw)
+            return self._key_view(provider, key_id, entry, self._stored_secret(entry), "stored")
+
+    def delete_key(self, provider: str, key_id: Optional[str] = None) -> bool:
+        with self._lock:
+            self.migrate_plaintext()
+            raw = self._load_raw()
+            if provider not in raw or (key_id is not None and key_id not in raw[provider]):
+                return False
+            if key_id is None:
+                del raw[provider]
+            else:
+                del raw[provider][key_id]
+                if not raw[provider]:
+                    del raw[provider]
             self._save_raw(raw)
             return True
-        return False
 
     def verify_key(self, provider: str) -> Dict[str, Any]:
         """Test the API key with the provider's official endpoint and retrieve balance/model status."""
@@ -325,12 +389,17 @@ class APIKeyManager:
             return {"valid": False, "error": f"연결 실패 ({type(e).__name__})"}
 
     def _update_verification(self, provider: str, status: str, balance_info: Optional[str]) -> None:
-        raw = self._load_raw()
-        if provider in raw:
-            raw[provider]["status"] = status
-            raw[provider]["balance_info"] = balance_info
-            raw[provider]["last_verified"] = to_aware_utc(utc_now()).isoformat()
-            self._save_raw(raw)
+        with self._lock:
+            raw = self._load_raw()
+            if provider in raw:
+                entries = raw[provider]
+                key_id = "default" if "default" in entries else next(iter(entries), None)
+                if key_id is None:
+                    return
+                entries[key_id]["status"] = status
+                entries[key_id]["balance_info"] = balance_info
+                entries[key_id]["last_verified"] = to_aware_utc(utc_now()).isoformat()
+                self._save_raw(raw)
 
 
 # Global singleton

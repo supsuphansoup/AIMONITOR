@@ -151,6 +151,7 @@ class AIMonitor:
         trace_id: Optional[str],
         tags: Optional[List[str]],
         metadata: Optional[Dict[str, Any]],
+        account_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return {
             "trace_id": trace_id,
@@ -164,6 +165,7 @@ class AIMonitor:
             "status": status,
             "error_message": error_message,
             "session_id": session_id,
+            "account_id": account_id,
             "tags": tags,
             "metadata": metadata,
         }
@@ -213,12 +215,13 @@ class AIMonitor:
         trace_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        account_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Send one trace inline and return the stored record, or None on failure."""
         payload = self._build_payload(
             provider, model_name, prompt_tokens, completion_tokens,
             cache_read_tokens, cache_write_tokens, latency_ms, status,
-            error_message, session_id, trace_id, tags, metadata,
+            error_message, session_id, trace_id, tags, metadata, account_id,
         )
         try:
             res = self._sync_client.post(f"{self.api_url}/traces", json=payload)
@@ -253,6 +256,7 @@ class AIMonitor:
             kwargs.get("trace_id"),
             kwargs.get("tags"),
             kwargs.get("metadata"),
+            kwargs.get("account_id"),
         )
         try:
             self._queue.put_nowait(payload)
@@ -286,12 +290,13 @@ class AIMonitor:
         trace_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        account_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Asynchronously send a single trace event."""
         payload = self._build_payload(
             provider, model_name, prompt_tokens, completion_tokens,
             cache_read_tokens, cache_write_tokens, latency_ms, status,
-            error_message, session_id, trace_id, tags, metadata,
+            error_message, session_id, trace_id, tags, metadata, account_id,
         )
         try:
             res = await self._get_async_client().post(f"{self.api_url}/traces", json=payload)
@@ -310,6 +315,7 @@ class AIMonitor:
         session_id: Optional[str] = None,
         capture_usage: bool = True,
         usage_extractor: Optional[Callable[[Any], Dict[str, int]]] = None,
+        account_id: Optional[str] = None,
     ) -> Callable:
         """Decorator for sync and async functions that call an LLM.
 
@@ -349,6 +355,7 @@ class AIMonitor:
                             status=status_val,
                             error_message=err_msg,
                             session_id=session_id,
+                            account_id=account_id,
                             tags=tags,
                             **usage,
                         )
@@ -375,6 +382,7 @@ class AIMonitor:
                         status=status_val,
                         error_message=err_msg,
                         session_id=session_id,
+                        account_id=account_id,
                         tags=tags,
                         **usage,
                     )

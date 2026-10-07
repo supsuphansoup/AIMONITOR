@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
 from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.db.session import get_session
@@ -58,6 +59,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     kwargs = {
         "trace_id": payload.trace_id or str(uuid.uuid4()),
         "session_id": payload.session_id,
+        "account_id": payload.account_id,
         "provider": payload.provider,
         "model_name": payload.model_name,
         "prompt_tokens": prompt_tokens,
@@ -147,6 +149,8 @@ def list_traces(
         None, alias="status", description="Filter by status (SUCCESS, ERROR, TIMEOUT, RATE_LIMITED)"
     ),
     session_id: Optional[str] = Query(None, description="Filter by session ID"),
+    account_id: Optional[str] = Query(None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN),
+    account_unknown: bool = Query(False, description="Only records with unknown account"),
     start_time: Optional[datetime] = Query(None, description="Only traces at or after this ISO timestamp"),
     end_time: Optional[datetime] = Query(None, description="Only traces at or before this ISO timestamp"),
     limit: int = Query(50, ge=1, le=500),
@@ -157,6 +161,7 @@ def list_traces(
     The total number of matching rows is returned in `X-Total-Count`, so a
     client can render real page numbers instead of guessing from page fullness.
     """
+    validate_account_filter(account_id, account_unknown)
     filters = []
     if provider:
         filters.append(TraceEvent.provider == provider)
@@ -172,6 +177,10 @@ def list_traces(
         filters.append(TraceEvent.status == normalized)
     if session_id:
         filters.append(TraceEvent.session_id == session_id)
+    if account_id is not None:
+        filters.append(TraceEvent.account_id == account_id)
+    if account_unknown:
+        filters.append(col(TraceEvent.account_id).is_(None))
     if start_time:
         filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
     if end_time:
@@ -208,13 +217,15 @@ def _csv_text(value: Optional[str]) -> str:
 CSV_COLUMNS = [
     "id", "trace_id", "timestamp", "session_id", "provider", "model_name",
     "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
-    "total_tokens", "latency_ms", "cost_usd", "cost_source", "status", "tags",
+    "total_tokens", "latency_ms", "cost_usd", "cost_source", "status", "tags", "account_id",
 ]
 
 
 @router.get("/export.csv", dependencies=[Depends(require_read_auth)])
 def export_traces_csv(
     session: Session = Depends(get_session),
+    account_id: Optional[str] = Query(None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN),
+    account_unknown: bool = Query(False, description="Only records with unknown account"),
     provider: Optional[str] = Query(None),
     model_name: Optional[str] = Query(None),
     status_filter: Optional[str] = Query(
@@ -230,7 +241,12 @@ def export_traces_csv(
     for trace content to escape into a shared file, and neither column is needed
     to reconcile spend.
     """
+    validate_account_filter(account_id, account_unknown)
     filters = []
+    if account_id is not None:
+        filters.append(TraceEvent.account_id == account_id)
+    if account_unknown:
+        filters.append(col(TraceEvent.account_id).is_(None))
     if provider:
         filters.append(TraceEvent.provider == provider)
     if model_name:
@@ -278,6 +294,7 @@ def export_traces_csv(
                 # cannot quietly treat "we do not know" as "it was free".
                 "" if event.cost_source == SOURCE_UNKNOWN else event.cost_usd,
                 event.cost_source, event.status, _csv_text(event.tags),
+                _csv_text(event.account_id),
             ])
             yield buffer.getvalue()
 

@@ -19,6 +19,7 @@
 | `id` | PK, 자동 증가 |
 | `trace_id` | 인덱스. 미전달 시 UUID4 발급 |
 | `session_id` | 인덱스, 선택 |
+| `account_id` | 선택·nullable. `<tool>:<id>`, 최대 64자, `[A-Za-z0-9:_-]`. tool은 `claude_code`, `codex`, `antigravity`, `copilot`, `cursor`, `api`. `(account_id, timestamp)` 복합 인덱스 |
 | `timestamp` | 인덱스. 미전달 시 서버 시각. 입력 오프셋은 UTC로 변환 후 naive 저장 |
 | `provider` | 인덱스, 1–64자 |
 | `model_name` | 인덱스, 1–200자 |
@@ -43,21 +44,27 @@
 
 ### 조회
 
-- 필터: `provider`, `model_name`, `status`, `session_id`, `start_time`, `end_time`. 잘못된 `status`는 422 (빈 결과로 숨기지 않음).
+- 필터: `provider`, `model_name`, `status`, `session_id`, `account_id`, `start_time`, `end_time`. 잘못된 `status`·`account_id`는 422 (빈 결과로 숨기지 않음).
 - 정렬: `timestamp DESC, id DESC` — 같은 시각 행이 페이지 경계에서 중복되지 않도록 `id`를 2차 키로 쓴다.
 - `limit` 기본 50(1–500), `offset` ≥ 0.
 
 ### CSV 내보내기
 
-- 필터: `provider`, `model_name`, `status`, `start_time`, `end_time`을 함께 적용한다. `status`는 조회 API와 동일한 `VALID_STATUSES`를 사용해 공백 제거·대문자 변환 후 검증하며, 잘못된 값은 같은 422 오류로 거부한다 (빈 문자열은 필터 생략).
+- 필터: `provider`, `model_name`, `status`, `account_id`, `start_time`, `end_time`을 함께 적용한다. `status`는 조회 API와 동일한 `VALID_STATUSES`를 사용해 공백 제거·대문자 변환 후 검증하며, 잘못된 값은 같은 422 오류로 거부한다 (빈 문자열은 status 필터 생략).
 - 기간 경계는 양쪽 모두 포함한다 (`timestamp >= start_time`, `timestamp <= end_time`). 오프셋이 있는 입력 시각은 `timeutil.to_naive_utc`로 변환해 비교한다.
-- 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags`.
+- 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags, account_id`. 계정 미상은 마지막 열을 빈 칸으로 둔다.
 - `latency_measured=False`이면 `latency_ms`는 **빈 칸**으로 내보내며, 측정된 `0ms`와 양수 지연 시간은 숫자로 유지한다.
 - `error_message`·`metadata_json`은 **내보내지 않는다** — 내용이 시스템 밖으로 나가는 가장 쉬운 경로다.
 - `cost_source='unknown'`이면 `cost_usd`는 `0`이 아니라 **빈 칸**.
 - 호출자가 정하는 문자열(`trace_id`, `session_id`, `provider`, `model_name`, `tags`)이 `=` `+` `-` `@` 탭·CR로 시작하면 앞에 `'`를 붙인다 — 스프레드시트에서 수식으로 실행되지 않게 (OWASP CSV injection). 숫자 컬럼은 그대로.
 - `limit` 기본 10,000(최대 100,000), 500행 단위 스트리밍.
 - `timestamp DESC, id DESC`로 최신 행부터 상한을 적용한다. `X-Total-Count`는 필터에 맞는 전체 건수이며, 그 건수가 `limit`보다 클 때만 `X-Export-Partial: true`를 반환한다 (그 외 `false`). HTTP 클라이언트는 `X-Total-Count`와 요청 상한으로도 잘림 여부를 확인할 수 있다.
+
+### 계정 식별
+
+`GET /traces`와 `/traces/export.csv`는 `account_unknown=true`로 `account_id IS NULL`인 기록만 조회한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`를 함께 보내면 입력 원문 없는 기존 `detail` 배열 형식의 HTTP 422를 반환한다.
+
+계정 ID는 도구 로그인 고유값의 SHA-256 hex 앞 12자, 로그인 고유값이 없는 폴더는 `dir-`와 절대경로 SHA-256 hex 앞 12자로 수집자가 만든다. 서버는 원문 로그인 값·이메일·토큰을 받지 않으며 `null` 기록을 다른 계정에 붙이지 않는다. 사용자 계정 label은 데스크톱 설정에서만 보관한다.
 
 ## Open questions
 

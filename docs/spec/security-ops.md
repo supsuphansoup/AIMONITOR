@@ -21,6 +21,7 @@
 - 메타데이터 키 이름에 `prompt, completion, response, message, content, answer, question, query, input_text, output_text, system, choices, transcript, document, context_text`가 포함되면 값을 재귀적으로 `[redacted]`.
 - 요청 본문은 로그에 남기지 않는다. 접근 로그는 메서드·경로·상태·소요 시간·`X-Request-ID`만.
 - 500 응답은 일반 메시지만 반환하고 예외는 서버 로그로 (`raise ... from None`).
+- `account_id`의 422 검증 응답은 `detail` 배열의 위치·타입을 보존하며 제출한 `input`·예외 문자열을 응답에 싣지 않는다. 키 라우터는 기존 일반 `Invalid key request` 메시지를 사용하고 나머지 검증 동작은 유지한다.
 
 ### HTTP 계층 (`main.py`)
 
@@ -39,6 +40,16 @@
 - 모델 메타데이터와 실제 스키마를 비교해 **누락 컬럼은 `ALTER TABLE ADD COLUMN`, 누락 인덱스는 `CREATE INDEX`.** 삭제·타입 변경은 하지 않으며 멱등.
 - 모델 import를 명시적으로 수행(`_load_model_metadata`)해 import 순서에 의존하지 않는다.
 - 데스크톱 필드 `cache_write_1h_tokens DEFAULT 0`, `latency_measured DEFAULT 1`과 복합 인덱스 `(latency_measured, timestamp, id)`도 같은 업그레이드 경로로 추가한다. 과거 지연 값은 보존한다.
+- 계정 필드 `account_id`는 nullable로 추가하며 기존 행은 `NULL`을 유지한다. 단일 인덱스와 복합 인덱스 `(account_id, timestamp)`를 함께 추가한다.
+
+### 공급자 API 키 다중화
+
+- `GET /api/v1/keys`는 기존 provider 카드 배열을 유지하며 각 카드의 `keys`에 `{key_id, label, masked, status, last_verified, is_admin_key}`를 담는다. 기존 `masked_key`, `has_key` 등도 유지한다.
+- `POST /keys`의 `{provider, key, label}`은 새 키를 추가한다. label 기본은 `기본`, 최대 40자이며 등록된/새 키 원문·키 접두사·이메일을 포함할 수 없다. 응답에 키 원문은 없다.
+- `PATCH /keys/{provider}/{key_id}`의 `{label}`은 이름만 변경하고, `DELETE /keys/{provider}/{key_id}`는 해당 키만 삭제한다. 기존 `DELETE /keys/{provider}`는 모든 저장 키를 삭제한다. 환경 변수 키는 읽기 전용이다.
+- 서버 생성 key_id는 32자 UUID hex이다. 기존 provider 단일 키 파일은 읽을 때 `default`/`기본`으로 이전하며 DPAPI 봉인을 보존하고 평문은 먼저 봉인한다.
+- `GET /keys/spend`의 `items` 배열은 키별 `{provider, key_id, label, kind, amount, currency, ...}` 정본이다. 기존 도구 키 필드의 기본/첫 키 조회 결과도 유지한다. 관리자 키의 조직 청구액은 서로 겹칠 수 있으므로 키별 금액을 임의 합산하지 않는다.
+- 데스크톱 공개 함수 `list_keys()`는 기존 provider 카드, `set_key(provider, key)`는 기본/첫 키 갱신, `get_registered_key(provider)`는 기본/첫 키 또는 환경 키를 유지한다. `list_keys(provider)`, `get_key(provider, key_id)`, `add_key`, `update_label`은 개별 키용이다.
 - SQLite: WAL, `busy_timeout=15000`, `PRAGMA foreign_keys=ON`.
 
 ### 배포

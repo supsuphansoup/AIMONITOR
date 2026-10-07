@@ -18,9 +18,10 @@
 | API | 파라미터 | 기본·범위 |
 | :--- | :--- | :--- |
 | overview | `hours_back` | 생략 시 전체 기간, 1–8760. 명시적 `start_time`이 우선 |
-| overview | `provider`, `model_name`, `start_time`, `end_time` | 선택 |
+| overview | `provider`, `model_name`, `account_id`, `start_time`, `end_time` | 선택 |
 | timeseries | `interval_minutes` / `hours_back` | 5 (1–1440) / 24 (1–8760) |
-| breakdown | `hours_back`, `provider` | 24 (1–8760) |
+| timeseries | `provider`, `model_name`, `account_id` | 선택 |
+| breakdown | `hours_back`, `provider`, `account_id` | 24 (1–8760), 필터 선택 |
 
 ### 계산 방식
 
@@ -33,11 +34,18 @@
 
 ### 연결 AI (`/metrics/connected_ais`)
 
+- `active_contexts`는 도구별 합계·기존 필드를 유지하고 `accounts` 배열에 `account_id`와 동일한 창/컨텍스트 구조를 추가한다. `null` 계정은 별도 항목이다. `codex`·`cursor` 태그도 도구로 구분한다.
+- `connected_ais`는 도구별 합계·기존 필드를 유지하며 각 항목의 `accounts`에 계정별 `usage`, `context`, `last_request_at` 등을 추가한다. 전체 합계에 하위 계정을 다시 더하지 않는다. 도구 기본 자격증명의 공식 한도·청구액을 다른 계정에 복사하지 않는다.
+- 계정별 `quota_windows`는 데스크톱 소유 계정·타임라인의 읽기 전용 스냅샷을 통해 조회한다. 계정 파일 부재·읽기 실패 시 `null`이고 HTTP 200과 로컬 사용량은 유지한다. 공식 조회 불가 시 값이 없는 `unavailable` 창 또는 `null`이다. 백엔드는 `accounts.json`·`account_timeline.json`을 생성하거나 갱신하지 않는다.
+
 - 파라미터 없음. `{items, by_key, total, hidden}` 구조이며 `items`에는 `key`, `display_name`, `provider`, `plan_name`, `cost_meaning`, `quota_windows`, `context`, `usage`, `last_request_at`, `session_status`, `billing_note`, `official_spend`가 있다. 빈 연결 목록은 `items=[]`다.
 - `MetricAggregator.get_active_contexts`를 그대로 재사용한다. 사용 창은 5시간·오늘·7일·이번 달이며 오늘/월 경계는 백엔드 PC의 로컬 시각이다. SQL 합계에는 표본 상한이 없고 최신 컨텍스트만 `timestamp DESC, id DESC LIMIT 1`로 선택한다. 미래 행은 제외하며 정확한 도구 태그로 구분한다.
 - 연결 감지·한도·요약은 기존 `desktop.ai_detector`/`desktop.context_manager`를 재사용하며 데스크톱 파일을 변경하지 않는다. 데스크톱 설정의 숨김 목록도 반영한다. 공식 청구/잔액은 기존 `spend_service`의 15분 캐시를 사용한다.
 - `context`와 `official_spend`는 없으면 `null`, 공식 한도의 `remaining_pct`도 모르면 `null`이다. `usage`의 `cost_unknown`이 요청 수와 같고 0보다 크면 비용은 `cost_usd=null, cost_krw=null`이다. 일부 미상은 알려진 소계와 미상 건수를 반환한다. `total.billed_*`는 로컬 기록의 알려진 비용 소계로 공식 청구액이 아니며 `billed_unknown_month`를 함께 읽어야 한다.
 - 모든 응답 시각(`last_request_at`, 컨텍스트/한도의 `as_of`, `resets_at`, 청구액의 `as_of`, `period_start`)은 공통 timeutil로 UTC 오프셋 ISO-8601을 만든다. 로컬 경로·감지기의 예외 상세·공급자 조회 오류 상세는 응답에서 제외한다. 키·프롬프트·응답·세션 원문을 추가로 저장하거나 반환하지 않는다.
+
+
+`overview`·`timeseries`·`breakdown`은 `account_unknown=true`로 계정 미상(`account_id IS NULL`) 기록만 집계한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`의 동시 지정은 기존 `detail` 배열 형식의 HTTP 422이며 입력 원문은 반환하지 않는다.
 
 ## Open questions
 

@@ -2,9 +2,11 @@ from datetime import datetime
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import Field as PydanticField
 from sqlalchemy import Index
 from sqlmodel import Field, SQLModel
 
+from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
 from backend.app.core.config import settings
 from backend.app.core.sanitize import (
     normalize_tags,
@@ -25,6 +27,7 @@ class TraceEventBase(SQLModel):
     session_id: Optional[str] = Field(
         default=None, index=True, description="User or session identifier"
     )
+    account_id: Optional[str] = Field(default=None, index=True, max_length=ACCOUNT_ID_MAX_LENGTH)
     provider: str = Field(
         index=True, description="LLM provider (openai, anthropic, gemini, ollama, custom)"
     )
@@ -58,7 +61,10 @@ class TraceEventBase(SQLModel):
 class TraceEvent(TraceEventBase, table=True):
     """Database table model for storing trace events."""
     __tablename__ = "trace_events"
-    __table_args__ = (Index("ix_trace_events_measured_timestamp", "latency_measured", "timestamp", "id"),)
+    __table_args__ = (
+        Index("ix_trace_events_measured_timestamp", "latency_measured", "timestamp", "id"),
+        Index("ix_trace_events_account_timestamp", "account_id", "timestamp"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     # Stored as naive UTC; see backend.app.core.timeutil for why.
@@ -69,6 +75,9 @@ class TraceEventCreate(BaseModel):
     """Payload schema for single trace event ingestion."""
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
+    account_id: Optional[str] = PydanticField(
+        default=None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN
+    )
     timestamp: Optional[datetime] = None
     provider: str = Field(min_length=1, max_length=64)
     model_name: str = Field(min_length=1, max_length=200)

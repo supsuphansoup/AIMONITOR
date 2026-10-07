@@ -66,6 +66,8 @@ def _apply_filters(
     end_time: Optional[datetime] = None,
     provider: Optional[str] = None,
     model_name: Optional[str] = None,
+    account_id: Optional[str] = None,
+    account_unknown: bool = False,
 ) -> Select:
     if start_time is not None:
         query = query.where(TraceEvent.timestamp >= start_time)
@@ -75,10 +77,17 @@ def _apply_filters(
         query = query.where(TraceEvent.provider == provider)
     if model_name:
         query = query.where(TraceEvent.model_name == model_name)
+    if account_id is not None:
+        query = query.where(TraceEvent.account_id == account_id)
+    if account_unknown:
+        query = query.where(col(TraceEvent.account_id).is_(None))
     return query
 
 
-WATCHER_TAGS = {"claude": "claude-code", "antigravity": "antigravity", "copilot": "copilot"}
+WATCHER_TAGS = {
+    "claude": "claude-code", "antigravity": "antigravity", "copilot": "copilot",
+    "codex": "codex", "cursor": "cursor",
+}
 
 
 class MetricAggregator:
@@ -89,6 +98,8 @@ class MetricAggregator:
         end_time: Optional[datetime] = None,
         provider: Optional[str] = None,
         model_name: Optional[str] = None,
+        account_id: Optional[str] = None,
+        account_unknown: bool = False,
     ) -> Dict[str, Any]:
         """Calculate high-level KPI overview metrics."""
         totals_query = _apply_filters(
@@ -107,6 +118,8 @@ class MetricAggregator:
             end_time,
             provider,
             model_name,
+            account_id,
+            account_unknown,
         )
         row = session.exec(totals_query).one()
         (
@@ -130,6 +143,8 @@ class MetricAggregator:
             end_time,
             provider,
             model_name,
+            account_id,
+            account_unknown,
         )
         error_count = session.exec(error_query).one() or 0
 
@@ -139,6 +154,8 @@ class MetricAggregator:
             end_time,
             provider,
             model_name,
+            account_id,
+            account_unknown,
         )
         cost_unknown_count = session.exec(unpriced_query).one() or 0
 
@@ -153,6 +170,8 @@ class MetricAggregator:
                 end_time,
                 provider,
                 model_name,
+                account_id,
+                account_unknown,
             )
             .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
             .limit(settings.MAX_AGGREGATION_ROWS)
@@ -189,6 +208,8 @@ class MetricAggregator:
         hours_back: int = 24,
         provider: Optional[str] = None,
         model_name: Optional[str] = None,
+        account_id: Optional[str] = None,
+        account_unknown: bool = False,
     ) -> List[Dict[str, Any]]:
         """Group metrics into fixed time buckets for charting."""
         interval_minutes = max(1, min(interval_minutes, 1440))
@@ -210,6 +231,8 @@ class MetricAggregator:
                 start_time=cutoff,
                 provider=provider,
                 model_name=model_name,
+                account_id=account_id,
+                account_unknown=account_unknown,
             )
             .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
             .limit(settings.MAX_AGGREGATION_ROWS)
@@ -259,6 +282,8 @@ class MetricAggregator:
         session: Session,
         hours_back: int = 24,
         provider: Optional[str] = None,
+        account_id: Optional[str] = None,
+        account_unknown: bool = False,
     ) -> List[Dict[str, Any]]:
         """Per provider/model usage totals for the given window, grouped in SQL."""
         cutoff = utc_now() - timedelta(hours=hours_back)
@@ -280,6 +305,11 @@ class MetricAggregator:
         )
         if provider:
             query = query.where(TraceEvent.provider == provider)
+
+        if account_id is not None:
+            query = query.where(TraceEvent.account_id == account_id)
+        if account_unknown:
+            query = query.where(col(TraceEvent.account_id).is_(None))
 
         results: List[Dict[str, Any]] = []
         for row in session.exec(query).all():
@@ -341,8 +371,7 @@ class MetricAggregator:
             (f"{prov}_api", "api", not_watcher + [col(TraceEvent.provider) == prov]) for prov in providers
         ]
 
-        results: Dict[str, Any] = {}
-        for key, kind, filters in groups:
+        def summarize(key: str, kind: str, filters: List[Any]) -> Optional[Dict[str, Any]]:
             latest = session.exec(
                 select(TraceEvent)
                 .where(*filters)
@@ -351,7 +380,7 @@ class MetricAggregator:
                 .limit(1)
             ).first()
             if latest is None:
-                continue
+                return None
 
             win_out: Dict[str, Any] = {}
             for name, since in windows.items():
@@ -392,13 +421,13 @@ class MetricAggregator:
             # Copilot rows are session totals and Antigravity rows are text-length
             # estimates, so neither says anything about a context window.
             context_tokens = None
-            if key == "claude" or kind == "api":
+            if key in ("claude", "codex") or kind == "api":
                 context_tokens = (
                     (latest.prompt_tokens or 0)
                     + (latest.cache_read_tokens or 0)
                     + (latest.cache_write_tokens or 0)
                 )
-            results[key] = {
+            return {
                 "key": key,
                 "kind": kind,
                 "provider": latest.provider,
@@ -410,4 +439,25 @@ class MetricAggregator:
                 "is_active": mins_ago is not None and mins_ago <= 15,
                 "windows": win_out,
             }
+        results: Dict[str, Any] = {}
+        for key, kind, filters in groups:
+            total = summarize(key, kind, filters)
+            if total is None:
+                continue
+            account_ids = session.exec(
+                select(TraceEvent.account_id).where(
+                    *filters, col(TraceEvent.timestamp) <= to_naive_utc(now_utc)
+                ).distinct().order_by(col(TraceEvent.account_id))
+            ).all()
+            accounts = []
+            for account_id in account_ids:
+                account_filter = (
+                    col(TraceEvent.account_id).is_(None)
+                    if account_id is None else col(TraceEvent.account_id) == account_id
+                )
+                account = summarize(key, kind, filters + [account_filter])
+                if account is not None:
+                    accounts.append({"account_id": account_id, **account})
+            total["accounts"] = accounts
+            results[key] = total
         return results

@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/ ./backend/
 # The connected-AI API shares these standard-library/httpx desktop helpers.
 COPY desktop/config.py desktop/ai_detector.py desktop/context_manager.py desktop/quota.py ./desktop/
-COPY desktop/claude_quota_syncer.py ./desktop/
+COPY desktop/claude_quota_syncer.py desktop/accounts.py ./desktop/
 
 # Run as a non-root user; /app/data is the only path that needs to be writable
 # and is where the SQLite volume mounts.

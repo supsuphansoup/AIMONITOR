@@ -4,9 +4,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
+from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
 from backend.app.core.security import require_read_auth
 from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.db.session import get_session
+from backend.app.services.account_quotas import get_account_quota_windows
 from backend.app.services.aggregator import MetricAggregator
 
 router = APIRouter(
@@ -20,6 +22,8 @@ router = APIRouter(
 def get_metrics_overview(
     session: Session = Depends(get_session),
     provider: Optional[str] = Query(None, description="Filter by provider"),
+    account_id: Optional[str] = Query(None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN),
+    account_unknown: bool = Query(False, description="Only records with unknown account"),
     model_name: Optional[str] = Query(None, description="Filter by model name"),
     hours_back: Optional[int] = Query(
         None, ge=1, le=8760, description="Rolling window in hours; omit for all time"
@@ -31,6 +35,7 @@ def get_metrics_overview(
 
     `hours_back` is a shorthand for `start_time`; an explicit `start_time` wins.
     """
+    validate_account_filter(account_id, account_unknown)
     resolved_start = to_naive_utc(start_time)
     if resolved_start is None and hours_back is not None:
         resolved_start = utc_now() - timedelta(hours=hours_back)
@@ -40,6 +45,8 @@ def get_metrics_overview(
         start_time=resolved_start,
         end_time=to_naive_utc(end_time),
         provider=provider,
+        account_id=account_id,
+        account_unknown=account_unknown,
         model_name=model_name,
     )
 
@@ -50,14 +57,19 @@ def get_metrics_timeseries(
     interval_minutes: int = Query(5, ge=1, le=1440, description="Bucket interval in minutes"),
     hours_back: int = Query(24, ge=1, le=8760, description="Hours of past data to include"),
     provider: Optional[str] = Query(None, description="Filter by provider"),
+    account_id: Optional[str] = Query(None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN),
+    account_unknown: bool = Query(False, description="Only records with unknown account"),
     model_name: Optional[str] = Query(None, description="Filter by model name"),
 ):
     """Time-series metric buckets for rendering charts."""
+    validate_account_filter(account_id, account_unknown)
     return MetricAggregator.get_timeseries_metrics(
         session=session,
         interval_minutes=interval_minutes,
         hours_back=hours_back,
         provider=provider,
+        account_id=account_id,
+        account_unknown=account_unknown,
         model_name=model_name,
     )
 
@@ -67,10 +79,14 @@ def get_model_breakdown(
     session: Session = Depends(get_session),
     hours_back: int = Query(24, ge=1, le=8760, description="Hours of past data to include"),
     provider: Optional[str] = Query(None, description="Filter by provider"),
+    account_id: Optional[str] = Query(None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN),
+    account_unknown: bool = Query(False, description="Only records with unknown account"),
 ):
     """Per provider/model usage and cost breakdown."""
+    validate_account_filter(account_id, account_unknown)
     return MetricAggregator.get_model_breakdown(
-        session=session, hours_back=hours_back, provider=provider
+        session=session, hours_back=hours_back, provider=provider, account_id=account_id,
+        account_unknown=account_unknown
     )
 
 
@@ -90,39 +106,58 @@ def get_connected_ais(session: Session = Depends(get_session)):
 
     config = load_config()
     ais = detect_connected_ais()
+    active = MetricAggregator.get_active_contexts(session=session)
+    account_quotas = get_account_quota_windows(active)
+    rate = float(config.get("krw_per_usd") or 1380.0)
     summary = get_connected_ai_summary(
         active_ais=ais,
-        usage_by_ai=MetricAggregator.get_active_contexts(session=session),
-        krw_rate=float(config.get("krw_per_usd") or 1380.0),
+        usage_by_ai=active,
+        krw_rate=rate,
         config=config,
         official_spend=spend_service.spend_all([ai["key"] for ai in ais if ai["key"].endswith("_api")]),
     )
-    # The desktop detector's detail can contain filesystem exception strings.
-    # Neither it nor a local credential path belongs in the API response.
     for item in summary["items"]:
-        item.pop("path", None)
-        item.pop("detail", None)
-        if item.get("last_request_at"):
-            item["last_request_at"] = to_aware_utc(
-                datetime.fromisoformat(item["last_request_at"])
-            ).isoformat()
-        if item.get("context") and item["context"].get("as_of"):
-            item["context"]["as_of"] = to_aware_utc(
-                datetime.fromisoformat(item["context"]["as_of"])
-            ).isoformat()
-        for window in item["quota_windows"]:
-            for field in ("as_of", "resets_at"):
-                if window.get(field):
-                    window[field] = to_aware_utc(datetime.fromisoformat(window[field])).isoformat()
-        spend = item.get("official_spend")
-        if spend:
-            spend.pop("error", None)
-            for field in ("as_of", "period_start"):
-                if spend.get(field):
-                    spend[field] = to_aware_utc(datetime.fromisoformat(spend[field])).isoformat()
-        # A zero priced subtotal is not a zero bill when every call is unpriced.
-        for usage in item["usage"].values():
-            if usage["cost_unknown"] and usage["cost_unknown"] == usage["requests"]:
-                usage["cost_usd"] = None
-                usage["cost_krw"] = None
+        ai = next(ai for ai in ais if ai["key"] == item["key"])
+        accounts = []
+        for account in active.get(item["key"], {}).get("accounts", []):
+            # A default credential's quota/bill cannot be attributed to another account.
+            account_item = get_connected_ai_summary(
+                active_ais=[ai], usage_by_ai={item["key"]: account}, krw_rate=rate,
+                config=config, quota_overrides={item["key"]: []}, official_spend={},
+            )["items"][0]
+            account_item["account_id"] = account["account_id"]
+            account_item["quota_windows"] = account_quotas.get((item["key"], account["account_id"]))
+            _sanitize_connected_item(account_item)
+            accounts.append(account_item)
+        item["accounts"] = accounts
+        _sanitize_connected_item(item)
     return summary
+
+
+def _sanitize_connected_item(item: Dict[str, Any]) -> None:
+    """Normalize response times and remove local detector and billing error details."""
+    item.pop("path", None)
+    item.pop("detail", None)
+    if item.get("last_request_at"):
+        item["last_request_at"] = to_aware_utc(
+            datetime.fromisoformat(item["last_request_at"])
+        ).isoformat()
+    if item.get("context") and item["context"].get("as_of"):
+        item["context"]["as_of"] = to_aware_utc(
+            datetime.fromisoformat(item["context"]["as_of"])
+        ).isoformat()
+    for window in item["quota_windows"] or []:
+        for field in ("as_of", "resets_at"):
+            if window.get(field):
+                window[field] = to_aware_utc(datetime.fromisoformat(window[field])).isoformat()
+    spend = item.get("official_spend")
+    if spend:
+        spend.pop("error", None)
+        for field in ("as_of", "period_start"):
+            if spend.get(field):
+                spend[field] = to_aware_utc(datetime.fromisoformat(spend[field])).isoformat()
+    # A zero priced subtotal is not a zero bill when every call is unpriced.
+    for usage in item["usage"].values():
+        if usage["cost_unknown"] and usage["cost_unknown"] == usage["requests"]:
+            usage["cost_usd"] = None
+            usage["cost_krw"] = None

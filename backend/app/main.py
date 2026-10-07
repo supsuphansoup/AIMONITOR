@@ -4,6 +4,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -50,6 +52,15 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_STR}/redoc",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request: Request, exc: RequestValidationError):
+    """Keep the usual 422 field locations without echoing submitted private values."""
+    if not any("account_id" in err["loc"] for err in exc.errors()):
+        return await request_validation_exception_handler(request, exc)
+    errors = [{"loc": err["loc"], "type": err["type"], "msg": "Invalid field value"} for err in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 # Middleware order matters, and `add_middleware` makes the LAST registration the
 # outermost layer. These are registered innermost-first so that CORS ends up

@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
@@ -32,6 +32,11 @@ router = APIRouter(prefix="/keys", tags=["API Keys"], route_class=SecretRoute)
 class KeyUpdateRequest(BaseModel):
     provider: str = Field(..., description="Provider key name (e.g. openai, deepseek, openrouter)")
     key: str = Field(..., description="API key; stored sealed, never returned")
+    label: str = Field(default="기본", min_length=1, max_length=40)
+
+
+class KeyLabelRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
 
 
 @router.get("", response_model=List[Dict[str, Any]], dependencies=[Depends(require_read_auth)])
@@ -50,7 +55,17 @@ def get_spend(force: bool = Query(False, description="Bypass the 15-minute cache
     registered = {k["provider"] for k in api_key_manager.list_keys() if k["has_key"]}
     cards = {f"{p}_api" for p in registered if not p.endswith("_admin")}
     cards |= {p.replace("_admin", "_api") for p in registered if p.endswith("_admin")}
-    return spend_service.spend_all(sorted(cards), force=force)
+    result = spend_service.spend_all(sorted(cards), force=force)
+    items = []
+    for provider in sorted(registered):
+        for entry in api_key_manager.list_keys(provider):
+            if not entry["has_key"]:
+                continue
+            secret = api_key_manager.get_key(provider, entry["key_id"])
+            spend = spend_service.spend_for_key(provider, entry["key_id"], secret, force=force)
+            items.append({**spend, "provider": provider, "key_id": entry["key_id"], "label": entry["label"]})
+    result["items"] = items
+    return result
 
 
 @router.post(
@@ -63,13 +78,36 @@ def set_key(payload: KeyUpdateRequest) -> Dict[str, Any]:
     """Register or update an API key for a provider."""
     provider = payload.provider.lower().strip()
     try:
-        res = api_key_manager.set_key(provider=provider, key_value=payload.key)
+        res = api_key_manager.add_key(provider=provider, key_value=payload.key, label=payload.label)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid provider, key, or storage unavailable"
         ) from None
-    res["verification"] = api_key_manager.verify_key(provider)
+    # Adding a second key must not verify a different default key by accident.
     return res
+
+
+@router.patch("/{provider}/{key_id}", dependencies=[Depends(require_write_auth)])
+def update_label(
+    provider: str, payload: KeyLabelRequest,
+    key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
+) -> Dict[str, Any]:
+    try:
+        result = api_key_manager.update_label(provider.lower().strip(), key_id, payload.label)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key label or storage unavailable") from None
+    if result is None:
+        raise HTTPException(status_code=404, detail="No registered key found")
+    return result
+
+
+@router.delete("/{provider}/{key_id}", dependencies=[Depends(require_write_auth)])
+def delete_individual_key(
+    provider: str, key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
+) -> Dict[str, Any]:
+    if not api_key_manager.delete_key(provider.lower().strip(), key_id):
+        raise HTTPException(status_code=404, detail="No registered key found")
+    return {"provider": provider, "key_id": key_id, "deleted": True}
 
 
 @router.delete("/{provider}", response_model=Dict[str, Any], dependencies=[Depends(require_write_auth)])

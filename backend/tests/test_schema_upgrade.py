@@ -75,7 +75,10 @@ def test_new_columns_are_added_to_an_old_database(legacy_engine):
     ensure_schema(legacy_engine)
 
     columns = {c["name"] for c in inspect(legacy_engine).get_columns("trace_events")}
-    assert {"cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens", "latency_measured", "cost_source"} <= columns
+    assert {
+        "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens", "latency_measured",
+        "cost_source", "account_id",
+    } <= columns
 
     rule_columns = {c["name"] for c in inspect(legacy_engine).get_columns("alert_rules")}
     assert {"cooldown_minutes", "last_triggered_at"} <= rule_columns
@@ -85,13 +88,14 @@ def test_existing_rows_survive_and_get_defaults(legacy_engine):
     ensure_schema(legacy_engine)
     with legacy_engine.connect() as conn:
         row = conn.execute(text(
-            "SELECT trace_id, cache_read_tokens, cache_write_tokens, cost_source "
+            "SELECT trace_id, cache_read_tokens, cache_write_tokens, cost_source, account_id "
             "FROM trace_events"
         )).one()
     assert row[0] == "legacy-1"
     assert row[1] == 0
     assert row[2] == 0
     assert row[3] == "unknown"
+    assert row[4] is None
 
 
 def test_ensure_schema_is_idempotent(legacy_engine):
@@ -168,3 +172,25 @@ def test_desktop_columns_defaults_and_index_are_backfilled(legacy_engine):
     assert tuple(row) == (0, 1, 200.0)
     indexes = {i["name"]: i["column_names"] for i in inspect(legacy_engine).get_indexes("trace_events")}
     assert indexes["ix_trace_events_measured_timestamp"] == ["latency_measured", "timestamp", "id"]
+    assert indexes["ix_trace_events_account_timestamp"] == ["account_id", "timestamp"]
+    assert indexes["ix_trace_events_account_id"] == ["account_id"]
+
+
+def test_upgrade_existing_database_copy_preserves_source(legacy_engine, tmp_path):
+    import sqlite3
+
+    source_path = legacy_engine.url.database
+    copy_path = tmp_path / "copy.db"
+    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as source:
+        with sqlite3.connect(copy_path) as destination:
+            source.backup(destination)
+    copy_engine = create_engine(f"sqlite:///{copy_path}")
+    try:
+        ensure_schema(copy_engine)
+        ensure_schema(copy_engine)
+        with copy_engine.connect() as conn:
+            row = conn.execute(text("SELECT trace_id, account_id FROM trace_events")).one()
+        assert tuple(row) == ("legacy-1", None)
+        assert "account_id" not in {c["name"] for c in inspect(legacy_engine).get_columns("trace_events")}
+    finally:
+        copy_engine.dispose()

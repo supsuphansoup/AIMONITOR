@@ -214,7 +214,7 @@ class SpendService:
     def __init__(self, get_key: Callable[[str], Optional[str]], ttl: float = CACHE_TTL_SECONDS):
         self._get_key = get_key
         self._ttl = ttl
-        self._cache: Dict[str, tuple] = {}
+        self._cache: Dict[Any, tuple] = {}
         self._lock = threading.Lock()
 
     def spend_for(self, card_key: str, force: bool = False) -> Optional[Dict[str, Any]]:
@@ -234,9 +234,22 @@ class SpendService:
                     source_label="관리자 키를 등록하면 공식 사용 금액을 표시",
                 )
             return None
+        return self._spend_secret(card_key, secret, fetch, force, card_key)
+
+    def spend_for_key(
+        self, provider: str, key_id: str, secret: Optional[str], force: bool = False,
+    ) -> Dict[str, Any]:
+        """Query exactly one registered key, without substituting an admin/default key."""
+        card_key = provider.replace("_admin", "") + "_api"
+        fetcher = FETCHERS.get(card_key)
+        if not secret or fetcher is None or fetcher[0] != provider:
+            return _result(provider, KIND_UNAVAILABLE, source_label="이 키로 공식 사용 금액을 조회할 수 없음")
+        return self._spend_secret(card_key, secret, fetcher[1], force, (provider, key_id))
+
+    def _spend_secret(self, card_key, secret, fetch, force, cache_key) -> Dict[str, Any]:
         identity = hashlib.sha256(secret.encode("utf-8")).digest()
         with self._lock:
-            hit = self._cache.get(card_key)
+            hit = self._cache.get(cache_key)
             if hit and hit[1] == identity and not force and time.monotonic() - hit[0] < self._ttl:
                 return hit[2]
         try:
@@ -252,7 +265,7 @@ class SpendService:
                 source_label="조회 실패 (네트워크)",
             )
         with self._lock:
-            self._cache[card_key] = (time.monotonic(), identity, result)
+            self._cache[cache_key] = (time.monotonic(), identity, result)
         return result
 
     def spend_all(self, card_keys, force: bool = False) -> Dict[str, Dict[str, Any]]:
