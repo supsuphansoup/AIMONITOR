@@ -110,12 +110,13 @@ class DesktopApp:
                 self.ensure_backend()
                 failures = 0
 
-    def run(self) -> None:
+    def run(self, autostart: bool = False) -> None:
         """Run the native desktop application."""
         if not self.instance.acquire():
             # 이미 실행 중: 창을 하나 더 띄우지 않고 기존 창을 앞으로 가져온다.
             logger.info("AIMONITOR is already running; asking it to show its window")
-            self.instance.notify_running()
+            if not autostart:
+                self.instance.notify_running()
             return
         self.ensure_backend()
         threading.Thread(target=self._watch_backend, daemon=True, name="BackendWatchdog").start()
@@ -129,6 +130,7 @@ class DesktopApp:
         self.main_window = DesktopMainWindow(
             on_switch_to_widget=self.switch_to_widget,
             on_visibility_changed=self._on_visibility_changed,
+            start_hidden=autostart,
         )
         main_window = self.main_window
         self.instance.on_show = lambda: main_window.after(0, self.show_main_window)
@@ -215,9 +217,9 @@ class DesktopApp:
                 pass
 
 
-def main():
+def main(autostart: bool = False):
     app = DesktopApp()
-    app.run()
+    app.run(autostart=autostart)
 
 
 if __name__ == "__main__":

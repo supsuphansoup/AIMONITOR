@@ -28,7 +28,7 @@ import customtkinter as ctk
 import httpx
 import matplotlib
 
-from desktop import theme
+from desktop import autostart, theme
 
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -82,9 +82,12 @@ class DesktopMainWindow(ctk.CTk):
         self,
         on_switch_to_widget: Optional[Callable[[], None]] = None,
         on_visibility_changed: Optional[Callable[[], None]] = None,
+        start_hidden: bool = False,
     ):
         attach_to_default_desktop()
         super().__init__()
+        if start_hidden:
+            self.withdraw()
 
         self.on_switch_to_widget = on_switch_to_widget
         # Called after the user hides/shows an AI here, so the widget can refresh at once.
@@ -261,6 +264,7 @@ class DesktopMainWindow(ctk.CTk):
             segmented_button_selected_color=theme.ACCENT_SOFT,
             segmented_button_selected_hover_color=theme.ACCENT_SOFT,
             text_color=theme.TEXT,
+            command=self._on_tab_changed,
         )
         self.tabview.pack(fill="both", expand=True, padx=theme.SPACE_5, pady=(theme.SPACE_3, theme.SPACE_3))
 
@@ -1044,6 +1048,27 @@ class DesktopMainWindow(ctk.CTk):
         s_scroll = ctk.CTkScrollableFrame(parent, fg_color=theme.CARD, corner_radius=theme.RADIUS_MD)
         s_scroll.pack(fill="both", expand=True, padx=theme.SPACE_4, pady=(0, theme.SPACE_3))
 
+        startup = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
+        startup.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
+        startup_inner = ctk.CTkFrame(startup, fg_color="transparent")
+        startup_inner.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_3)
+        self.autostart_var = ctk.BooleanVar(value=False)
+        self.autostart_switch = ctk.CTkSwitch(
+            startup_inner, text="Windows 시작 시 자동 실행", variable=self.autostart_var,
+            command=self._toggle_autostart, font=theme.font(theme.FONT_BODY), text_color=theme.TEXT,
+            progress_color=theme.ACCENT, button_color=theme.ACCENT_ON, fg_color=theme.CONTROL,
+        )
+        self.autostart_switch.pack(anchor="w")
+        self.lbl_autostart_status = ctk.CTkLabel(
+            startup_inner, text="", font=theme.font(theme.FONT_SM), text_color=theme.MUTED,
+        )
+        self.lbl_autostart_status.pack(anchor="w", pady=(theme.SPACE_1, 0))
+        ctk.CTkLabel(
+            startup_inner, text="로그인하면 위젯과 트레이로 시작합니다. 메인 창은 트레이에서 열 수 있습니다.",
+            font=theme.font(theme.FONT_XS), text_color=theme.FAINT,
+        ).pack(anchor="w")
+        self._refresh_autostart_status()
+
         # 1. Exchange Rate Row (100% Automatic)
         r1 = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
         r1.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
@@ -1162,6 +1187,53 @@ class DesktopMainWindow(ctk.CTk):
         self.diag_frame = ctk.CTkFrame(s_scroll, fg_color="transparent")
         self.diag_frame.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_1)
         self._refresh_diagnostic_table()
+
+    def _on_tab_changed(self) -> None:
+        if self.tabview.get() == "환경설정":
+            self._refresh_autostart_status()
+
+    def _refresh_autostart_status(self) -> None:
+        try:
+            status = autostart.get_status()
+        except OSError:
+            logger.warning("Cannot read Windows startup registration", exc_info=True)
+            self.autostart_var.set(False)
+            self.autostart_switch.configure(state="disabled")
+            self.lbl_autostart_status.configure(
+                text="상태 확인 실패 · 레지스트리 접근 권한을 확인하세요.", text_color=theme.ERROR,
+            )
+            self.lbl_status_msg.configure(
+                text="자동 실행 상태를 확인하지 못했습니다.", text_color=theme.ERROR,
+            )
+            return
+        self.autostart_var.set(status == autostart.ENABLED)
+        self.autostart_switch.configure(state="disabled" if status == autostart.UNSUPPORTED else "normal")
+        messages = {
+            autostart.ENABLED: "켜짐 · 현재 위치의 AIMONITOR로 시작합니다.",
+            autostart.DISABLED: "꺼짐 · Windows에 자동 실행이 등록되어 있지 않습니다.",
+            autostart.OTHER_LOCATION: "다른 위치를 가리킴 · 켜면 현재 위치로 교체합니다.",
+            autostart.UNSUPPORTED: "사용 불가 · Windows에서만 지원합니다.",
+        }
+        self.lbl_autostart_status.configure(
+            text=messages[status],
+            text_color=theme.WARNING if status == autostart.OTHER_LOCATION else theme.MUTED,
+        )
+
+    def _toggle_autostart(self) -> None:
+        try:
+            if self.autostart_var.get():
+                autostart.enable()
+            else:
+                autostart.disable()
+        except OSError:
+            logger.warning("Cannot update Windows startup registration", exc_info=True)
+            self._refresh_autostart_status()
+            message = "자동 실행 변경 실패 · 레지스트리 접근 권한을 확인한 뒤 다시 시도하세요."
+            self.lbl_autostart_status.configure(text=message, text_color=theme.ERROR)
+            self.lbl_status_msg.configure(text=message, text_color=theme.ERROR)
+            return
+        self._refresh_autostart_status()
+        self.lbl_status_msg.configure(text="자동 실행 상태를 확인했습니다.", text_color=theme.SUCCESS)
 
     def _refresh_visibility_list(self) -> None:
         """One checkbox per connected AI; checked = shown."""
@@ -1293,6 +1365,7 @@ class DesktopMainWindow(ctk.CTk):
             self.on_switch_to_widget()
 
     def show_window(self) -> None:
+        self._refresh_autostart_status()
         self.deiconify()
         self.lift()
         self.focus_force()
