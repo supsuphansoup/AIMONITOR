@@ -55,6 +55,7 @@ Cursor에는 신뢰할 수 있는 호출별 사용량이 없어 트레이스를 
 Codex `token_count`의 `last_token_usage`를 수집하되 반복된 누적 토큰 스냅샷은 다시 세지 않는다.
 트레이스는 `account_id`를 포함하며 원문 메시지를 보내지 않는다.
 폴더별 커서는 `folder_offsets/<tool>-<config_dir_hash>.json`으로 분리한다.
+경로 커서는 `resolve()`·플랫폼 `normcase`로, 세션 커서는 상대경로·구분자로 정규화해 저장하며, 이전 대소문자·경로 표기의 키는 로드 시 합쳐 최댓값을 사용한다.
 기존 `ai_offsets.json`·폴더별 상태의 절대 로그 경로·커서 및 `claude_offsets.json`의 커서는
 `claude:session:<상대경로>`·`codex:session:<상대경로>` 키로 이전하며 동일 그룹의 최댓값을 사용한다.
 물리적 별칭의 상대경로가 달라도 모든 별칭에 같은 커서를 저장하므로 첫 폴더가 없어져도 재전송하지 않는다.

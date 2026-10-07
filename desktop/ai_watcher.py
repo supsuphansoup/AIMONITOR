@@ -63,6 +63,19 @@ def _session_key(prefix: str, path: Path, root: Optional[Path] = None) -> str:
     return f"{prefix}:session:{relative_name}"
 
 
+def _normalize_offset_key(key: str) -> str:
+    """Merge old resolve() cursors and normcase cursors using the filesystem's case rules."""
+    prefix, separator, path = key.partition(":")
+    if not separator:
+        return key
+    if prefix in ("claude", "codex", "codex_total"):
+        if path.startswith("session:"):
+            relative = os.path.normcase(os.path.normpath(path[len("session:"):]))
+            return f"{prefix}:session:{Path(relative).as_posix()}"
+        return _session_key(prefix, Path(path))
+    return f"{prefix}:{canonical_path(Path(path))}"
+
+
 class UnifiedAIWatcher:
     """Watches local AI sessions for Antigravity, Claude, and GPT."""
 
@@ -112,12 +125,10 @@ class UnifiedAIWatcher:
                 offsets = json.loads(self.state_file.read_text(encoding="utf-8"))
                 normalized = {}
                 for key, offset in offsets.items():
-                    prefix, separator, path = key.partition(":")
-                    if path.startswith("session:"):
+                    is_identity = ":session:" in key
+                    key = _normalize_offset_key(key)
+                    if is_identity:
                         self._identity_state_keys.add(key)
-                    if (separator and prefix in ("claude", "codex", "codex_total")
-                            and not path.startswith("session:")):
-                        key = _session_key(prefix, Path(path))
                     normalized[key] = max(normalized.get(key, 0), offset)
                 return normalized
         except Exception as e:
@@ -166,11 +177,10 @@ class UnifiedAIWatcher:
             if target.exists():
                 stored = json.loads(target.read_text(encoding="utf-8"))
                 for key, offset in stored.items():
-                    prefix, _, path = key.partition(":")
-                    if path.startswith("session:"):
+                    is_identity = ":session:" in key
+                    key = _normalize_offset_key(key)
+                    if is_identity:
                         self._identity_state_keys.add(key)
-                    if prefix in ("claude", "codex", "codex_total") and not path.startswith("session:"):
-                        key = _session_key(prefix, Path(path))
                     self._offsets[key] = max(self._offsets.get(key, 0), offset)
             if tool == "claude_code":
                 legacy = self.state_file.with_name("claude_offsets.json")
@@ -740,7 +750,7 @@ class UnifiedAIWatcher:
             return traces
 
         for fpath in session_state.glob("*/events.jsonl"):
-            key = f"copilot:{fpath.resolve()}"
+            key = self._offset_key("copilot", fpath)
             last_offset = self._offsets.get(key, 0)
             try:
                 cur_size = fpath.stat().st_size
