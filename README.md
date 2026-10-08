@@ -198,4 +198,4 @@ AIMONITOR/
 
 ## 📄 라이선스
 
-MIT
+[MIT](LICENSE)
