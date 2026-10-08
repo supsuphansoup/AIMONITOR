@@ -2,13 +2,28 @@
 
 동작 규칙의 현재 상태는 [docs/spec/](docs/spec/README.md)에 있다. 이 파일은 버전별 변경과 업그레이드 주의사항만 기록한다.
 
-## Unreleased
+## v0.6.0 — 2026-10-08 · 데스크톱 전용 UI, 계정별 사용량, Windows exe
+
+**동작 변경 (BREAKING)**
+- 웹 대시보드 제거. UI는 Windows 데스크톱 앱(메인 창·트레이·위젯)만 제공한다. `GET /`는 JSON 404이며 `/api/v1/**`·`/health`·SDK·CSV는 유지한다.
+- `API_KEY`가 없으면 `localhost`·`127.0.0.1`·`[::1]`로 들어온 요청에만 응답한다. 다른 호스트 이름(예: Docker 네트워크의 서비스 이름)으로 쓰던 곳은 `API_KEY`를 설정하거나 `ALLOWED_HOSTS`에 이름을 추가해야 한다.
+
+**보안**
+- 웹페이지가 브라우저를 통해 로컬 API를 조작하지 못하게 했다. `CORS_ORIGINS` 밖의 `Origin`을 가진 쓰기 요청(예: `POST /system/purge`)은 403이고, 개방 모드의 비로컬 Host(DNS rebinding)도 403이다.
+- Antigravity·Copilot·VS Code 데이터베이스를 읽기 전용으로 연다.
+
+**추가**
+- Windows exe(`AIMONITOR.exe`, PyInstaller 단일 폴더). Python 설치 없이 실행하며 데이터는 `~/.aimonitor`에 둔다. `v*` 태그에서 빌드·smoke test 후 초안 릴리스에 첨부.
+- 계정별 사용량: Claude·Codex 설정 폴더(기본, `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, `~/.claude-*`·`~/.codex-*`, 수동 추가)를 모두 수집하고 계정별로 나눈다. 트레이스에 `account_id`(SDK 포함), 조회·CSV·집계에 계정 필터.
+- 공급자별 API 키 여러 개(라벨·키별 청구액), 기존 단일 키는 "기본"으로 이관.
+- 설정의 Windows 시작 시 자동 실행 토글.
+- `LICENSE`(MIT). CI에 Windows 데스크톱 job — GUI·DPAPI 테스트가 CI에서 실행된다.
 
 **수정**
 - SQLModel 0.0.48 이상에서 서버가 모든 기록 저장에 실패하던 문제. 새 버전은 `datetime` 컬럼을 시간대 필수 형식으로 만들어 naive UTC 값을 거부한다. 시각 컬럼을 `DateTime`으로 명시해 버전과 관계없이 기존 저장 방식을 유지한다.
+- Linux에서 단일 인스턴스 포트가 해제되지 않던 문제.
 
-**추가**
-- `LICENSE` (MIT). CI에 Windows 데스크톱 job 추가 — GUI·DPAPI 테스트가 CI에서 실행된다.
+**업그레이드**: `trace_events.account_id` 컬럼과 `(account_id, timestamp)` 인덱스는 시작 시 자동 추가된다. 과거 행은 `account_id=null`(계정 미상). exe는 소스 실행과 다른 DB(`~/.aimonitor/aimonitor.db`)를 쓴다.
 
 ## v0.5.0 — 2026-10-06 · 알림·내보내기·집계 정합성, 단가표 갱신
 
