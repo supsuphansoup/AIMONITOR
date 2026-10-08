@@ -1,8 +1,8 @@
 #!/usr/bin/env pythonw
 """AIMONITOR Native Windows Desktop Launcher (No Console Window).
 
-Double-click this file or use AIMONITOR.bat to run AIMONITOR as a pure
-Windows desktop application with zero command prompt window.
+Double-click this file (or run `pythonw run_desktop.pyw`) to start AIMONITOR
+as a Windows desktop application without a console window.
 """
 import os
 import sys

@@ -11,7 +11,7 @@ pip install -r backend/requirements.txt          # 백엔드 의존성
 pip install -r desktop/requirements.txt          # 데스크톱 의존성
 python -m pytest -q                               # 백엔드 + SDK + 데스크톱 테스트 (루트에서 실행)
 ruff check .                                      # 파이썬 린트
-python run_desktop.py                              # 데스크톱 앱 (사람이 직접 실행)
+pythonw run_desktop.pyw                            # 데스크톱 앱 (사람이 직접 실행)
 python -m uvicorn backend.app.main:app --port 8000 --reload   # 개발 서버 (사람이 직접 실행)
 python scripts/simulate.py --batches 20 --spread-hours 6      # 데모 트래픽
 pip install -r build-windows/requirements.txt && pyinstaller build-windows/aimonitor.spec --noconfirm  # Windows exe → dist/AIMONITOR/
@@ -25,12 +25,15 @@ pip install -r build-windows/requirements.txt && pyinstaller build-windows/aimon
 - 캐시 **읽기·쓰기 토큰은 단가가 다르다.** 합산해 한 단가로 계산하지 않는다.
 - 프롬프트·응답 원문은 DB·로그·오류 응답·CSV 어디에도 남기지 않는다 (`core/sanitize.py`).
 - 오류 응답에 예외 문자열을 싣지 않는다. 서버 로그로만 남긴다.
+- 앱이 읽는 파일·외부로 보내는 데이터를 바꾸면 `docs/privacy.md`·`docs/privacy.en.md`를 같은 커밋에서 고친다.
 - 의존성은 `backend/requirements.txt`, `desktop/requirements.txt`(빌드 전용: `build-windows/requirements.txt`)에 있는 것만 쓴다. 추가는 사람 승인 후.
 
 ## Architecture
 
 ```
 SDK(sdk/python) ─POST /api/v1/traces→ routers/traces → services/cost → DB(SQLite WAL, SQLModel)
+desktop/ai_watcher(Claude Code·Codex·Copilot·Antigravity 로그) ─POST /api/v1/traces/batch→ (위와 같음)
+desktop/quota·claude_quota_syncer(도구별 공식 한도) → 위젯·메인 창의 계정별 한도
 DB → services/aggregator → routers/metrics → desktop(Windows 메인 창·트레이·위젯, HTTP API)
 DB → services/alert ← services/scheduler(60초) → Slack/Discord Webhook
 core/: config · security(API 키) · sanitize · timeutil · metrics_catalog   db/session.py: ensure_schema

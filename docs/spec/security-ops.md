@@ -7,6 +7,7 @@
 - OPS-3 보관 기간을 지나면 트레이스와 알림 이력을 자동 삭제할 수 있다. 기본은 무제한 (업그레이드만으로 데이터를 잃지 않음).
 - OPS-4 이전 버전 DB를 그대로 두고 업그레이드해도 기동된다 (누락 컬럼·인덱스 자동 추가, 데이터 보존).
 - OPS-5 단일 컨테이너로 API만 서빙하고, liveness/readiness를 분리한다. UI는 별도 Windows 데스크톱 앱이다.
+- OPS-6 웹페이지가 사용자의 브라우저를 통해 로컬 API를 조작하지 못한다 (교차 출처 쓰기, DNS rebinding).
 
 ## Design
 
@@ -42,18 +43,31 @@
 - 모델 import를 명시적으로 수행(`_load_model_metadata`)해 import 순서에 의존하지 않는다.
 - 데스크톱 필드 `cache_write_1h_tokens DEFAULT 0`, `latency_measured DEFAULT 1`과 복합 인덱스 `(latency_measured, timestamp, id)`도 같은 업그레이드 경로로 추가한다. 과거 지연 값은 보존한다.
 - 계정 필드 `account_id`는 nullable로 추가하며 기존 행은 `NULL`을 유지한다. 단일 인덱스와 복합 인덱스 `(account_id, timestamp)`를 함께 추가한다.
+- SQLite: WAL, `busy_timeout=15000`, `PRAGMA foreign_keys=ON`. 시각 컬럼은 SQLModel 버전과 관계없이 naive UTC로 저장하도록 `sa_type=DateTime`을 명시한다.
 
-### 공급자 API 키 다중화
+### 설정 (보안 관련)
 
-- `GET /api/v1/keys`는 기존 provider 카드 배열을 유지하며 각 카드의 `keys`에 `{key_id, label, masked, status, last_verified, is_admin_key}`를 담는다. 기존 `masked_key`, `has_key` 등도 유지한다.
-- `POST /keys`의 `{provider, key, label}`은 새 키를 추가한다. label 기본은 `기본`, 최대 40자이며 등록된/새 키 원문·키 접두사·이메일을 포함할 수 없다. 응답에 키 원문은 없다.
-- `PATCH /keys/{provider}/{key_id}`의 `{label}`은 이름만 변경하고, `DELETE /keys/{provider}/{key_id}`는 해당 키만 삭제한다. 기존 `DELETE /keys/{provider}`는 모든 저장 키를 삭제한다. 환경 변수 키는 읽기 전용이다.
-- 서버 생성 key_id는 32자 UUID hex이다. 기존 provider 단일 키 파일은 읽을 때 `default`/`기본`으로 이전하며 DPAPI 봉인을 보존하고 평문은 먼저 봉인한다.
-- `GET /keys/spend`의 `items` 배열은 키별 `{provider, key_id, label, kind, amount, currency, ...}` 정본이다. 기존 도구 키 필드의 기본/첫 키 조회 결과도 유지한다. 관리자 키의 조직 청구액은 서로 겹칠 수 있으므로 키별 금액을 임의 합산하지 않는다.
-- 데스크톱 공개 함수 `list_keys()`는 기존 provider 카드, `set_key(provider, key)`는 기본/첫 키 갱신, `get_registered_key(provider)`는 기본/첫 키 또는 환경 키를 유지한다. `list_keys(provider)`, `get_key(provider, key_id)`, `add_key`, `update_label`은 개별 키용이다.
-- SQLite: WAL, `busy_timeout=15000`, `PRAGMA foreign_keys=ON`.
+| 설정 | 기본값 | 의미 |
+| :--- | :--- | :--- |
+| `API_KEY` | *(없음)* | 미설정 = 개방 모드. 모든 엔드포인트가 열리고 `localhost` 이름으로 온 요청에만 응답한다 |
+| `REQUIRE_AUTH_FOR_READS` | `false` | `true`면 조회에도 키 필요 |
+| `CORS_ORIGINS` | `http://localhost:8000`, `http://127.0.0.1:8000` | 이 밖의 브라우저 출처에서 온 쓰기는 403. `*`이면 credentials 비활성화 |
+| `ALLOWED_HOSTS` | *(없음)* | 개방 모드에서 추가로 허용할 Host 이름 (신뢰하는 네트워크) |
+| `RETENTION_DAYS` | `0` (무제한) | 설정 시 오래된 기록을 주기적으로 삭제 |
+
+전체 목록과 설명은 `.env.example`이 정본이다.
 
 ### 배포
+
+API 서버만 따로 띄우기 (데스크톱 없이 수집):
+
+```bash
+cp .env.example .env
+python -c "import secrets; print('API_KEY=' + secrets.token_urlsafe(32))" >> .env
+docker compose up --build -d   # http://localhost:8000/api/v1, Swagger: /api/v1/docs
+```
+
+외부에 노출하려면 먼저 `API_KEY`를 설정한 뒤 `docker-compose.yml`의 포트 바인딩을 바꾼다.
 
 - Dockerfile: `python:3.11-slim` API 전용 런타임, non-root `aimonitor` 사용자. 연결 AI API가 사용하는 데스크톱 공유 헬퍼만 포함하며 GUI는 실행하지 않는다.
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.

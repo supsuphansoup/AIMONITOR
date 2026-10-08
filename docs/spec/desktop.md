@@ -1,29 +1,28 @@
 # Spec: 데스크톱 앱 (Desktop)
 
+계정·로그 수집은 [accounts.md](accounts.md), 공급자 API 키·청구액은 [keys.md](keys.md), 읽고 보내는 데이터 전체는 [개인정보 문서](../privacy.md)에 있다.
+
 ## Requirements
 
 - DESK-1 Windows 네이티브 창, 항상 위 위젯, 트레이, 단일 인스턴스를 제공한다.
-- DESK-2 로컬 Claude Code·Copilot·Antigravity 로그에서는 카운터와 상태만 수집한다. 원문을 전송하지 않는다.
-- DESK-3 공식 한도·청구액과 로컬 기록의 추정 비용을 구별하고, 없는 값은 `확인 불가`/`계산 불가`로 표시한다.
-- DESK-4 API 키는 Windows 사용자 범위 DPAPI로 암호화하여 저장한다. 암호화를 지원하지 않는 플랫폼은 파일 저장을 거부하고 환경 변수 키만 사용한다.
-- DESK-5 OS 또는 앱의 라이트·다크 모드 변경은 백엔드 폴링을 기다리지 않고 메인 창·위젯·차트·트레이 아이콘에 반영한다. 팔레트와 배치는 유지한다.
-- DESK-6 서버 인증 키는 config의 `api_key`, 환경 변수 `AIMONITOR_API_KEY` 순서로 선택한다. 없으면 헤더 없이 요청하고, 401/403은 `인증 필요`로 표시하며 다음 폴링을 계속한다.
-- DESK-7 Windows 사용자 로그인 시 자동 실행을 선택할 수 있다. 상태는 사용자 Run 레지스트리에서 조회하며 관리자 권한과 추가 의존성이 필요 없다.
+- DESK-2 공식 한도·청구액과 로컬 기록의 추정 비용을 구별하고, 없는 값은 `확인 불가`/`계산 불가`로 표시한다.
+- DESK-3 OS 또는 앱의 라이트·다크 모드 변경은 백엔드 폴링을 기다리지 않고 메인 창·위젯·차트·트레이 아이콘에 반영한다. 팔레트와 배치는 유지한다.
+- DESK-4 서버 인증 키는 config의 `api_key`, 환경 변수 `AIMONITOR_API_KEY` 순서로 선택한다. 없으면 헤더 없이 요청하고, 401/403은 `인증 필요`로 표시하며 다음 폴링을 계속한다.
+- DESK-5 Windows 사용자 로그인 시 자동 실행을 선택할 수 있다. 상태는 사용자 Run 레지스트리에서 조회하며 관리자 권한과 추가 의존성이 필요 없다.
 
 ## Design
 
-### 실행
+### 실행 (소스)
 
-저장소 루트에서 `python run_desktop.py`를 실행한다. Windows에서는 `AIMONITOR.bat`,
-`AIMONITOR.vbs`, `run_desktop.pyw`로 콘솔 없이 실행할 수 있다.
-데스크톱 의존성은 `desktop/requirements.txt`, 백엔드 의존성은 `backend/requirements.txt`에 분리한다.
-Tkinter가 포함된 Python이 필요하다. 필요한 환경에서는 사람이 두 requirements 파일을 설치한다.
+저장소 루트에서 `python run_desktop.py`, 콘솔 없이는 `pythonw run_desktop.pyw`를 실행한다.
+데스크톱 의존성은 `desktop/requirements.txt`, 백엔드 의존성은 `backend/requirements.txt`에 분리하며 Tkinter가 포함된 Python이 필요하다.
+두 런처는 모듈을 import하기 전에 저장소 루트로 작업 디렉터리를 고정한다. 시작 위치가 System32여도 `.env`와 상대 DB 경로를 저장소 기준으로 해석한다.
 
-앱은 `http://127.0.0.1:8000`의 기존 백엔드에 연결하며, 없으면 로컬 백엔드를 실행한다.
+앱은 `http://127.0.0.1:8000`의 기존 백엔드에 연결하며, 없으면 로컬 백엔드를 실행한다. 10초마다 `/health`를 확인해 두 번 연속 응답이 없으면 다시 띄운다.
 watcher는 데스크톱 프로세스에서 시작하며 백엔드 lifespan에서는 시작하지 않는다.
-`~/.aimonitor/desktop_config.json`에 화면 설정과 `backend_url`을 저장하고,
-`~/.aimonitor/api_keys.json`에는 암호화된 키만 쓴다. 이전 평문 키는 조회 전에 암호화하여 이관한다.
-원본 앱과 단일 인스턴스·watcher 잠금을 공유하므로 두 체크아웃을 동시에 실행하지 않는다.
+`~/.aimonitor/desktop_config.json`에 화면 설정과 `backend_url`을 저장한다.
+단일 인스턴스 잠금(`127.0.0.1:47821`)과 watcher 잠금을 체크아웃 간에 공유하므로 두 체크아웃을 동시에 실행하지 않는다.
+두 번째 실행은 기존 창을 앞으로 가져오고 종료한다.
 
 ### 배포용 exe (`build-windows/`)
 
@@ -31,103 +30,36 @@ PyInstaller 단일 폴더 빌드 `AIMONITOR.exe` 하나가 세 역할을 한다(
 기본은 데스크톱 앱, `--serve-backend [--port N]`은 `127.0.0.1` 로컬 API 서버, `--self-test`는 GUI·API 모듈을 모두
 import한 뒤 종료 코드로 결과를 알린다. exe 실행 시 작업 폴더는 `~/.aimonitor`이므로 기본 DB는
 `~/.aimonitor/aimonitor.db`, `.env`도 그 폴더에서 읽는다. 콘솔이 없으므로 출력은 `~/.aimonitor/logs/<역할>.log`에
-실행마다 새로 쓴다. 데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄우고, 시작 프로그램에는
-`"<exe>" --autostart`를 등록한다. 코드 서명이 없어 첫 실행 시 SmartScreen 경고가 뜰 수 있다.
-
-### 여러 계정·수집 폴더
-
-`desktop.accounts.AccountRegistry`는 `~/.aimonitor/accounts.json`의 계정 목록을 관리한다.
-각 항목은 `account_id`, `tool`, `config_dir`, `label`, `source(auto/manual)`,
-`first_seen`, `last_seen`을 가진다. 기본 라벨은 `Claude 1`, `Codex 1`처럼 도구명과 번호이며
-공급자의 이메일·이름·토큰을 복사하지 않는다. 계정 식별자는 `<tool>:<sha256 앞 12자리>`이고,
-Claude의 `oauthAccount.accountUuid` 또는 Codex 인증의 계정 ID를 읽기만 하여 해시한다.
-고유값이 없으면 실제 설정 폴더 경로의 해시를 사용한 `<tool>:dir-<12자리>`다.
-
-Claude·Codex 기본 폴더, `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 홈의 `.claude-*`·`.codex-*`
-폴더를 탐색하며 각각 `projects/`·`sessions/` 구조가 있어야 자동 등록한다.
-수동 등록은 `accounts.json`에서 읽는다. 설정 폴더와 데이터 폴더의 심볼릭 링크·Windows 정션을
-해석하여 같은 실제 수집 경로는 한 번만 읽는다. 수동 Antigravity·Copilot 폴더도 기존 파서로 수집한다.
-Claude·Codex 파일은 `projects/`·`sessions/` 아래 상대경로를 정체성 키로 사용하여
-다른 폴더의 복사본도 한 번만 읽는다. `(st_dev, st_ino)`가 같은 하드링크·정션 파일도 같은 그룹으로
-묶으며 파일 식별자가 0이면 물리적 동일성을 추측하지 않는다. 그룹의 가장 긴 복사본을 읽되,
-계정 귀속은 탐색 순서의 첫 폴더를 따른다. 서로 다른 계정이 같은 그룹을 공유하는 경우는
-watcher의 `file_alias_conflicts`에 계정 해시·설정 경로·정체성 해시로 기록하여 검토할 수 있다.
-Cursor에는 신뢰할 수 있는 호출별 사용량이 없어 트레이스를 만들어 내지 않는다.
-
-`account_timeline.json`은 `config_dir_hash`, `account_id`, `since(UTC 오프셋 ISO)`만 저장한다.
-로그의 원래 timestamp로 계정을 정하며 첫 관측 이전·시각 누락·오프셋 없는 시각은 `null`이다.
-로그인 변경을 관측하면 마지막 관측부터 새 관측 사이를 미상으로 표시하고 이후 새 계정에 귀속한다.
-재시작 시에는 같은 계정이어도 마지막 관측부터 재시작 사이를 미상으로 남긴다.
-앱 종료 중에 계정이 바뀌었다가 돌아왔을 가능성도 있기 때문이다.
-
-통합 watcher는 Claude 응답의 내용 블록 중복을 기존 `ai_seen_claude.json`으로 제거하고,
-Codex `token_count`의 `last_token_usage`를 수집하되 반복된 누적 토큰 스냅샷은 다시 세지 않는다.
-트레이스는 `account_id`를 포함하며 원문 메시지를 보내지 않는다.
-폴더별 커서는 `folder_offsets/<tool>-<config_dir_hash>.json`으로 분리한다.
-경로 커서는 `resolve()`·플랫폼 `normcase`로, 세션 커서는 상대경로·구분자로 정규화해 저장하며, 이전 대소문자·경로 표기의 키는 로드 시 합쳐 최댓값을 사용한다.
-기존 `ai_offsets.json`·폴더별 상태의 절대 로그 경로·커서 및 `claude_offsets.json`의 커서는
-`claude:session:<상대경로>`·`codex:session:<상대경로>` 키로 이전하며 동일 그룹의 최댓값을 사용한다.
-물리적 별칭의 상대경로가 달라도 모든 별칭에 같은 커서를 저장하므로 첫 폴더가 없어져도 재전송하지 않는다.
-`ai_seen_claude.json`도 유지한다. 기존 상태 파일은 하위 호환용으로 유지하고 전송 실패 시
-커서·중복 상태를 되돌린다. 아직 개행이 없는 Claude·Codex 줄은 다음 주기에 읽는다.
-Codex와 응답 ID가 없는 Claude의 `trace_id`는 절대경로 대신 세션 정체성 키와 줄 시작 커서로 만든다.
-Claude 응답 ID가 있으면 이미 내용 기반인 기존 `trace_id`와 seen 키를 유지한다.
-
-UI용 함수는 `list_accounts()`, `rename_account(account_id, label)`,
-`add_folder(tool, config_dir, label=None)`, `remove_folder(config_dir)`이며 같은 이름의
-`AccountRegistry` 메서드로 임시 홈·상태 경로를 주입할 수 있다.
-`refresh()`는 현재 감지한 폴더의 계정 목록을 반환하고 `account_at(config_dir, timestamp)`는
-기록 시각의 계정을 반환한다. 수동 등록 삭제는 자동 감지 폴더를 차단하지 않는다.
-
-`desktop.quota.account_quotas(registry=None, force=False, now=None)`는
-`[{account_id, tool, label, config_dir, quota_windows}]`를 제공한다.
-Claude 자격 증명·캐시는 계정별로 나누고 Codex 한도는 각 폴더의 공식 로그 스냅샷에서 읽는다.
-Codex 스냅샷의 귀속이 미상이거나 이전 계정이면 현재 계정에 붙이지 않고 별도 항목으로 제공한다.
-기존 `windows_for()`·`get_official_claude_quota()`와 화면의 도구별 구조는 유지한다.
+실행마다 새로 쓴다. 데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄운다.
+코드 서명이 없어 첫 실행 시 SmartScreen 경고가 뜰 수 있다. 빌드·릴리스 절차는 [security-ops.md](security-ops.md)의 배포 절.
 
 ### Windows 시작 시 자동 실행
 
 환경설정 탭의 `Windows 시작 시 자동 실행` 토글로 등록하거나 해제한다.
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`의 문자열 값 `AIMONITOR`만 쓰거나 지운다.
-설정 파일에는 자동 실행 상태를 저장하지 않으며, 설정 탭을 열거나 메인 창을 다시 표시할 때
-레지스트리에서 상태를 다시 읽는다. 다른 위치나 다른 명령이 등록돼 있으면 `다른 위치를 가리킴`으로
-표시하고 토글을 켤 때 현재 체크아웃의 명령으로 교체한다.
+설정 파일에는 상태를 저장하지 않으며, 설정 탭을 열거나 메인 창을 다시 표시할 때 레지스트리에서 다시 읽는다.
+다른 위치나 다른 명령이 등록돼 있으면 `다른 위치를 가리킴`으로 표시하고 토글을 켤 때 현재 명령으로 교체한다.
 Windows 외에서는 `사용 불가`로 표시하며 레지스트리에 쓰지 않는다.
-조회·변경 실패는 설정 행과 기존 하단 상태 표시줄로 안내하고 예외 문자열은 화면에 노출하지 않는다.
+조회·변경 실패는 설정 행과 하단 상태 표시줄로 안내하고 예외 문자열은 화면에 노출하지 않는다.
 
-등록 명령은 `"<pythonw.exe 절대 경로>" "<저장소 루트>\run_desktop.pyw" --autostart`다.
-현재 인터프리터가 `python.exe`면 같은 폴더의 `pythonw.exe`를 사용하며,
-파일이 없으면 현재 인터프리터로 대체한다. Python이 이미 `pythonw.exe`면 그대로 사용한다.
-`--autostart`는 메인 창을 처음부터 숨기고 위젯·트레이로 시작한다.
-단일 인스턴스 잠금을 먼저 확인하므로 이미 실행 중이면 추가 창·위젯·백엔드·watcher를 만들지 않고
-종료하며 기존 메인 창도 표시하지 않는다. 일반 수동 실행은 기존 창을 앞으로 가져온다.
+등록 명령(`desktop.autostart.command()`):
 
-두 Python 런처는 시작 시 모듈을 import하기 전에 저장소 루트로 작업 디렉터리를 고정한다.
-Run 항목의 시작 위치가 System32여도 `.env`와 상대 DB 경로를 동일한 저장소 기준으로 해석한다.
-끄려면 토글을 끄거나 해당 Run 키의 `AIMONITOR` 값만 삭제한다.
-다른 위치가 등록된 상태에서 명시적으로 해제하려면 현재 위치로 켠 뒤 끄거나 그 값을 삭제한다.
-프로그램에서 등록·해제할 때는 `desktop.autostart.enable()` / `desktop.autostart.disable()`을 사용한다.
+| 실행 형태 | 명령 |
+| :--- | :--- |
+| exe | `"<AIMONITOR.exe>" --autostart` |
+| 소스 | `"<pythonw.exe>" "<저장소 루트>\run_desktop.pyw" --autostart` — 인터프리터가 `python.exe`면 같은 폴더의 `pythonw.exe`, 없으면 현재 인터프리터 |
 
-### API (`/api/v1` 접두사)
+`--autostart`는 메인 창을 숨기고 위젯·트레이로 시작한다. 이미 실행 중이면 아무것도 만들지 않고 조용히 종료한다.
+끄려면 토글을 끄거나 해당 Run 값만 삭제한다. 프로그램에서는 `desktop.autostart.enable()` / `disable()`을 사용한다.
 
-| Method | Path | 내용 |
-| :--- | :--- | :--- |
-| POST | `/traces`, `/traces/batch` | `cache_write_1h_tokens`와 미측정 지연을 포함한 수집 (201) |
-| GET | `/traces`, `/metrics/overview`, `/metrics/breakdown` | 로그, 요청·비용·지연 통계 |
-| GET | `/metrics/active_contexts` | 도구별 최신 컨텍스트와 5시간·오늘·7일·이번 달 사용량 |
-| GET | `/keys`, `/keys/spend` | 마스킹된 키 상태, 공식 사용 금액 또는 잔액 |
-| POST | `/keys`, `/keys/{provider}/verify` | 키 등록·공식 API 검증 |
-| DELETE | `/keys/{provider}` | 로컬 키 삭제 |
+### 서버 인증 키
 
-읽기·쓰기 인증은 기존 `require_read_auth`/`require_write_auth` 규칙을 따른다.
-데스크톱 직접 키 관리는 `api_key_manager`를 import하여 사용한다.
-모든 AIMONITOR 백엔드 HTTP 요청(health·조회·watcher 수집)에 `X-API-Key`를 붙인다.
-공급자 API 키 및 Anthropic OAuth 키와는 별개이며 OAuth·Ollama·환율 서버에는 서버 인증 키를 보내지 않는다.
+모든 AIMONITOR 백엔드 HTTP 요청(health·조회·watcher 수집)에 `X-API-Key`를 붙인다(DESK-4).
+공급자 API 키·Anthropic OAuth 토큰과는 별개이며 OAuth·Ollama·환율 서버에는 보내지 않는다.
 `API_KEY`가 설정되면 수집은 키가 필요하고, `REQUIRE_AUTH_FOR_READS=true`면 조회에도 같은 키가 필요하다.
 401/403은 메인 상태 표시줄·위젯에 `인증 필요`로 표시한다. 수집 watcher는 같은 문구를 로그에 남기며 실패한 수집을 성공으로 처리하지 않는다.
 
-환경 변수 `AIMONITOR_API_KEY`에 백엔드의 `API_KEY` 값을 설정하거나,
-저장소 루트에서 다음 명령으로 config에 저장한다(입력은 화면에 표시되지 않는다).
+환경 변수 `AIMONITOR_API_KEY`에 백엔드의 `API_KEY` 값을 넣거나, 저장소 루트에서 config에 저장한다(입력은 화면에 표시되지 않는다).
 
 ```python
 from getpass import getpass
@@ -140,38 +72,21 @@ save_config(config)
 config 키는 메모리에서만 복호화하며 파일에는 `api_key_scheme`·`api_key_sealed`로 DPAPI 암호화하여 쓴다.
 인증 키는 화면이나 오류 문자열에 출력하지 않는다. 암호화 미지원 환경에서는 환경 변수를 사용한다.
 
-테마는 CustomTkinter의 `AppearanceModeTracker` 콜백을 공유한다. 앱 모드 변경 시 즉시,
+### 테마
+
+CustomTkinter의 `AppearanceModeTracker` 콜백을 공유한다. 앱 모드 변경 시 즉시,
 OS 모드 변경 시 라이브러리의 가벼운 감지 루프에서 반영하며 백엔드 요청은 추가하지 않는다.
 위젯은 캐시된 데이터로 다시 그리며 트레이는 `pystray.Icon.icon` 이미지를 교체한다.
 창 파괴와 트레이 중지 시 콜백을 해제한다.
 
-`active_contexts`는 정확한 쉼표 구분 태그 `claude-code`·`copilot`·`antigravity`로 도구를 구분하며,
-나머지는 `<provider>_api`로 묶는다. 오늘·이번 달 경계는 백엔드 PC의 로컬 시각,
-응답 시각은 UTC 오프셋 ISO-8601이다. SQL 합계에서 미상 비용을 제외하고 `cost_unknown`을 반환한다.
-최신 요청은 `timestamp DESC, id DESC`로 선택하며 미래 시각 행을 제외한다.
-Copilot 세션 합계와 Antigravity 추정 토큰은 컨텍스트 크기로 사용하지 않는다.
+### 화면이 쓰는 API
 
-공식 청구액 조회는 Anthropic·OpenAI 관리자 키, OpenRouter 사용액, DeepSeek 잔액을 지원한다.
-15분 캐시를 사용하며 API가 없거나 조회 실패하면 `kind=unavailable`, `amount=null`이다.
-Gemini 키는 URL에 넣지 않고 `x-goog-api-key` 헤더로 보낸다. 키 검증 오류는 요청·응답 원문을 반환하지 않는다.
-
-
-### 다중 계정 화면
-
-계정 한도 조회에는 등록 목록의 읽기 전용 `AccountQuotaView`를 전달한다. GUI/위젯의 폴링은 수집기의 관측 타임라인을 갱신하지 않는다. 기본 폴더가 없는 수동·별도 폴더 계정도 도구 카드에 표시하며 요금제를 임의로 붙이지 않는다. 여러 계정 카드의 내부 세로 스크롤로 모든 계정 기록을 확인할 수 있다.
-
-- 환경설정의 계정 영역은 등록 목록을 도구별로 정렬하여 라벨·도구·설정 경로·자동/수동·마지막 관측을 표시한다. 공급자 로그인 이름·이메일·토큰은 표시하지 않는다. 라벨 변경과 수동 Claude/Codex 폴더 추가·삭제는 `desktop.accounts` 공개 함수를 사용한다. 삭제는 수집 등록만 해제하며 기록을 삭제하지 않는다.
-- PC 연결 AI 카드에서 계정이 하나면 기존 카드 배치를 유지한다. 계정이 둘 이상이면 카드 안에 계정별 5시간/오늘/7일/월의 요청·토큰·비용과 한도를 나눈다. `account_id=null`은 ‘계정 미상’으로 독립 표시하며, 계정별 한도 부재는 ‘확인 불가’다. 도구 기본 한도를 다른 계정에 복사하지 않는다. 등록만 있고 사용 기록이 없으면 ‘기록 없음’이다.
-- 위젯은 여러 계정인 도구마다 등록 목록 순서로 최대 3개 계정의 라벨·첫 한도 창을 표시한다. 나머지는 `+N개 · 메인 창` 줄로 안내한다. 더블 클릭은 기존처럼 메인 창을 연다. 기존 도구별 표시 항목 선택도 계정 줄에 적용된다.
-- API 키 관리에서 provider별 키를 별도 행으로 표시하며 라벨·마스킹·상태·키별 공식 청구/잔액을 보여 준다. 라벨을 붙여 추가하고 개별 라벨 변경·삭제를 제공한다. 환경변수 키는 읽기 전용이다. 저장 성공 즉시 키 입력칸을 비운다. 키별 청구 조회 실패는 ‘청구액 확인 불가’로 표시하며 다른 키 합계를 대신 붙이지 않는다.
-- 로그와 차트는 각각 전체/계정별/계정 미상 선택을 유지한다. 계정 선택은 `account_id`, 미상 선택은 `account_unknown=true` 백엔드 쿼리를 사용한다. 로그 행에 계정 라벨 열을 표시한다. 선택을 바꾸는 동안 이전 선택의 응답으로 새 화면을 덮지 않는다. 라벨 변경 후 같은 ID의 선택을 유지한다.
-
-## Open questions
-
-- 웹 대시보드는 v0.6에서 제거되었다. `/api/v1/keys`·`/metrics/connected_ais`는 데스크톱 감지·요약·청구액 서비스를 공유하는 API로 남으며, 계약은 [metrics.md](metrics.md)를 따른다.
+도구별 사용량은 `/metrics/active_contexts`·`/metrics/connected_ais`([metrics.md](metrics.md)),
+로그·차트는 `/traces`·`/metrics/overview`·`/metrics/breakdown`, 키·청구액은 `/keys`([keys.md](keys.md))를 사용한다.
+읽기·쓰기 인증은 `require_read_auth`/`require_write_auth`를 따른다.
 
 ## Areas of concern
 
 - 로컬 기록은 이 PC에서 관측한 사용량이며 전체 계정 청구액과 다를 수 있다.
-- Antigravity 토큰은 추정치다. 공식 단가가 없는 모델 이름은 비용 계산 불가로 유지한다.
-- GUI 테스트 의존성이 없는 백엔드 전용 환경에서는 해당 GUI 테스트를 건너뛴다.
+- GUI 테스트 의존성이 없는 백엔드 전용 환경에서는 해당 GUI 테스트를 건너뛴다. Windows CI job에서만 실행된다.
+- 화면 문구가 한국어뿐이다. 다국어는 아직 지원하지 않는다.

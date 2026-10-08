@@ -1,0 +1,48 @@
+name: 버그 제보 / Bug report
+description: 잘못된 숫자, 오류, 실행 실패 / Wrong numbers, errors, crashes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **토큰·API 키·프롬프트를 붙여 넣지 마세요.** Never paste tokens, API keys or prompts.
+        보안 문제는 [SECURITY.md](https://github.com/supsuphansoup/AIMONITOR/blob/main/SECURITY.md)로 비공개 제보해 주세요.
+  - type: input
+    id: version
+    attributes:
+      label: 버전 / Version
+      description: 릴리스 이름 또는 `GET /api/v1/system/info`의 version
+      placeholder: v0.6.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: 실행 방식 / How you run it
+      options: [exe, 소스 / source, Docker (API only)]
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Windows 버전 / Windows version
+      placeholder: Windows 11 24H2
+  - type: dropdown
+    id: tools
+    attributes:
+      label: 관련 도구 / Related tool
+      multiple: true
+      options: [Claude Code, Codex, Copilot, Antigravity, SDK / API, 기타 / other]
+  - type: textarea
+    id: what
+    attributes:
+      label: 무슨 일이 있었나요 / What happened
+      description: 기대한 동작과 실제 동작, 재현 순서 / Expected vs actual, steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그 / Logs
+      description: exe는 `%USERPROFILE%\.aimonitor\logs\*.log`. 붙여 넣기 전에 토큰·키·경로의 사용자 이름을 가려 주세요.
+      render: text

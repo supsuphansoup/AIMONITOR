@@ -1,4 +1,4 @@
-# Spec: AIMONITOR (v0.6 데스크톱 전용 UI)
+# Spec: AIMONITOR 기능 명세
 
 [intent.md](../intent.md)의 의도를 기능별 규칙과 수치로 바꾼 명세다. 각 파일은
 `Requirements / Design / Open questions / Areas of concern` 구조를 따른다.
@@ -6,15 +6,18 @@
 
 | 파일 | 범위 | 주요 코드 |
 | :--- | :--- | :--- |
+| [desktop.md](desktop.md) | 데스크톱 앱 실행·exe·자동 실행·서버 인증 키·테마 | `desktop/main.py`, `desktop/app_gui.py`, `desktop/autostart.py`, `build-windows/` |
+| [accounts.md](accounts.md) | 로컬 로그 수집, 계정 구분, 계정별 한도 | `desktop/accounts.py`, `desktop/ai_watcher.py`, `desktop/quota.py` |
+| [keys.md](keys.md) | 공급자 API 키 저장·검증, 공식 청구액 | `services/api_key_manager.py`, `services/provider_spend.py`, `routers/api_keys.py` |
 | [ingestion.md](ingestion.md) | 트레이스 수집 API, 이벤트 스키마, 조회·CSV | `routers/traces.py`, `models/trace.py`, `core/sanitize.py` |
+| [metrics.md](metrics.md) | KPI·시계열·모델별 집계, 도구별 사용량, 연결 AI | `services/aggregator.py`, `routers/metrics.py` |
 | [cost.md](cost.md) | 비용 계산, 단가표, 캐시 단가 | `services/cost.py` |
-| [metrics.md](metrics.md) | KPI·시계열·모델별 집계 | `services/aggregator.py`, `routers/metrics.py` |
 | [alerts.md](alerts.md) | 알림 규칙, 평가, 쿨다운, Webhook | `services/alert.py`, `models/alert.py`, `services/scheduler.py` |
-| [security-ops.md](security-ops.md) | 인증, 원문 보호, 보관, 스키마 업그레이드, 배포 | `core/security.py`, `db/session.py`, `services/retention.py`, `Dockerfile` |
 | [sdk.md](sdk.md) | Python SDK | `sdk/python/aimonitor/client.py` |
-| [desktop.md](desktop.md) | Windows 데스크톱·위젯·키 관리·사용량 | `desktop/`, `routers/api_keys.py`, `services/provider_spend.py` |
+| [security-ops.md](security-ops.md) | 인증, 브라우저 공격 차단, 원문 보호, 보관, 스키마 업그레이드, 설정, 배포 | `core/security.py`, `main.py`, `db/session.py`, `Dockerfile`, `.github/workflows/` |
 
-웹 대시보드는 v0.6에서 제거되었다. 이전 문서 링크는 [dashboard.md](dashboard.md)의 제거 안내로 연결된다.
+앱이 읽는 파일과 외부로 보내는 데이터의 전체 목록은 [개인정보 문서](../privacy.md)가 정본이다.
+API 전체는 실행 중인 서버의 Swagger(`/api/v1/docs`)에서 볼 수 있다.
 
 ## 공통 규칙
 

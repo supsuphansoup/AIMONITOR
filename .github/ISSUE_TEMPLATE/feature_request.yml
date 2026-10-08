@@ -1,0 +1,15 @@
+name: 기능 제안 / Feature request
+description: 새 도구 지원, 화면 개선 등 / New tool support, UI ideas
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 어떤 불편이 있나요 / What problem does it solve
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 제안 / Proposal
+      description: 새 도구라면 사용량·한도를 어디서 읽을 수 있는지(로그 위치, 공식 API)도 알려 주세요.
