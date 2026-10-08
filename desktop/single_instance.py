@@ -74,6 +74,11 @@ class SingleInstance:
     def release(self) -> None:
         if self._sock is not None:
             try:
+                # Linux keeps the port bound while _serve() blocks in accept(); shutdown() wakes it first.
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
                 self._sock.close()
             except OSError:
                 pass

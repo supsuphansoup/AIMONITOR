@@ -126,13 +126,13 @@ def test_migration_uses_largest_legacy_absolute_cursor_without_replay(tmp_path, 
     }))
     w, sent = _watcher(tmp_path, monkeypatch, tool, [first, second])
     assert w.scan_all() == 0 and sent == []
-    stored = json.loads((state / "ai_offsets.json").read_text())
+    stored = json.loads((state / "ai_offsets.json").read_text(encoding="utf-8"))
     key = _session_key(tool, file1, first / ("projects" if tool == "claude" else "sessions"))
     assert stored[key] == file1.stat().st_size
     assert not any(str(file1.resolve()) in key or str(file2.resolve()) in key for key in stored)
     folders = list((state / "folder_offsets").glob("*.json"))
     assert len(folders) == 2
-    assert all(json.loads(path.read_text())[key] == file1.stat().st_size for path in folders)
+    assert all(json.loads(path.read_text(encoding="utf-8"))[key] == file1.stat().st_size for path in folders)
 
 
 @pytest.mark.parametrize("tool", ["claude", "codex"])

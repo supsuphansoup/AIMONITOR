@@ -96,7 +96,7 @@ def test_identifiers_hashed_and_no_credentials_or_email_persisted(tmp_path, tool
     rows = registry.refresh(NOW)
     assert rows[0]["account_id"] == tool + ":" + hashlib.sha256(b"stable-raw-identifier").hexdigest()[:12]
     assert rows[0]["label"] == ("Claude 1" if tool == "claude_code" else "Codex 1")
-    persisted = registry.accounts_file.read_text() + registry.timeline_file.read_text()
+    persisted = registry.accounts_file.read_text(encoding="utf-8") + registry.timeline_file.read_text(encoding="utf-8")
     for secret in ("stable-raw-identifier", "private@example.com", "secret-never-persisted"):
         assert secret not in persisted
     (path / (".claude.json" if tool == "claude_code" else "auth.json")).unlink()
@@ -154,7 +154,7 @@ def test_manual_folder_labels_rename_and_remove(tmp_path):
     assert active[0]["label"] == "개인 계정"
     with pytest.raises(ValueError):
         registry.add_folder("claude_code", path, label="private@example.com")
-    assert "private@example.com" not in registry.accounts_file.read_text()
+    assert "private@example.com" not in registry.accounts_file.read_text(encoding="utf-8")
     registry.remove_folder(path)
     assert registry.list_accounts() == []
 
@@ -301,7 +301,7 @@ def test_claude_account_quotas_use_separate_credentials_and_caches(tmp_path, mon
     assert all(r["quota_windows"][1]["remaining_pct"] is None for r in rows)
     caches = list((tmp_path / ".aimonitor" / "quota").glob("*.json"))
     assert len(caches) == 2
-    assert all("token-one" not in p.read_text() and "token-two" not in p.read_text() for p in caches)
+    assert all("token-one" not in p.read_text(encoding="utf-8") and "token-two" not in p.read_text(encoding="utf-8") for p in caches)
 
 
 def test_codex_quotas_unknown_and_current_accounts_remain_separate(tmp_path):
