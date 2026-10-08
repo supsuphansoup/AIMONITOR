@@ -108,3 +108,41 @@ def test_pagination_is_stable_across_pages(client: TestClient):
 
     assert len(set(first) & set(second)) == 0
     assert len(set(first) | set(second)) == 10
+
+
+def test_cross_site_write_is_refused_before_it_runs(client: TestClient, monkeypatch):
+    """A page on another site can send a simple POST; CORS would only hide the answer."""
+    purge = []
+    monkeypatch.setattr("backend.app.routers.system.purge_older_than", lambda *a: purge.append(a) or 0)
+    res = client.post("/api/v1/system/purge?days=1", headers={"Origin": "https://evil.example"})
+    assert res.status_code == 403 and purge == []
+    for origin in ("null", "http://localhost:9999"):
+        assert client.post("/api/v1/traces", json=TRACE, headers={"Origin": origin}).status_code == 403
+
+
+def test_allowed_origin_and_clients_without_origin_still_write(client: TestClient):
+    assert client.post("/api/v1/traces", json=TRACE, headers=ORIGIN).status_code == 201
+    assert client.post("/api/v1/traces", json=TRACE).status_code == 201  # desktop app and SDK
+    # Reads are not side effects; a foreign origin simply gets no CORS grant.
+    assert client.get("/api/v1/metrics/overview", headers={"Origin": "https://evil.example"}).status_code == 200
+
+
+def test_open_mode_answers_only_local_host_names(client: TestClient, monkeypatch):
+    """DNS rebinding: evil.example resolves to 127.0.0.1, so the browser sends Host: evil.example."""
+    monkeypatch.setattr(settings, "ALLOWED_HOSTS", [])
+    for host in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"):
+        assert client.get("/api/v1/metrics/overview", headers={"Host": host}).status_code == 200, host
+    res = client.get("/api/v1/metrics/overview", headers={"Host": "evil.example:8000"})
+    assert res.status_code == 403 and "API_KEY" in res.json()["detail"]
+    monkeypatch.setattr(settings, "ALLOWED_HOSTS", ["aimonitor.lan"])
+    assert client.get("/health", headers={"Host": "aimonitor.lan:8000"}).status_code == 200
+
+
+def test_api_key_mode_serves_any_host_name(client: TestClient, monkeypatch, api_key):
+    monkeypatch.setattr(settings, "ALLOWED_HOSTS", [])
+    assert client.get("/health", headers={"Host": "monitor.example.com"}).status_code == 200
+
+
+def test_allowed_hosts_accepts_a_comma_separated_env(monkeypatch):
+    monkeypatch.setenv("ALLOWED_HOSTS", " Box.LAN , monitor.internal ")
+    assert Settings(_env_file=None).allowed_host_list == ["box.lan", "monitor.internal"]

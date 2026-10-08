@@ -23,6 +23,10 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
+    # Without API_KEY the server only answers requests addressed to localhost, so a web page cannot
+    # reach it by pointing its own domain at 127.0.0.1 (DNS rebinding). Add host names here only for
+    # a trusted network; setting API_KEY is the usual way to serve other names.
+    ALLOWED_HOSTS: Union[List[str], str] = []
 
     # --- Authentication -------------------------------------------------
     # When API_KEY is unset the server runs in open mode (single-user / local
@@ -51,9 +55,9 @@ class Settings(BaseSettings):
     # 0 disables automatic purging; otherwise traces older than N days are removed.
     RETENTION_DAYS: int = 0
 
-    @field_validator("CORS_ORIGINS", mode="before")
+    @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
     @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+    def split_comma_separated(cls, v: Union[str, List[str]]) -> List[str]:
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",") if i.strip()]
         elif isinstance(v, (list, str)):
@@ -79,6 +83,13 @@ class Settings(BaseSettings):
         if isinstance(origins, str):
             origins = [origins]
         return [str(o).rstrip("/") for o in origins if str(o).strip()]
+
+    @property
+    def allowed_host_list(self) -> List[str]:
+        hosts = self.ALLOWED_HOSTS
+        if isinstance(hosts, str):
+            hosts = [hosts]
+        return [str(h).strip().lower() for h in hosts if str(h).strip()]
 
     @property
     def cors_allows_wildcard(self) -> bool:

@@ -27,6 +27,11 @@ CLAUDE_PLAN_NAMES = {
 }
 
 
+def _connect_read_only(path: Path) -> sqlite3.Connection:
+    """These databases belong to other apps; open them so a write is impossible."""
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+
+
 def _codex_plan_type(auth_file: Path) -> Optional[str]:
     """Plan claim from the ChatGPT id_token Codex stores. Read-only, never logged."""
     try:
@@ -205,7 +210,7 @@ class AIDetector:
         if vscdb.exists():
             is_connected = True
             try:
-                conn = sqlite3.connect(vscdb)
+                conn = _connect_read_only(vscdb)
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.userStatus'"
@@ -277,7 +282,7 @@ class AIDetector:
         # 2. Check localappdata auth.db
         if not is_connected and auth_db.exists():
             try:
-                conn = sqlite3.connect(auth_db)
+                conn = _connect_read_only(auth_db)
                 cur = conn.cursor()
                 cur.execute("SELECT count(*) FROM oauth_tokens")
                 cnt = cur.fetchone()[0]
@@ -293,7 +298,7 @@ class AIDetector:
         # 3. Check VS Code state.vscdb for Copilot Chat activation
         if not is_connected and vscdb.exists():
             try:
-                conn = sqlite3.connect(vscdb)
+                conn = _connect_read_only(vscdb)
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT value FROM ItemTable WHERE key LIKE '%copilotSku%' OR key LIKE '%github%usages%'"

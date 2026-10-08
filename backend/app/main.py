@@ -130,9 +130,51 @@ async def enforce_body_limit(request: Request, call_next):
     return await call_next(request)
 
 
+SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _hostname(host_header: str) -> str:
+    """Host header without its port; an IPv6 literal loses its brackets."""
+    host = host_header.strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+async def reject_browser_attacks(request: Request, call_next):
+    """Keep web pages from driving this API through the user's browser.
+
+    CORS only hides responses. Any site can still send a simple POST to
+    http://127.0.0.1:8000 (say, a purge), or point its own domain at 127.0.0.1
+    and read everything as same-origin. Browsers always send Origin on
+    cross-origin writes and keep the attacker's name in Host; the desktop app
+    and the SDK send no Origin and address localhost.
+    """
+    origin = request.headers.get("origin")
+    if (
+        origin is not None
+        and request.method not in SAFE_METHODS
+        and not settings.cors_allows_wildcard
+        and origin.rstrip("/") not in settings.cors_origin_list
+    ):
+        logger.warning("Rejected cross-origin %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=403, content={"detail": "Cross-origin request rejected."})
+    if not settings.auth_enabled:
+        host = _hostname(request.headers.get("host", ""))
+        if host not in LOCAL_HOSTNAMES and host not in settings.allowed_host_list:
+            logger.warning("Rejected %s %s for a non-local host name", request.method, request.url.path)
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "This server only answers localhost until API_KEY is set."},
+            )
+    return await call_next(request)
+
+
 app.add_middleware(BaseHTTPMiddleware, dispatch=request_context)
 app.add_middleware(BaseHTTPMiddleware, dispatch=enforce_body_limit)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(BaseHTTPMiddleware, dispatch=reject_browser_attacks)
 
 # CORS. A wildcard origin and credentials are mutually exclusive per the CORS
 # spec; sending both makes browsers drop the response, so credentials are

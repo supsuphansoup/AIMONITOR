@@ -99,3 +99,21 @@ def test_connected_ais_respects_read_auth(client, monkeypatch, api_key):
     monkeypatch.setattr(settings, "REQUIRE_AUTH_FOR_READS", True)
     assert client.get("/api/v1/metrics/connected_ais").status_code == 401
     assert client.get("/api/v1/metrics/connected_ais", headers={"X-API-Key": api_key}).status_code == 200
+
+
+def test_other_apps_databases_are_opened_read_only(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "Code #1 (user)" / "state.vscdb"  # spaces and '#' must survive the file: URI
+    db.parent.mkdir()
+    with sqlite3.connect(db) as setup:
+        setup.execute("CREATE TABLE ItemTable (key TEXT, value TEXT)")
+        setup.execute("INSERT INTO ItemTable VALUES ('copilotSku', 'x')")
+    setup.close()
+    conn = ai_detector._connect_read_only(db)
+    try:
+        assert conn.execute("SELECT count(*) FROM ItemTable").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("DELETE FROM ItemTable")
+    finally:
+        conn.close()
