@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, ClassVar, FrozenSet, Optional
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
 
 from backend.app.core.metrics_catalog import VALID_METRIC_TYPES
@@ -32,9 +33,11 @@ class AlertRule(AlertRuleBase, table=True):
     __tablename__ = "alert_rules"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    created_at: datetime = Field(default_factory=utc_now)
+    # sa_type keeps naive-UTC storage on SQLModel>=0.0.48 (see models/trace.py).
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime)
     last_triggered_at: Optional[datetime] = Field(
-        default=None, description="Naive UTC time of the most recent firing; drives the cooldown"
+        default=None, sa_type=DateTime,
+        description="Naive UTC time of the most recent firing; drives the cooldown",
     )
 
 
@@ -171,7 +174,7 @@ class AlertHistory(AlertHistoryBase, table=True):
     __tablename__ = "alert_histories"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    created_at: datetime = Field(default_factory=utc_now, index=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True, sa_type=DateTime)
 
 
 class AlertHistoryRead(AlertHistoryBase):

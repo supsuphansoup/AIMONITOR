@@ -357,7 +357,8 @@ def test_manual_copilot_and_antigravity_folders_attribute_known_log_times(tmp_pa
     registry.add_folder("antigravity", antigravity)
     rows = registry.refresh(NOW + timedelta(days=1))
     monkeypatch.setattr(registry, "refresh", lambda: rows)
-    timestamp = (NOW + timedelta(days=1, seconds=10)).isoformat()
+    # add_folder() stamps the real clock as the account's start, so the log must follow the real clock too.
+    timestamp = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat()
     append(copilot / "session-state" / "session" / "events.jsonl", {
         "type": "session.shutdown", "timestamp": timestamp, "data": {"modelMetrics": {
             "gpt-5": {"usage": {"inputTokens": 10, "outputTokens": 20}}}}})

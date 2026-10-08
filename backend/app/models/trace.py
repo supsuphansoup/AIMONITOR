@@ -3,7 +3,7 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 from pydantic import Field as PydanticField
-from sqlalchemy import Index
+from sqlalchemy import DateTime, Index
 from sqlmodel import Field, SQLModel
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
@@ -67,8 +67,9 @@ class TraceEvent(TraceEventBase, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    # Stored as naive UTC; see backend.app.core.timeutil for why.
-    timestamp: datetime = Field(default_factory=utc_now, index=True)
+    # Stored as naive UTC; see backend.app.core.timeutil for why. sa_type pins plain DateTime because
+    # SQLModel>=0.0.48 maps bare datetime to a tz-aware type that rejects naive values.
+    timestamp: datetime = Field(default_factory=utc_now, index=True, sa_type=DateTime)
 
 
 class TraceEventCreate(BaseModel):

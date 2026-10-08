@@ -1,4 +1,5 @@
 """Desktop summary: every remaining-usage number has a source, none is invented."""
+import importlib.util
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,10 @@ from desktop.quota import (
 )
 
 NOW = datetime(2026, 10, 5, 1, 0, tzinfo=timezone.utc)
+
+# Colour helpers and the main window need the GUI stack; the Windows CI job installs it.
+needs_gui = pytest.mark.skipif(importlib.util.find_spec("customtkinter") is None,
+                               reason="desktop GUI dependencies not installed")
 
 
 def _ai(key, provider="anthropic", plan="Claude Pro"):
@@ -50,6 +55,7 @@ def test_claude_value_past_its_reset_is_void_not_shown():
     assert week["remaining_pct"] == 90.0 and week["stale"] is True  # old, but not reset yet
 
 
+@needs_gui
 def test_claude_without_official_data_is_unavailable_not_100_percent():
     for w in claude_windows(None, now=NOW):
         assert w["remaining_pct"] is None
@@ -162,6 +168,7 @@ def test_no_usage_means_no_context_and_zero_counts():
     assert "기록 없음" in it["session_status"]
 
 
+@needs_gui
 def test_hidden_ai_is_left_out_of_cards_widget_and_totals():
     ais = [_ai("claude"), _ai("openai_api", "openai", "OpenAI API 종량제")]
     usage = {"claude": _usage(cost=10.0), "openai_api": _usage(cost=2.0)}
@@ -200,12 +207,14 @@ def _summary_for_widget():
     )
 
 
+@needs_gui
 def test_widget_defaults_show_every_quota_window_and_the_bill():
     ids = [e["id"] for e in select_entries(widget_entries(_summary_for_widget()), None)]
     assert ids == ["claude:claude.5h", "claude:claude.weekly", "antigravity:antigravity.quota",
                    "total:billed_month"]
 
 
+@needs_gui
 def test_widget_shows_only_what_the_user_picked_in_display_order():
     entries = widget_entries(_summary_for_widget())
     picked = select_entries(entries, ["total:billed_month", "claude:claude.weekly", "gone:item"])
@@ -214,6 +223,7 @@ def test_widget_shows_only_what_the_user_picked_in_display_order():
     assert select_entries(entries, []) == []
 
 
+@needs_gui
 def test_widget_marks_unavailable_and_estimated_items():
     by_id = {e["id"]: e for e in widget_entries(_summary_for_widget())}
     assert by_id["antigravity:antigravity.quota"]["value"] == "확인 불가"
@@ -241,6 +251,7 @@ def test_desktop_launchers_exist():
         assert "pythonw" in content and "run_desktop.pyw" in content
 
 
+@needs_gui
 def test_desktop_gui_module():
     from desktop.app_gui import DesktopMainWindow, format_num
 
