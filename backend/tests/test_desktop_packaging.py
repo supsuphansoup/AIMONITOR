@@ -1,0 +1,94 @@
+"""Packaged Windows build: one exe serves the API, runs the app and registers itself for autostart."""
+import importlib.util
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from desktop import autostart
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_entry(data_dir: Path):
+    spec = importlib.util.spec_from_file_location("aimonitor_entry", ROOT / "build-windows" / "entry.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.DATA_DIR = data_dir  # never the real ~/.aimonitor
+    return module
+
+
+@pytest.fixture
+def entry(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)  # restores the cwd that main() changes
+    return load_entry(tmp_path / "home" / ".aimonitor")
+
+
+@pytest.fixture
+def desktop_main():
+    pytest.importorskip("customtkinter")
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("pystray")
+    from desktop import main
+
+    return main
+
+
+def test_packaged_autostart_registers_the_exe_itself(monkeypatch):
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(autostart.sys, "executable", r"C:\Program Files\AIMONITOR\AIMONITOR.exe")
+    assert autostart.command() == r'"C:\Program Files\AIMONITOR\AIMONITOR.exe" --autostart'
+
+
+def test_backend_runs_uvicorn_from_source_and_the_exe_when_packaged(desktop_main, monkeypatch):
+    monkeypatch.setattr(desktop_main.sys, "executable", "python.exe")
+    assert desktop_main.backend_command()[:4] == ["python.exe", "-m", "uvicorn", "backend.app.main:app"]
+    monkeypatch.setattr(desktop_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_main.sys, "executable", "AIMONITOR.exe")
+    assert desktop_main.backend_command() == ["AIMONITOR.exe", "--serve-backend"]
+
+
+@pytest.mark.parametrize("argv, port", [(["--serve-backend"], 8000), (["--serve-backend", "--port", "18765"], 18765)])
+def test_serve_backend_binds_localhost_from_the_data_folder(entry, monkeypatch, argv, port):
+    run = Mock()
+    monkeypatch.setattr("uvicorn.run", run)
+    assert entry.main(argv) == 0
+    from backend.app.main import app
+
+    run.assert_called_once_with(app, host="127.0.0.1", port=port)
+    # .env and the default relative SQLite path resolve inside the data folder, not the install folder.
+    assert Path.cwd() == entry.DATA_DIR
+
+
+def test_windowed_exe_without_console_logs_to_a_file(entry, monkeypatch):
+    monkeypatch.setattr("uvicorn.run", Mock())
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    entry.main(["--serve-backend"])
+    try:
+        assert sys.stdout is sys.stderr and sys.stdout.name == str(entry.DATA_DIR / "logs" / "backend.log")
+    finally:
+        sys.stdout.close()
+
+
+def test_self_test_fails_with_exit_code_instead_of_raising(entry, monkeypatch):
+    monkeypatch.setitem(sys.modules, "desktop.main", None)  # makes `import desktop.main` fail
+    assert entry.main(["--self-test"]) == 1
+
+
+def test_self_test_imports_the_gui_stack(entry, desktop_main):
+    assert entry.main(["--self-test"]) == 0
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+def test_default_mode_runs_the_desktop_app(entry, monkeypatch, automatic):
+    attach, run = Mock(), Mock()
+    monkeypatch.setitem(sys.modules, "desktop.config", SimpleNamespace(attach_to_default_desktop=attach))
+    monkeypatch.setitem(sys.modules, "desktop.main", SimpleNamespace(main=run))
+    assert entry.main(["--autostart"] if automatic else []) == 0
+    attach.assert_called_once_with()
+    run.assert_called_once_with(autostart=automatic)
+    assert Path.cwd() == entry.DATA_DIR

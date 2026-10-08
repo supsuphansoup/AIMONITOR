@@ -18,7 +18,9 @@ UNSUPPORTED = "unsupported"
 
 
 def command() -> str:
-    """Return the quoted console-free command for this checkout."""
+    """Return the quoted console-free command for this checkout or packaged exe."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --autostart'
     executable = Path(sys.executable)
     if executable.name.lower() == "python.exe":
         pythonw = executable.with_name("pythonw.exe")

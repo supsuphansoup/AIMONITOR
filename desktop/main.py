@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Optional
+from typing import List, Optional
 
 import httpx
 
@@ -26,6 +26,13 @@ from desktop.widget import FloatingWidget
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("aimonitor.desktop")
+
+
+def backend_command() -> List[str]:
+    """Command that serves the local API. A packaged build serves it from its own exe."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--serve-backend"]  # handled by build-windows/entry.py
+    return [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"]
 
 
 class DesktopApp:
@@ -63,16 +70,7 @@ class DesktopApp:
             except Exception:
                 pass
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cmd = [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "backend.app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-        ]
+        cmd = backend_command()
         creationflags = 0
         if sys.platform == "win32":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

@@ -1,0 +1,85 @@
+name: Release
+
+# A v* tag builds the Windows exe, checks that the packaged app really starts, and
+# attaches the zip to a DRAFT release; publishing the draft stays a manual step.
+# Run it by hand (workflow_dispatch) to get the zip as a workflow artifact only.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    name: Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r desktop/requirements.txt -r build-windows/requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build
+        run: pyinstaller build-windows/aimonitor.spec --noconfirm
+
+      - name: Smoke-test the packaged exe
+        shell: pwsh
+        run: |
+          # A throwaway home, so the exe's ~/.aimonitor data folder starts empty like a new user's.
+          $env:USERPROFILE = Join-Path $env:RUNNER_TEMP "home"
+          New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
+          $logs = Join-Path $env:USERPROFILE ".aimonitor\logs"
+          $exe = "dist\AIMONITOR\AIMONITOR.exe"
+          $check = Start-Process $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($check.ExitCode -ne 0) { Get-Content "$logs\self-test.log"; exit 1 }
+          $server = Start-Process $exe -ArgumentList "--serve-backend" -PassThru
+          $ready = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Milliseconds 500
+            try { Invoke-RestMethod http://127.0.0.1:8000/health | Out-Null; $ready = $true; break } catch {}
+          }
+          try {
+            if (-not $ready) { throw "backend did not answer /health" }
+            $trace = '{"provider":"openai","model_name":"gpt-4o","prompt_tokens":1,"completion_tokens":1}'
+            Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/v1/traces -ContentType application/json -Body $trace | Out-Null
+            $total = (Invoke-RestMethod http://127.0.0.1:8000/api/v1/metrics/overview).total_requests
+            if ($total -ne 1) { throw "expected 1 stored trace, got $total" }
+          } catch {
+            Get-Content "$logs\backend.log"; throw
+          } finally {
+            Stop-Process -Id $server.Id -Force
+          }
+
+      - name: Zip and checksum
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "dev-" + $env:GITHUB_SHA.Substring(0, 7) }
+          $zip = "AIMONITOR-$version-windows-x64.zip"
+          Compress-Archive -Path dist\AIMONITOR -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+          "ZIP=$zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aimonitor-windows
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sha256
+
+      - name: Create draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" "${{ env.ZIP }}" "${{ env.ZIP }}.sha256" --draft --title "AIMONITOR ${{ github.ref_name }}" --generate-notes

@@ -1,0 +1,2 @@
+# Build-only: packages the Windows desktop app. Install alongside backend/ and desktop/requirements.txt.
+pyinstaller>=6.10,<7

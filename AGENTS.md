@@ -14,6 +14,7 @@ ruff check .                                      # 파이썬 린트
 python run_desktop.py                              # 데스크톱 앱 (사람이 직접 실행)
 python -m uvicorn backend.app.main:app --port 8000 --reload   # 개발 서버 (사람이 직접 실행)
 python scripts/simulate.py --batches 20 --spread-hours 6      # 데모 트래픽
+pip install -r build-windows/requirements.txt && pyinstaller build-windows/aimonitor.spec --noconfirm  # Windows exe → dist/AIMONITOR/
 ```
 
 ## Conventions
@@ -24,7 +25,7 @@ python scripts/simulate.py --batches 20 --spread-hours 6      # 데모 트래픽
 - 캐시 **읽기·쓰기 토큰은 단가가 다르다.** 합산해 한 단가로 계산하지 않는다.
 - 프롬프트·응답 원문은 DB·로그·오류 응답·CSV 어디에도 남기지 않는다 (`core/sanitize.py`).
 - 오류 응답에 예외 문자열을 싣지 않는다. 서버 로그로만 남긴다.
-- 의존성은 `backend/requirements.txt`, `desktop/requirements.txt`에 있는 것만 쓴다. 추가는 사람 승인 후.
+- 의존성은 `backend/requirements.txt`, `desktop/requirements.txt`(빌드 전용: `build-windows/requirements.txt`)에 있는 것만 쓴다. 추가는 사람 승인 후.
 
 ## Architecture
 

@@ -25,6 +25,15 @@ watcher는 데스크톱 프로세스에서 시작하며 백엔드 lifespan에서
 `~/.aimonitor/api_keys.json`에는 암호화된 키만 쓴다. 이전 평문 키는 조회 전에 암호화하여 이관한다.
 원본 앱과 단일 인스턴스·watcher 잠금을 공유하므로 두 체크아웃을 동시에 실행하지 않는다.
 
+### 배포용 exe (`build-windows/`)
+
+PyInstaller 단일 폴더 빌드 `AIMONITOR.exe` 하나가 세 역할을 한다(`build-windows/entry.py`).
+기본은 데스크톱 앱, `--serve-backend [--port N]`은 `127.0.0.1` 로컬 API 서버, `--self-test`는 GUI·API 모듈을 모두
+import한 뒤 종료 코드로 결과를 알린다. exe 실행 시 작업 폴더는 `~/.aimonitor`이므로 기본 DB는
+`~/.aimonitor/aimonitor.db`, `.env`도 그 폴더에서 읽는다. 콘솔이 없으므로 출력은 `~/.aimonitor/logs/<역할>.log`에
+실행마다 새로 쓴다. 데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄우고, 시작 프로그램에는
+`"<exe>" --autostart`를 등록한다. 코드 서명이 없어 첫 실행 시 SmartScreen 경고가 뜰 수 있다.
+
 ### 여러 계정·수집 폴더
 
 `desktop.accounts.AccountRegistry`는 `~/.aimonitor/accounts.json`의 계정 목록을 관리한다.
