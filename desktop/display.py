@@ -40,12 +40,6 @@ def format_reset(raw_ts: Optional[str], now: Optional[datetime] = None) -> str:
     return f"리셋 {dt.strftime('%H:%M')} ({f'{h}시간 {m}분' if h else f'{m}분'} 뒤)"
 
 
-def format_reset_suffix(raw_ts: Optional[str]) -> str:
-    """Legacy ' │ 리셋: ...' form."""
-    text = format_reset(raw_ts)
-    return f" │ {text}" if text else ""
-
-
 def format_as_of(raw_ts: Optional[str], now: Optional[datetime] = None) -> str:
     dt = _local(raw_ts)
     if dt is None:

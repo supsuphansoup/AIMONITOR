@@ -6,6 +6,7 @@
 
 **동작 변경 (BREAKING)**
 - 웹 대시보드 제거. UI는 Windows 데스크톱 앱(메인 창·트레이·위젯)만 제공한다. `GET /`는 JSON 404이며 `/api/v1/**`·`/health`·SDK·CSV는 유지한다.
+- `AIMONITOR.bat`·`AIMONITOR.vbs` 실행기 제거. exe 또는 `pythonw run_desktop.pyw`를 사용한다. 쓰지 않던 `desktop/claude_watcher.py`·`antigravity_syncer.py`·`claude_statusline_hook.py`·`window.py`도 제거.
 - `API_KEY`가 없으면 `localhost`·`127.0.0.1`·`[::1]`로 들어온 요청에만 응답한다. 다른 호스트 이름(예: Docker 네트워크의 서비스 이름)으로 쓰던 곳은 `API_KEY`를 설정하거나 `ALLOWED_HOSTS`에 이름을 추가해야 한다.
 
 **보안**

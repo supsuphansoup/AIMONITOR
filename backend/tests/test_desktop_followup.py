@@ -19,7 +19,6 @@ from backend.app.services import secret_store
 from desktop import app_gui, claude_quota_syncer, config, main, theme, widget
 from desktop.ai_detector import AIDetector
 from desktop.ai_watcher import UnifiedAIWatcher
-from desktop.claude_watcher import ClaudeWatcher
 from desktop.tray import TrayManager, create_tray_icon_image
 
 
@@ -136,18 +135,16 @@ def transport_client(monkeypatch, responder):
     return requests
 
 
-@pytest.mark.parametrize("watcher_class", [UnifiedAIWatcher, ClaudeWatcher])
 @pytest.mark.parametrize("status", [201, 401, 403])
-def test_watchers_attach_header_and_survive_auth_errors(monkeypatch, caplog, watcher_class, status):
+def test_watcher_attaches_header_and_survives_auth_errors(monkeypatch, caplog, status):
     monkeypatch.setenv("AIMONITOR_API_KEY", "test-only-server-secret")
     requests = transport_client(monkeypatch, lambda _request: httpx.Response(status, json=[]))
-    watcher = watcher_class.__new__(watcher_class)
+    watcher = UnifiedAIWatcher.__new__(UnifiedAIWatcher)
     watcher.backend_url = "http://testserver"
     result = watcher._send_traces([{"provider": "openai", "model_name": "gpt-4o"}])
     assert requests[0].headers["X-API-Key"] == "test-only-server-secret"
     assert requests[0].url.path == "/api/v1/traces/batch"
-    if watcher_class is UnifiedAIWatcher:
-        assert result is (status == 201)
+    assert result is (status == 201)
     if status in (401, 403):
         assert "인증 필요" in caplog.text
     assert "test-only-server-secret" not in caplog.text

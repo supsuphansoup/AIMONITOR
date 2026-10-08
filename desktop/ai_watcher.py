@@ -107,7 +107,6 @@ class UnifiedAIWatcher:
         # Base directories
         self.claude_dir = Path.home() / ".claude"
         self.antigravity_dir = Path.home() / ".gemini" / "antigravity"
-        self.cursor_dir = Path.home() / ".cursor"
         self.copilot_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "github-copilot"
 
     def _offset_key(self, prefix: str, fpath: Path) -> str:

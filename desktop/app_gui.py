@@ -57,7 +57,6 @@ from desktop.display import (
     account_usage_lines,
     attach_accounts,
     format_num,
-    format_reset_suffix,  # noqa: F401  (re-exported for older imports)
     krw,
     remaining_color,
     spend_text,
@@ -117,13 +116,11 @@ class DesktopMainWindow(ctk.CTk):
         self.minsize(1020, 720)
 
         # State data
-        self.overview_data: Dict[str, Any] = {}
         self.breakdown_data: List[Dict[str, Any]] = []
         self.traces_data: List[Dict[str, Any]] = []
         self.is_connected = False
         self._is_updating = False
         self.cached_summary: Optional[Dict[str, Any]] = None
-        self.cached_breakdown: Optional[List[Dict[str, Any]]] = None
         # One pending refresh timer at a time; manual refreshes replace it instead of adding a loop.
         self._refresh_job: Optional[str] = None
         self._search_job: Optional[str] = None
@@ -1042,18 +1039,6 @@ class DesktopMainWindow(ctk.CTk):
             self.lbl_status_msg.configure(text="라벨 변경 실패 · 40자 이내, 이메일·키 원문 제외",
                                           text_color=theme.ERROR)
 
-    def _verify_key_action(self, prov: str) -> None:
-        ver = api_key_manager.verify_key(prov)
-        if ver.get("valid"):
-            self.lbl_status_msg.configure(
-                text=f"{prov.upper()} 검증 성공: {ver.get('balance', '정상')}", text_color=theme.SUCCESS
-            )
-        else:
-            self.lbl_status_msg.configure(
-                text=f"{prov.upper()} 검증 실패: {ver.get('error')}", text_color=theme.ERROR
-            )
-        self._refresh_keys_list()
-
     def _delete_key_action(self, prov: str, key_id: Optional[str] = None) -> None:
         if key_id is None:
             api_key_manager.delete_key(prov)
@@ -1683,7 +1668,6 @@ class DesktopMainWindow(ctk.CTk):
             self._schedule_refresh()
             return
 
-        self.overview_data = ov
         self.breakdown_data = bd
         self.traces_data = tr
         self._refresh_account_choices()
@@ -1693,7 +1677,6 @@ class DesktopMainWindow(ctk.CTk):
             self._refresh_keys_list()
 
         self.cached_summary = summary
-        self.cached_breakdown = bd
 
         if set(self.ai_card_widgets.keys()) != {it["key"] for it in summary["items"]}:
             self._rebuild_unified_cards()

@@ -19,11 +19,6 @@ SOURCE_PRICING_TABLE = "pricing_table"
 SOURCE_LOCAL_FREE = "local_free"  # self-hosted inference, no per-token charge
 SOURCE_UNKNOWN = "unknown"        # no rate available -> cost is not computable
 
-ALL_COST_SOURCES = frozenset(
-    {SOURCE_CUSTOM, SOURCE_PRICING_TABLE, SOURCE_LOCAL_FREE, SOURCE_UNKNOWN}
-)
-
-
 class ModelPricing(NamedTuple):
     """USD per 1,000,000 tokens."""
     input_per_1m: float

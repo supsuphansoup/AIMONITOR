@@ -243,12 +243,9 @@ def test_ai_detector_reports_known_tools():
 
 def test_desktop_launchers_exist():
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    for name in ("AIMONITOR.bat", "AIMONITOR.vbs", "run_desktop.py", "run_desktop.pyw"):
+    # The desktop shortcut and the Windows Run entry point at run_desktop.pyw; the exe has its own entry.
+    for name in ("run_desktop.py", "run_desktop.pyw", os.path.join("build-windows", "entry.py")):
         assert os.path.exists(os.path.join(root, name))
-    for name in ("AIMONITOR.bat", "AIMONITOR.vbs"):
-        with open(os.path.join(root, name), "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "pythonw" in content and "run_desktop.pyw" in content
 
 
 @needs_gui

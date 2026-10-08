@@ -72,7 +72,6 @@ class AutoRateUpdater:
         self.interval_sec = interval_sec
         self.source = source
         self.as_of = as_of  # when the provider published the rate
-        self.last_updated_at: Optional[datetime] = None  # when we last fetched it
         self._listeners: List[Callable[[float, str], None]] = []
         if on_rate_updated:
             self._listeners.append(on_rate_updated)
@@ -81,10 +80,6 @@ class AutoRateUpdater:
 
     def add_listener(self, fn: Callable[[float, str], None]) -> None:
         self._listeners.append(fn)
-
-    def remove_listener(self, fn: Callable[[float, str], None]) -> None:
-        if fn in self._listeners:
-            self._listeners.remove(fn)
 
     @property
     def running(self) -> bool:
@@ -117,7 +112,6 @@ class AutoRateUpdater:
         self.rate = round(rate, 1)
         self.source = src or "온라인"
         self.as_of = as_of
-        self.last_updated_at = datetime.now(timezone.utc)
         logger.info("Updated USD/KRW rate: %.1f from %s", self.rate, self.source)
         _persist(self)
         for fn in list(self._listeners):
