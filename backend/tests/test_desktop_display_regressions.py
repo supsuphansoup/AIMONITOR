@@ -3,6 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
+import pytest
+
+pytest.importorskip("customtkinter")
+pytest.importorskip("matplotlib")
+pytest.importorskip("pystray")
+
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 

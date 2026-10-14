@@ -2,6 +2,12 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
+pytest.importorskip("customtkinter")
+pytest.importorskip("matplotlib")
+pytest.importorskip("pystray")
+
 from desktop import app_gui, widget
 
 

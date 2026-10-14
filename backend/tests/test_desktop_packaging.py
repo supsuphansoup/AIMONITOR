@@ -143,18 +143,14 @@ def test_default_mode_runs_the_desktop_app(entry, monkeypatch, automatic):
     attach.assert_called_once_with()
     run.assert_called_once_with(autostart=automatic)
     assert Path.cwd() == entry.DATA_DIR
-def test_source_backend_suppresses_access_log(monkeypatch):
-    from desktop import main
-
-    monkeypatch.setattr(main.sys, "frozen", False, raising=False)
-    command = main.backend_command(port=18771)
+def test_source_backend_suppresses_access_log(monkeypatch, desktop_main):
+    monkeypatch.setattr(desktop_main.sys, "frozen", False, raising=False)
+    command = desktop_main.backend_command(port=18771)
     assert "--no-access-log" in command
 
 
-def test_desktop_http_client_info_logs_do_not_record_request_urls(caplog):
+def test_desktop_http_client_info_logs_do_not_record_request_urls(caplog, desktop_main):
     import logging
-
-    from desktop import main  # noqa: F401
 
     caplog.set_level(logging.INFO)
     for name in ("httpx", "httpcore"):

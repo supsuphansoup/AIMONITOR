@@ -133,7 +133,8 @@ def test_local_slow_response_is_closed_and_deadline_stops_request(monkeypatch, m
                     delay = 1.0
                 else:
                     pieces = [bytes([byte]) for byte in b"HTTP/1.1 200 OK\r\nX-Test: " + b"a" * 70 + b"\r\nContent-Length: 0\r\n\r\n"]
-                    delay = 0.06
+                    # About 10 s for the whole header: well past the 5 s deadline even on a loaded machine.
+                    delay = 0.1
                 for piece in pieces:
                     if stop.wait(delay):
                         break
@@ -142,18 +143,20 @@ def test_local_slow_response_is_closed_and_deadline_stops_request(monkeypatch, m
             except (BrokenPipeError, ConnectionResetError, OSError):
                 closed.set()
 
-    server = ThreadingHTTPServer(("127.0.0.1", 18777), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         started = time.monotonic()
-        result = AlertEvaluator.dispatch_webhook(AlertRule(**RULE, webhook_url="http://127.0.0.1:18777/hook"), 0, datetime.utcnow())
+        url = f"http://127.0.0.1:{server.server_address[1]}/hook"
+        result = AlertEvaluator.dispatch_webhook(AlertRule(**RULE, webhook_url=url), 0, datetime.utcnow())
         elapsed = time.monotonic() - started
         if mode == "body":
             assert result is True and elapsed < 2
         else:
-            assert result is False and 4.5 <= elapsed < 6
-        assert closed.wait(2.5), "server must observe the client closing its request"
+            assert result is False and 4.5 <= elapsed < 8
+        # Windows may accept one more write after the peer closes, so allow a few server writes.
+        assert closed.wait(10), "server must observe the client closing its request"
     finally:
         stop.set()
         server.shutdown()

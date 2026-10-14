@@ -6,6 +6,10 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
+pytest.importorskip("customtkinter")
+pytest.importorskip("matplotlib")
+pytest.importorskip("pystray")
+
 from desktop import main, widget
 from desktop.single_instance import SingleInstance
 
@@ -100,10 +104,11 @@ def test_startup_failure_cleans_up_owned_backend(monkeypatch):
 
 def test_unrelated_port_listener_is_not_treated_as_running_aimonitor(monkeypatch):
     with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        listener.bind(("127.0.0.1", 18771))
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows only; Linux refuses a second bind anyway
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        second = SingleInstance(port=18771)
+        second = SingleInstance(port=listener.getsockname()[1])
         assert not second.acquire()
         assert second.notify_running() is False, "TCP connect/send succeeds without an AIMONITOR acknowledgement"
 
