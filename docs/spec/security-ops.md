@@ -81,7 +81,13 @@ Docker의 `0.0.0.0` 바인딩 등을 외부에 노출하려면 `API_KEY`와 `REQ
 - 시스템 API: `GET /system/info`(버전·인증 여부·스케줄러 상태), `GET /system/pricing`, `GET /system/ready`(DB 확인), `GET /health`(DB 미접근).
 - CI(`.github/workflows/ci.yml`): pytest(Linux Python 3.10/3.11/3.12, Windows 3.11 + 데스크톱 의존성), ruff, Docker 빌드 후 readiness 확인.
 - 테스트는 앱 import 전에 `DATABASE_URL`을 임시 SQLite로 고정한다. readiness의 직접 엔진 연결도 사용자 DB를 열지 않는다.
+- CI·Docker·Windows 릴리스는 루트 `constraints.txt`를 `pip install -c`로 적용한다. Windows Python 3.11.9에서 전체 테스트·exe smoke를 통과한 런타임·데스크톱·PyInstaller 및 하위 의존성 버전을 고정한다. Windows 환경에 없는 Linux/Python 3.10 조건부 의존성은 공식 PyPI 메타데이터로 호환 버전을 확인하고 CI 행렬에서 실행 검증한다. 도구인 pip·setuptools는 고정하지 않는다.
+- Python 3.10 백엔드는 해당 Python을 지원하는 SQLAlchemy 2.0.52·websockets 16.1.1과 조건부 하위 의존성을 사용한다. Python 3.11 이상은 검증된 Windows 기준 버전을 사용한다. 메타데이터상 의존성 해석을 확인했으며 Python 3.10의 실제 실행 확인은 CI가 맡는다.
 - 릴리스(`.github/workflows/release.yml`): `v*` 태그에서 Windows exe 빌드 → `--self-test`·백엔드 기동·기록 저장 smoke test → zip·SHA256을 **초안** 릴리스에 첨부. 게시는 사람이 한다.
+- CI와 릴리스 빌드는 `contents: read`, checkout은 `persist-credentials: false`다. 태그 push가 성공한 경우만 별도 publish job에 `contents: write`를 주며, 내려받은 zip의 SHA256을 검증한 뒤 초안을 만든다. 수동 실행은 artifact만 남긴다.
+- SHA256 파일은 BOM 없는 ASCII·LF로 만들어 Windows 빌드와 Linux 게시 job 사이에서도 같은 형식을 사용한다.
+- 외부 Actions는 공식 태그의 전체 커밋 SHA에 고정하고 버전 주석을 남긴다. `pull_request_target`은 사용하지 않는다.
+- 의존성 설치·빌드 전에 태그의 기본 버전과 `pyproject.toml`·`Settings.VERSION` 일치를 검사한다. 태그는 `vMAJOR.MINOR.PATCH` 또는 `vMAJOR.MINOR.PATCH-(alpha|beta|rc).N`(N ≥ 1)을 허용하며 선행 0·빌드 메타데이터는 허용하지 않는다. prerelease 태그의 초안에는 prerelease 표시를 붙인다.
 
 ## Open questions
 

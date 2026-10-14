@@ -1,0 +1,64 @@
+# Release baseline: Windows Python 3.11.9, full tests and packaged exe smoke
+# verified on 2026-10-14. Install with -c constraints.txt and the requirements.
+# pip/setuptools are runner tooling; unrelated analysis packages are excluded.
+altgraph==0.17.5
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+colorama==0.4.6
+contourpy==1.3.3
+customtkinter==6.0.0
+cycler==0.12.1
+darkdetect==0.8.0
+fastapi==0.142.4
+fonttools==4.66.1
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.20
+iniconfig==2.3.1
+kiwisolver==1.5.1
+matplotlib==3.11.2
+numpy==2.4.6
+opentelemetry-api==1.45.1
+packaging==26.3
+pefile==2024.8.26
+pillow==12.3.0
+pluggy==1.6.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+pydantic_core==2.46.5
+Pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+pyparsing==3.3.3
+pystray==0.19.5
+pytest==9.1.1
+pytest-asyncio==1.4.0
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
+pywin32-ctypes==0.2.3
+PyYAML==6.0.3
+six==1.17.0
+SQLAlchemy==2.1.4 ; python_version >= "3.11"
+SQLAlchemy==2.0.52 ; python_version < "3.11"
+sqlmodel==0.0.48
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
+watchfiles==1.3.0
+websockets==17.2 ; python_version >= "3.11"
+websockets==16.1.1 ; python_version < "3.11"
+
+# Conditional backend dependencies absent from the Windows 3.11 baseline.
+# Versions and Python compatibility checked against official PyPI metadata;
+# execution is covered by the Linux Python 3.10/3.11/3.12 CI matrix.
+exceptiongroup==1.3.1 ; python_version < "3.11"
+backports-asyncio-runner==1.2.0 ; python_version < "3.11"
+greenlet==3.5.5 ; python_version < "3.11"
+tomli==2.5.0 ; python_version < "3.11"
+uvloop==0.23.0 ; sys_platform != "win32" and sys_platform != "cygwin" and platform_python_implementation != "PyPy"
