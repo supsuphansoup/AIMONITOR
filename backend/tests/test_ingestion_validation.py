@@ -32,7 +32,6 @@ def test_nonfinite_float_is_rejected_without_storage(client: TestClient, session
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "1e309"])
 @pytest.mark.parametrize("batch", [False, True])
 def test_raw_nonfinite_number_fails_input_schema(field, value, batch):
-    # HTTP error serialization belongs to the secops branch; test raw JSON at the schema boundary here.
     raw = json.dumps(TRACE)[:-1] + f',"{field}":{value}' + "}"
     schema = BatchTraceCreate if batch else TraceEventCreate
     if batch:
@@ -50,8 +49,8 @@ def test_raw_nonfinite_http_never_commits(client: TestClient, session: Session, 
         raw = '{"traces":[' + json.dumps(TRACE) + "," + raw + "]}"
     res = client.post("/api/v1/traces/batch" if batch else "/api/v1/traces", content=raw,
                       headers={"Content-Type": "application/json"})
-    # The secops global handler supplies HTTP 422 after merging; never accept or commit meanwhile.
-    assert res.status_code != 201
+    assert res.status_code == 422
+    assert all(set(item) == {"loc", "type", "msg"} for item in res.json()["detail"])
     assert session.exec(select(TraceEvent)).all() == []
 
 

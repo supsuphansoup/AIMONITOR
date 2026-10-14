@@ -304,6 +304,15 @@ finally:
         assert conn.execute(text("SELECT trace_id FROM trace_events")).scalar() == "legacy-1"
 
 
+def _index_shapes(engine):
+    # Partial indexes carry their WHERE clause as a TextClause, which compares by identity.
+    return sorted(
+        (index["name"], tuple(index["column_names"]), bool(index["unique"]),
+         str(index.get("dialect_options", {}).get("sqlite_where", "")))
+        for index in inspect(engine).get_indexes("trace_events")
+    )
+
+
 @pytest.mark.parametrize("nullable", [False, True])
 def test_upgrade_repairs_infinite_values_without_changing_finite_rows(tmp_path, nullable):
     engine = create_engine(f"sqlite:///{tmp_path / 'nonfinite.db'}")
@@ -326,9 +335,9 @@ def test_upgrade_repairs_infinite_values_without_changing_finite_rows(tmp_path, 
                 {"trace_id": "latency-positive", "latency": float("inf"), "cost": 0.5},
             ])
         ensure_schema(engine)
-        indexes = inspect(engine).get_indexes("trace_events")
+        indexes = _index_shapes(engine)
         ensure_schema(engine)
-        assert inspect(engine).get_indexes("trace_events") == indexes
+        assert _index_shapes(engine) == indexes
         with engine.connect() as conn:
             rows = conn.execute(text(
                 "SELECT trace_id, latency_ms, cost_usd, latency_measured, cost_source, total_tokens "
