@@ -56,6 +56,10 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
         else prompt_tokens + completion_tokens + cache_read_tokens + cache_write_tokens
     )
 
+    # One recorded time prices the call and is stored with it, so a backfilled
+    # record uses the rate in effect when it happened, not when it arrived.
+    recorded_at = payload.timestamp or utc_now()
+
     cost = calculate_cost_detail(
         provider=payload.provider,
         model_name=payload.model_name,
@@ -65,6 +69,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
         cache_write_tokens=cache_write_tokens,
         cache_write_1h_tokens=cache_write_1h_tokens,
         custom_cost_usd=payload.cost_usd,
+        timestamp=recorded_at,
     )
 
     kwargs = {
@@ -88,10 +93,8 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
         "error_message": payload.error_message,
         "tags": payload.tags_as_string(),
         "metadata_json": payload.metadata_as_json(),
+        "timestamp": recorded_at,
     }
-
-    if payload.timestamp:
-        kwargs["timestamp"] = payload.timestamp
 
     return TraceEvent(**kwargs)
 

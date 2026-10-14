@@ -21,7 +21,7 @@
 | `dedupe_key` | 선택·nullable. 1–128자, `^[A-Za-z0-9._:-]+$`. 중복 제거용 불투명 해시 식별자(원문 내용 금지), non-null 유일 부분 인덱스 |
 | `session_id` | 인덱스, 선택 |
 | `account_id` | 선택·nullable. `<tool>:<id>`, 최대 64자, `[A-Za-z0-9:_-]`. tool은 `claude_code`, `codex`, `antigravity`, `copilot`, `cursor`, `api`. `(account_id, timestamp)` 복합 인덱스 |
-| `timestamp` | 인덱스. 미전달 시 서버 시각. 입력 오프셋은 UTC로 변환 후 naive 저장 |
+| `timestamp` | 인덱스. 미전달 시 서버 시각. 입력 오프셋은 UTC로 변환 후 naive 저장. 비용은 이 기록 시각에 유효한 단가로 계산한다 ([cost.md](cost.md)의 시행일) |
 | `provider` | 인덱스, 1–64자 |
 | `model_name` | 인덱스, 1–200자 |
 | `prompt_tokens` | 캐시되지 않은 입력 토큰. 음수는 0으로 보정 |
