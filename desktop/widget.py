@@ -11,6 +11,7 @@ no official value reads "확인 불가".
 """
 
 import logging
+import sys
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -36,6 +37,42 @@ from desktop.rate_fetcher import shared_updater
 
 ROW_HEIGHT = theme.ROW_HEIGHT
 logger = logging.getLogger(__name__)
+
+
+def monitor_work_areas(root: tk.Misc) -> list:
+    """Logical work rectangles, including monitors left/above the primary display."""
+    areas = []
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                                          ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+        user32 = ctypes.windll.user32
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        def collect(monitor, _dc, _rect, _data):
+            info = MonitorInfo()
+            info.size = ctypes.sizeof(info)
+            if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.work
+                areas.append((r.left, r.top, r.right, r.bottom))
+            return True
+        user32.EnumDisplayMonitors(None, None, callback_type(collect), 0)
+    return areas or [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
+
+
+def fit_work_area(x: int, y: int, width: int, height: int, areas: list) -> tuple:
+    candidates = []
+    for left, top, right, bottom in areas:
+        w, h = min(width, right - left), min(height, bottom - top)
+        cx, cy = max(left, min(x, right - w)), max(top, min(y, bottom - h))
+        candidates.append(((x - cx) ** 2 + (y - cy) ** 2, cx, cy, w, h))
+    return min(candidates)[1:]
 
 
 class FloatingWidget:
@@ -75,6 +112,8 @@ class FloatingWidget:
         self.is_connected = False
         self._connected_ais: Optional[List[Dict[str, Any]]] = None
         self._fetching = False
+        self._closed = False
+        self._poll_job = None
         self._auth_required = False
         self._rows_sig: Any = None
 
@@ -97,7 +136,7 @@ class FloatingWidget:
         self._bind_events()
         self._place()
         theme.observe(self.root, lambda _mode: self._render())
-        self.root.after(200, self.schedule_update)
+        self._schedule_poll(200)
 
     # ------------------------------------------------------------------ layout
     def _selected_ids(self) -> Optional[List[str]]:
@@ -130,19 +169,19 @@ class FloatingWidget:
 
     def _place(self) -> None:
         self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
         w, h = self._size()
         x, y = self.config.get("widget_x"), self.config.get("widget_y")
-        if x is None or y is None or x < 0 or x > sw:
-            x, y = sw - w - 24, 42
-        self.root.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+        areas = monitor_work_areas(self.root)
+        if x is None or y is None:
+            left, top, right, _bottom = areas[0]
+            x, y = max(left, right - w - 24), top + 42
+        x, y, w, h = fit_work_area(x, y, w, h, areas)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _resize(self) -> None:
         w, h = self._size()
         x, y = self.root.winfo_x(), self.root.winfo_y()
-        sw = self.root.winfo_screenwidth()
-        if x + w > sw:  # grow leftwards instead of running off the right edge
-            x = max(0, sw - w - 8)
+        x, y, w, h = fit_work_area(x, y, w, h, monitor_work_areas(self.root))
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _build_ui(self) -> None:
@@ -393,10 +432,26 @@ class FloatingWidget:
         self.root.quit()
 
     def close(self) -> None:
+        self._closed = True
+        self._cancel_poll()
         self.root.destroy()
+
+    def _cancel_poll(self) -> None:
+        job = getattr(self, "_poll_job", None)
+        if job is not None:
+            self.root.after_cancel(job)
+            self._poll_job = None
+
+    def _schedule_poll(self, delay: int) -> None:
+        self._cancel_poll()
+        if not self._closed:
+            self._poll_job = self.root.after(delay, self.schedule_update)
 
     # ------------------------------------------------------------------ data
     def schedule_update(self) -> None:
+        self._cancel_poll()
+        if self._closed:
+            return
         if self._fetching:
             return
         self._fetching = True
@@ -447,13 +502,16 @@ class FloatingWidget:
             pass  # window already destroyed
 
     def _on_data(self, summary: Dict[str, Any], ok: bool, auth_required: bool = False) -> None:
+        if self._closed:
+            return
         self.is_connected = ok
         self._auth_required = auth_required
         if ok:
             self.summary_data = summary
             self.entries = widget_entries(summary)
         self._render()
-        self.root.after(self.poll_ms, self.schedule_update)
+        self._resize()
+        self._schedule_poll(self.poll_ms)
 
     # ------------------------------------------------------------------ render
     def _render(self) -> None:

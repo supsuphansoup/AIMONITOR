@@ -1218,7 +1218,7 @@ class DesktopMainWindow(ctk.CTk):
         )
         self.lbl_rate_live.pack(side="left", padx=theme.SPACE_3)
 
-        btn_rate_refresh = ctk.CTkButton(
+        self.btn_rate_refresh = ctk.CTkButton(
             r1_inner,
             text="환율 즉시 갱신",
             width=120,
@@ -1228,7 +1228,7 @@ class DesktopMainWindow(ctk.CTk):
             command=self._manual_refresh_rate,
             text_color=theme.TEXT,
         )
-        btn_rate_refresh.pack(side="right")
+        self.btn_rate_refresh.pack(side="right")
 
         # 2. Where each remaining-usage number comes from
         r2 = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
@@ -1511,16 +1511,31 @@ class DesktopMainWindow(ctk.CTk):
 
     def _manual_refresh_rate(self) -> None:
         """Trigger immediate internet exchange rate refresh."""
-        ok = self.rate_updater.update_now()
-        if ok:
-            self.lbl_status_msg.configure(
-                text=f"환율 갱신: {self.rate_updater.describe()}", text_color=theme.SUCCESS
-            )
-        else:
-            self.lbl_status_msg.configure(
-                text="환율 서버에 연결하지 못해 이전 환율을 유지합니다.", text_color=theme.WARNING
-            )
-        self.refresh_data()
+        if getattr(self, "_rate_refreshing", False):
+            return
+        self._rate_refreshing = True
+        self.btn_rate_refresh.configure(state="disabled")
+        self.lbl_status_msg.configure(text="환율 갱신 중…", text_color=theme.MUTED)
+        def worker() -> None:
+            try:
+                ok = self.rate_updater.update_now()
+            except Exception:
+                ok = None
+            def finish() -> None:
+                self._rate_refreshing = False
+                self.btn_rate_refresh.configure(state="normal")
+                self.lbl_status_msg.configure(
+                    text=f"환율 갱신: {self.rate_updater.describe()}" if ok
+                    else "환율 서버에 연결하지 못해 이전 환율을 유지합니다.",
+                    text_color=theme.SUCCESS if ok else theme.WARNING,
+                )
+                self.refresh_data()
+            try:
+                self.after(0, finish)
+            except RuntimeError:
+                pass
+        self._rate_refresh_thread = threading.Thread(target=worker, daemon=True, name="ManualRateRefresh")
+        self._rate_refresh_thread.start()
 
     # =========================================================================
     # Data Fetching & UI Update
