@@ -73,6 +73,7 @@ docker compose up --build -d   # http://localhost:8000/api/v1, Swagger: /api/v1/
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.
 - 시스템 API: `GET /system/info`(버전·인증 여부·스케줄러 상태), `GET /system/pricing`, `GET /system/ready`(DB 확인), `GET /health`(DB 미접근).
 - CI(`.github/workflows/ci.yml`): pytest(Linux Python 3.10/3.11/3.12, Windows 3.11 + 데스크톱 의존성), ruff, Docker 빌드 후 readiness 확인.
+- 테스트는 앱 import 전에 `DATABASE_URL`을 임시 SQLite로 고정한다. readiness의 직접 엔진 연결도 사용자 DB를 열지 않는다.
 - 릴리스(`.github/workflows/release.yml`): `v*` 태그에서 Windows exe 빌드 → `--self-test`·백엔드 기동·기록 저장 smoke test → zip·SHA256을 **초안** 릴리스에 첨부. 게시는 사람이 한다.
 
 ## Open questions

@@ -31,7 +31,7 @@ def session_fixture():
 @pytest.fixture(name="client")
 def client_fixture(session: Session):
     # Constructed without the context manager on purpose: entering it would run
-    # the lifespan, which touches the real database and starts the scheduler.
+    # the lifespan, which initializes the process-level DB and starts the scheduler.
     app.dependency_overrides[get_session] = lambda: session
     yield TestClient(app)
     app.dependency_overrides.clear()
