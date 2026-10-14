@@ -2,7 +2,7 @@ import logging
 from typing import Any, Generator, Optional
 
 from sqlalchemy import event, inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.app.core.config import settings
@@ -85,15 +85,10 @@ def _load_model_metadata() -> None:
     import backend.app.models  # noqa: F401
 
 
-def ensure_schema(target_engine: Optional[Engine] = None) -> None:
-    """Add columns and indexes introduced since a database was first created.
-
-    A lightweight substitute for a migration tool: it never drops or retypes
-    anything, so upgrading an existing deployment keeps its history intact.
-    """
-    _load_model_metadata()
-    target_engine = target_engine or engine
-    inspector = inspect(target_engine)
+def _ensure_schema_connection(conn: Connection) -> None:
+    # Inspect only after the caller has acquired the SQLite writer lock. A
+    # second process must see the first process's committed columns and indexes.
+    inspector = inspect(conn)
     existing_tables = set(inspector.get_table_names())
 
     for table in SQLModel.metadata.sorted_tables:
@@ -103,32 +98,46 @@ def ensure_schema(target_engine: Optional[Engine] = None) -> None:
         present = {col["name"] for col in inspector.get_columns(table.name)}
         missing = [c for c in table.columns if c.name not in present]
         if missing:
-            with target_engine.begin() as conn:
-                for column in missing:
-                    clause = _add_column_ddl(column, target_engine)
-                    conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN {clause}'))
-                    logger.info("Schema upgrade: added %s.%s", table.name, column.name)
+            for column in missing:
+                clause = _add_column_ddl(column, conn.engine)
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN {clause}'))
+                logger.info("Schema upgrade: added %s.%s", table.name, column.name)
             present |= {c.name for c in missing}
 
         # CREATE INDEX is a separate statement from ADD COLUMN, so a new indexed
         # column arrives unindexed on an upgraded database and every query that
         # filters on it degrades to a full scan.
-        existing_indexes = {idx["name"] for idx in inspect(target_engine).get_indexes(table.name)}
+        existing_indexes = {idx["name"] for idx in inspect(conn).get_indexes(table.name)}
         for index in table.indexes:
             if index.name in existing_indexes:
                 continue
             if not {c.name for c in index.columns} <= present:
                 continue
-            with target_engine.begin() as conn:
-                index.create(bind=conn)
+            index.create(bind=conn)
             logger.info("Schema upgrade: created index %s", index.name)
+
+
+def ensure_schema(target_engine: Optional[Engine] = None) -> None:
+    """Add missing columns and indexes in one serialized, non-destructive upgrade."""
+    _load_model_metadata()
+    target_engine = target_engine or engine
+    with target_engine.begin() as conn:
+        if target_engine.dialect.name == "sqlite":
+            # SQLAlchemy's begin() alone does not start a SQLite DDL transaction
+            # under legacy sqlite3 transaction control. Explicit BEGIN both
+            # serializes processes and makes failed DDL upgrades roll back.
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+        _ensure_schema_connection(conn)
 
 
 def init_db() -> None:
     """Create missing tables, then backfill columns added by later versions."""
     _load_model_metadata()
-    SQLModel.metadata.create_all(engine)
-    ensure_schema(engine)
+    with engine.begin() as conn:
+        if engine.dialect.name == "sqlite":
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+        SQLModel.metadata.create_all(conn)
+        _ensure_schema_connection(conn)
 
 
 def check_db() -> bool:
