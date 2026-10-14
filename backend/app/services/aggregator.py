@@ -353,7 +353,7 @@ class MetricAggregator:
         Watcher rows are grouped by the tool that produced them (Claude Code,
         Antigravity, Copilot), not by provider: Copilot also calls Claude models,
         and those calls are not Claude Code usage. Every other row is grouped as
-        `<provider>_api`.
+        `<provider>_api`, except local Ollama usage which keeps `ollama`.
 
         Windows: rolling 5 hours, today and this month in the PC's local time,
         and the last 7 days. Cost sums only priced rows; `cost_unknown` counts
@@ -368,8 +368,11 @@ class MetricAggregator:
             "month": local_period_start_utc(now_utc, month_start=True),
         }
 
+        tool_key = func.coalesce(_watcher_key(), case(
+            (TraceEvent.provider == "ollama", "ollama"), else_=col(TraceEvent.provider) + "_api",
+        ))
         source = select(
-            func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api").label("tool_key"),
+            tool_key.label("tool_key"),
             col(TraceEvent.account_id), col(TraceEvent.timestamp),
             col(TraceEvent.total_tokens), KNOWN_COST.label("known_cost"),
             case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0).label("unknown_cost"),
@@ -398,7 +401,7 @@ class MetricAggregator:
         ).select_from(latest_times).join(TraceEvent, (
             (col(TraceEvent.timestamp) == latest_times.c.timestamp)
             & col(TraceEvent.account_id).is_not_distinct_from(latest_times.c.account_id)
-            & (func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api") == latest_times.c.tool_key)
+            & (tool_key == latest_times.c.tool_key)
         )).group_by(latest_times.c.tool_key, latest_times.c.account_id).subquery("latest_ids")
         query = select(
             latest_ids.c.tool_key, latest_ids.c.account_id,
