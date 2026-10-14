@@ -4,6 +4,7 @@ One place decides how "unknown", "stale" and "estimated" read, so the two
 surfaces cannot drift into showing the same number two different ways.
 """
 
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,6 +12,73 @@ from desktop import theme
 from desktop.accounts import AccountRegistry
 
 GREEN, BLUE, AMBER, RED, GREY = theme.SUCCESS, theme.ACCENT, theme.WARNING, theme.ERROR, theme.FAINT
+
+
+def _api_number(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and (isinstance(value, int) or math.isfinite(value)))
+
+
+def _api_counts(row: Any, fields: tuple) -> bool:
+    return isinstance(row, dict) and all(
+        isinstance(row.get(field), int) and not isinstance(row[field], bool) and row[field] >= 0
+        for field in fields)
+
+
+def _api_usage(row: Any) -> bool:
+    if not isinstance(row, dict) or not isinstance(row.get("windows"), dict):
+        return False
+    return all(_api_counts(row["windows"].get(name), ("tokens", "cost_unknown"))
+               and _api_number(row["windows"][name].get("requests"))
+               and row["windows"][name]["requests"] >= 0
+               and _api_number(row["windows"][name].get("cost_usd"))
+               for name in ("5h", "today", "7d", "month"))
+
+
+def valid_api_payload(endpoint: str, data: Any) -> bool:
+    """Check the structure the desktop consumes, while allowing valid empty/legacy responses."""
+    if endpoint == "overview":
+        return (_api_counts(data, ("total_requests", "total_tokens"))
+                and _api_number(data.get("total_cost_usd")))
+    if endpoint == "breakdown":
+        return isinstance(data, list) and all(
+            _api_counts(row, ("count", "total_tokens")) and _api_number(row.get("total_cost_usd"))
+            and ("cost_unknown_count" not in row or _api_counts(row, ("cost_unknown_count",)))
+            and all(isinstance(row.get(field), str) for field in ("provider", "model_name")) for row in data)
+    if endpoint == "traces":
+        rows = data.get("items") if isinstance(data, dict) else data
+        return isinstance(rows, list) and all(
+            _api_counts(row, ("total_tokens",)) and _api_number(row.get("cost_usd"))
+            and all(isinstance(row.get(field), str) for field in ("trace_id", "provider", "model_name",
+                                                                  "timestamp", "status")) for row in rows)
+    if endpoint == "active_contexts":
+        return isinstance(data, dict) and all(
+            isinstance(key, str) and _api_usage(row)
+            and ("accounts" not in row or (isinstance(row["accounts"], list)
+                                           and all(_api_usage(account) for account in row["accounts"])))
+            for key, row in data.items())
+    if endpoint == "spend":
+        if not isinstance(data, dict):
+            return False
+        cards = [value for key, value in data.items() if key.endswith("_api")]
+        if "items" in data:
+            if not isinstance(data["items"], list):
+                return False
+            cards += data["items"]
+        elif not cards:
+            return False
+        for row in cards:
+            if not isinstance(row, dict) or row.get("kind") not in ("spend", "balance", "unavailable"):
+                return False
+            if "source_label" in row and not isinstance(row["source_label"], str):
+                return False
+            if row["kind"] != "unavailable":
+                currency = row.get("currency")
+                if (not _api_number(row.get("amount")) or not isinstance(currency, str)
+                        or len(currency) != 3 or not currency.isascii() or not currency.isalpha()):
+                    return False
+        return True
+    return False
 
 
 def _local(raw: Optional[str]) -> Optional[datetime]:

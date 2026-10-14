@@ -63,6 +63,7 @@ from desktop.display import (
     spend_text,
     unclassified_total_text,
     usage_cost_text,
+    valid_api_payload,
     window_text,
 )
 from desktop.quota import account_quotas
@@ -100,6 +101,7 @@ class DesktopMainWindow(ctk.CTk):
         on_switch_to_widget: Optional[Callable[[], None]] = None,
         on_visibility_changed: Optional[Callable[[], None]] = None,
         start_hidden: bool = False,
+        connection_notice: Optional[Callable[[], str]] = None,
     ):
         attach_to_default_desktop()
         super().__init__()
@@ -109,6 +111,7 @@ class DesktopMainWindow(ctk.CTk):
         self.on_switch_to_widget = on_switch_to_widget
         # Called after the user hides/shows an AI here, so the widget can refresh at once.
         self.on_visibility_changed = on_visibility_changed
+        self.connection_notice = connection_notice or (lambda: "")
         self.config = load_config()
         self.backend_url = self.config.get("backend_url", "http://127.0.0.1:8000")
         # One rate for the whole process; the widget reads the same updater.
@@ -1680,6 +1683,13 @@ class DesktopMainWindow(ctk.CTk):
         self.refresh_data()
 
     def _fetch_worker(self, ais: List[Dict[str, Any]], config: Dict[str, Any], krw_rate: float) -> None:
+        if getattr(self, "connection_notice", lambda: "")():
+            self._is_updating = False
+            try:
+                self.after(0, lambda: self._apply_data({}, [], [], None, False))
+            except RuntimeError:
+                pass
+            return
         url_ov = f"{self.backend_url}/api/v1/metrics/overview?hours_back=168"
         url_bd = f"{self.backend_url}/api/v1/metrics/breakdown?hours_back=168"
         url_tr = f"{self.backend_url}/api/v1/traces?limit=50"
@@ -1704,8 +1714,10 @@ class DesktopMainWindow(ctk.CTk):
                     r_ov = client.get(url_ov, params=chart_params)
                     auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
-                        overview = r_ov.json()
-                        endpoint_status["overview"] = True
+                        payload = r_ov.json()
+                        if valid_api_payload("overview", payload):
+                            overview = payload
+                            endpoint_status["overview"] = True
                 except Exception as e:
                     logger.debug("overview fetch err: %s", type(e).__name__)
 
@@ -1713,8 +1725,10 @@ class DesktopMainWindow(ctk.CTk):
                     r_bd = client.get(url_bd, params=chart_params)
                     auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
-                        breakdown = r_bd.json()
-                        endpoint_status["breakdown"] = True
+                        payload = r_bd.json()
+                        if valid_api_payload("breakdown", payload):
+                            breakdown = payload
+                            endpoint_status["breakdown"] = True
                 except Exception as e:
                     logger.debug("breakdown fetch err: %s", type(e).__name__)
 
@@ -1723,8 +1737,9 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_tr.status_code in (401, 403)
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
-                        traces = tr_data if isinstance(tr_data, list) else tr_data.get("items", [])
-                        endpoint_status["traces"] = True
+                        if valid_api_payload("traces", tr_data):
+                            traces = tr_data if isinstance(tr_data, list) else tr_data["items"]
+                            endpoint_status["traces"] = True
                 except Exception as e:
                     logger.debug("traces fetch err: %s", type(e).__name__)
 
@@ -1732,18 +1747,24 @@ class DesktopMainWindow(ctk.CTk):
                     r_act = client.get(url_act)
                     auth_required = auth_required or r_act.status_code in (401, 403)
                     if r_act.status_code == 200:
-                        act_contexts = r_act.json()
-                        endpoint_status["active_contexts"] = isinstance(act_contexts, dict)
+                        payload = r_act.json()
+                        if valid_api_payload("active_contexts", payload):
+                            act_contexts = payload
+                            endpoint_status["active_contexts"] = True
                 except Exception as e:
                     logger.debug("active_contexts fetch err: %s", type(e).__name__)
 
                 if (any(a["key"].endswith("_api") for a in ais)
                         or any(a.get("has_key") for a in api_key_manager.list_keys())):
+                    endpoint_status["spend"] = False
                     try:
                         r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
                         auth_required = auth_required or r_sp.status_code in (401, 403)
                         if r_sp.status_code == 200:
-                            self.official_spend = r_sp.json()
+                            payload = r_sp.json()
+                            if valid_api_payload("spend", payload):
+                                self.official_spend = payload
+                                endpoint_status["spend"] = True
                     except Exception as e:
                         logger.debug("spend fetch err: %s", type(e).__name__)
         except Exception as e:
@@ -1804,6 +1825,12 @@ class DesktopMainWindow(ctk.CTk):
         auth_required: bool = False,
     ) -> None:
         self.is_connected = ok
+        notice = getattr(self, "connection_notice", lambda: "")()
+        if notice:
+            self.is_connected = False
+            self.lbl_status_msg.configure(text=notice, text_color=theme.ERROR)
+            self._schedule_refresh()
+            return
         if not ok or summary is None:
             self.lbl_status_msg.configure(
                 text="인증 필요" if auth_required else (

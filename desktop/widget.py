@@ -84,6 +84,7 @@ class FloatingWidget:
         on_exit: Optional[Callable[[], None]] = None,
         on_open_main_app: Optional[Callable[[], None]] = None,
         on_topmost_changed: Optional[Callable[[bool], None]] = None,
+        connection_notice: Optional[Callable[[], str]] = None,
     ):
         attach_to_default_desktop()
         self.config = load_config()
@@ -91,6 +92,7 @@ class FloatingWidget:
         self.on_exit = on_exit
         self.on_open_main_app = on_open_main_app
         self.on_topmost_changed = on_topmost_changed
+        self.connection_notice = connection_notice or (lambda: "")
 
         self.root = tk.Toplevel(master) if master is not None else tk.Tk()
         self.root.title("AIMONITOR 위젯")
@@ -458,6 +460,13 @@ class FloatingWidget:
         threading.Thread(target=self._fetch_worker, daemon=True).start()
 
     def _fetch_worker(self) -> None:
+        if getattr(self, "connection_notice", lambda: "")():
+            self._fetching = False
+            try:
+                self.root.after(0, lambda: self._on_data({}, False))
+            except RuntimeError:
+                pass
+            return
         summary: Dict[str, Any] = {}
         ok = False
         auth_required = False
@@ -535,7 +544,14 @@ class FloatingWidget:
             )
         visible = self._visible()
 
-        if getattr(self, "_auth_required", False):
+        notice = getattr(self, "connection_notice", lambda: "")()
+        if notice:
+            if self.mode == "mini":
+                self.mini_text.config(text=notice)
+                self._resize()
+                return
+            self.lbl_footer.config(text=notice, fg=theme.color(theme.ERROR))
+        elif getattr(self, "_auth_required", False):
             if self.mode == "mini":
                 self.mini_text.config(text="인증 필요")
                 self._resize()

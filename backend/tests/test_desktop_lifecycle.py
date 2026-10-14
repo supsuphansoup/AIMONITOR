@@ -76,7 +76,8 @@ def test_shutdown_prevents_backend_spawn_after_shutdown_started(monkeypatch):
     monkeypatch.setattr(main.time, "sleep", lambda _delay: None)
     real_client = httpx.Client
     monkeypatch.setattr(main.httpx, "Client", lambda **kwargs: real_client(
-        transport=httpx.MockTransport(lambda request: httpx.Response(503)), **kwargs))
+        transport=httpx.MockTransport(Mock(side_effect=httpx.ConnectError("synthetic absent listener"))),
+        **kwargs))
     thread = threading.Thread(target=controller.ensure_backend)
     thread.start()
     assert entered.wait(2)
@@ -134,7 +135,8 @@ def test_spawned_backend_uses_configured_loopback_port(monkeypatch):
                                _stop_event=threading.Event())
     real_client = httpx.Client
     monkeypatch.setattr(main.httpx, "Client", lambda **kwargs: real_client(
-        transport=httpx.MockTransport(lambda request: httpx.Response(503)), **kwargs))
+        transport=httpx.MockTransport(Mock(side_effect=httpx.ConnectError("synthetic absent listener"))),
+        **kwargs))
     monkeypatch.setattr(main, "backend_headers", lambda: {})
     monkeypatch.setattr(main.time, "sleep", lambda delay: None)
     spawn = Mock()
