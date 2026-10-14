@@ -614,9 +614,12 @@ class DesktopMainWindow(ctk.CTk):
         labels = [item.get("model_name", "unknown")[:14] for item in top_bd]
         costs_krw = [int(item.get("total_cost_usd", 0.0) * self.krw_rate) for item in top_bd]
         tokens = [item.get("total_tokens", 0) for item in top_bd]
+        unknown = [item.get("cost_unknown_count", 0) for item in top_bd]
+        counts = [item.get("count", 0) for item in top_bd]
 
         # Skip expensive matplotlib redraws when nothing moved.
-        sig = (theme.appearance_mode(), tuple(labels), tuple(costs_krw), tuple(tokens))
+        sig = (theme.appearance_mode(), tuple(labels), tuple(costs_krw), tuple(tokens),
+               tuple(unknown), tuple(counts))
         if sig == self._chart_sig:
             return
         self._chart_sig = sig
@@ -641,7 +644,13 @@ class DesktopMainWindow(ctk.CTk):
         colors_tok = theme.color(theme.SECONDARY)
 
         y_pos = range(len(labels))
-        self.ax_cost.barh(y_pos, costs_krw, color=colors_cost, height=0.55)
+        known_rows = [i for i in y_pos if not unknown[i] or unknown[i] < counts[i]]
+        self.ax_cost.barh(known_rows, [costs_krw[i] for i in known_rows], color=colors_cost, height=0.55)
+        for i in y_pos:
+            if unknown[i]:
+                note = "계산 불가" if unknown[i] >= counts[i] else f" + {unknown[i]}건 계산 불가"
+                self.ax_cost.text(costs_krw[i], i, note, color=theme.color(theme.WARNING),
+                                  va="center", fontsize=theme.CHART_TICK)
         self.ax_cost.set_yticks(y_pos)
         self.ax_cost.set_yticklabels(labels, color=theme.color(theme.MUTED), fontsize=theme.CHART_TICK)
         self.ax_cost.invert_yaxis()
@@ -1559,10 +1568,11 @@ class DesktopMainWindow(ctk.CTk):
         chart_params = account_query(selections[1], choices)
 
         overview = {}
-        breakdown = []
-        traces = []
+        breakdown = getattr(self, "breakdown_data", [])
+        traces = getattr(self, "traces_data", [])
         act_contexts = {}
         ok = False
+        endpoint_status = dict.fromkeys(("overview", "breakdown", "traces", "active_contexts"), False)
         auth_required = False
 
         try:
@@ -1572,7 +1582,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
                         overview = r_ov.json()
-                        ok = True
+                        endpoint_status["overview"] = True
                 except Exception as e:
                     logger.debug("overview fetch err: %s", type(e).__name__)
 
@@ -1581,7 +1591,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
                         breakdown = r_bd.json()
-                        ok = True
+                        endpoint_status["breakdown"] = True
                 except Exception as e:
                     logger.debug("breakdown fetch err: %s", type(e).__name__)
 
@@ -1591,6 +1601,7 @@ class DesktopMainWindow(ctk.CTk):
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
                         traces = tr_data if isinstance(tr_data, list) else tr_data.get("items", [])
+                        endpoint_status["traces"] = True
                 except Exception as e:
                     logger.debug("traces fetch err: %s", type(e).__name__)
 
@@ -1599,6 +1610,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_act.status_code in (401, 403)
                     if r_act.status_code == 200:
                         act_contexts = r_act.json()
+                        endpoint_status["active_contexts"] = isinstance(act_contexts, dict)
                 except Exception as e:
                     logger.debug("active_contexts fetch err: %s", type(e).__name__)
 
@@ -1616,6 +1628,7 @@ class DesktopMainWindow(ctk.CTk):
 
         summary: Optional[Dict[str, Any]] = None
         try:
+            ok = endpoint_status["active_contexts"]
             if ok:
                 # 여기서 만든다: 공식 사용량 조회(네트워크)와 로그 읽기가 들어 있어
                 # UI 스레드에서 돌리면 창 전체가 멈춘다.
@@ -1628,7 +1641,9 @@ class DesktopMainWindow(ctk.CTk):
                     krw_rate=krw_rate,
                     config=config,
                     official_spend=self.official_spend,
+                    usage_available=endpoint_status["active_contexts"],
                 )
+                summary["endpoint_status"] = endpoint_status
                 try:
                     quotas = account_quotas(registry=AccountQuotaView(self.account_rows)) if any(
                         i["key"] in ("claude", "codex", "antigravity", "copilot", "cursor")
@@ -1668,7 +1683,10 @@ class DesktopMainWindow(ctk.CTk):
         self.is_connected = ok
         if not ok or summary is None:
             self.lbl_status_msg.configure(
-                text="인증 필요" if auth_required else "연결 대기 중...", text_color=theme.ERROR
+                text="인증 필요" if auth_required else (
+                    "갱신 실패 · 이전 값 표시 중" if getattr(self, "cached_summary", None)
+                    else "연결 대기 중..."
+                ), text_color=theme.ERROR
             )
             self._schedule_refresh()
             return
@@ -1760,9 +1778,13 @@ class DesktopMainWindow(ctk.CTk):
         self._render_filtered_logs()
 
         # Update statusbar
+        partial = not all(summary.get("endpoint_status", {"all": True}).values())
         self.lbl_status_msg.configure(
-            text="인증 필요" if auth_required else f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)",
-            text_color=theme.ERROR if auth_required else theme.SUCCESS,
+            text="인증 필요" if auth_required else (
+                "일부 갱신 실패 · 실패한 항목은 이전 값" if partial
+                else f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)"
+            ),
+            text_color=theme.ERROR if auth_required else (theme.WARNING if partial else theme.SUCCESS),
         )
         self.lbl_last_time.configure(text=f"마지막 갱신: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -1814,6 +1836,7 @@ class DesktopMainWindow(ctk.CTk):
                     it.get("total_cost_usd"),
                     it.get("count"),
                     it.get("total_tokens"),
+                    it.get("cost_unknown_count"),
                 )
                 for it in bd
             ),
@@ -1840,6 +1863,10 @@ class DesktopMainWindow(ctk.CTk):
             m_krw = int(m_cost * self.krw_rate)
             m_reqs = item.get("count", 0)
             m_tkns = item.get("total_tokens", 0)
+            unknown = item.get("cost_unknown_count", 0)
+            cost_text = "계산 불가" if unknown and unknown >= m_reqs else f"￦ {m_krw:,} 원 (${m_cost:.4f})"
+            if unknown and unknown < m_reqs:
+                cost_text += f" · {unknown}건 계산 불가"
 
             row = ctk.CTkFrame(self.frame_breakdown, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_SM)
             row.pack(fill="x", pady=theme.SPACE_1, padx=theme.SPACE_HALF)
@@ -1854,7 +1881,7 @@ class DesktopMainWindow(ctk.CTk):
                 text_color=theme.FAINT,
             ).pack(side="left", padx=theme.SPACE_2)
             ctk.CTkLabel(
-                row, text=f"￦ {m_krw:,} 원 (${m_cost:.4f})", font=font_name, text_color=theme.ACCENT
+                row, text=cost_text, font=font_name, text_color=theme.ACCENT
             ).pack(side="right", padx=theme.SPACE_3)
 
     def _create_log_row(self) -> Dict[str, Any]:

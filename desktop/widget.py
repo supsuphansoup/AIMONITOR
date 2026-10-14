@@ -23,7 +23,14 @@ from desktop.accounts import list_accounts
 from desktop.ai_detector import detect_connected_ais
 from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
-from desktop.display import AccountQuotaView, account_tools, attach_accounts, select_entries, widget_entries
+from desktop.display import (
+    AccountQuotaView,
+    account_tools,
+    attach_accounts,
+    select_entries,
+    widget_entries,
+    widget_entry_note,
+)
 from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
@@ -110,7 +117,7 @@ class FloatingWidget:
             (
                 self.font_normal.measure(f"{e['group']} · {e['label']}")
                 + self.font_bold.measure(e["value"])
-                + self.font_small.measure(e["reset"] or e["hint"])
+                + self.font_small.measure(widget_entry_note(e))
                 + theme.SPACE_8
                 + theme.SPACE_6
                 for e in visible
@@ -464,15 +471,17 @@ class FloatingWidget:
                 return
             self.lbl_footer.config(text="인증 필요", fg=theme.color(theme.ERROR))
         elif hasattr(self, "lbl_footer"):
-            self.lbl_footer.config(text=self.rate_updater.describe(), fg=theme.color(theme.FAINT))
+            status = "연결 실패 · 이전 값 · " if not self.is_connected and self.entries else ""
+            self.lbl_footer.config(text=status + self.rate_updater.describe(), fg=theme.color(theme.FAINT))
 
         if self.mode == "mini":
             if not self.entries:
                 self.mini_text.config(text="연결 대기 중…" if not self.is_connected else "표시할 항목 없음")
                 self._resize()
                 return
-            parts = [f"{e['group']} {e['label']} {e['value']}" for e in visible]
-            text = "  │  ".join(parts) or "우클릭 > 표시 항목 선택"
+            parts = [f"{e['group']} {e['label']} {e['value']} {widget_entry_note(e)}" for e in visible]
+            status = "연결 실패 · 이전 값 │ " if not self.is_connected else ""
+            text = status + ("  │  ".join(parts) or "우클릭 > 표시 항목 선택")
             if text != self.mini_text.cget("text"):
                 self.mini_text.config(text=text)
                 self._resize()
@@ -482,7 +491,7 @@ class FloatingWidget:
         sig = (
             bool(self.entries),
             self.rate_updater.describe(),
-            tuple((e["group"], e["label"], e["value"], e["color"], e["reset"] or e["hint"]) for e in visible),
+            tuple((e["group"], e["label"], e["value"], e["color"], widget_entry_note(e)) for e in visible),
         )
         if sig == self._rows_sig:
             return
@@ -513,7 +522,7 @@ class FloatingWidget:
             tk.Label(
                 row, text=e["value"], fg=e["color"], bg=theme.color(theme.CARD), font=self.font_bold
             ).pack(side="left")
-            tail = e["reset"] or e["hint"]
+            tail = widget_entry_note(e)
             if tail:
                 tk.Label(
                     row,

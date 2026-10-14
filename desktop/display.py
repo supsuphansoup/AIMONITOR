@@ -207,6 +207,9 @@ def attach_accounts(summary: dict, active: dict, rows: list, quotas: list, rate:
                 if quota.get("account_id") == aid:
                     account["quota_windows"] = quota.get("quota_windows") or []
                     break
+            if key == "copilot" and aid is None and len(ids) == 1 and not account["quota_windows"]:
+                # The local premium-request counter does not require a known login.
+                account["quota_windows"] = item.get("quota_windows") or []
             accounts.append(account)
         item["accounts"] = accounts
         if len(accounts) == 1:
@@ -359,6 +362,13 @@ def widget_entries(summary: Dict[str, Any]) -> list:
             }
         )
     return out
+
+
+def widget_entry_note(entry: dict) -> str:
+    """Keep freshness and estimate markers in both widget layouts."""
+    if ":context" in entry.get("id", ""):
+        return "추정"
+    return entry.get("detail") or entry.get("reset") or entry.get("hint") or ""
 
 
 def select_entries(entries: list, selected: Optional[list]) -> list:
