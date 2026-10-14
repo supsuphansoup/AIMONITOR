@@ -48,7 +48,10 @@ def test_batch_over_limit_is_rejected(client: TestClient):
     oversized = {"traces": [TRACE] * (settings.MAX_BATCH_SIZE + 1)}
     res = client.post("/api/v1/traces/batch", json=oversized)
     assert res.status_code == 422
-    assert "Batch too large" in json.dumps(res.json())
+    assert res.json()["detail"] == [
+        {"loc": ["body", "traces"], "type": "value_error", "msg": "Invalid field value"},
+    ]
+    assert "gpt-4o" not in res.text
 
 
 def test_empty_batch_is_rejected(client: TestClient):
