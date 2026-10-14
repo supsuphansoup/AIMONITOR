@@ -4,8 +4,8 @@ Design constraints, in priority order:
 
 1. **Never break the caller.** Every transport failure is swallowed and logged;
    an observability outage must not become an application outage.
-2. **Never leak content.** Only token counts, timings, and status are sent. The
-   usage extractors read counters off a provider response, never its text.
+2. **Minimize content.** Usage extractors read counters, never response text.
+   Known content metadata keys are redacted; explicit diagnostics remain opt-in.
 3. **Stay out of the latency path when asked.** `track()` posts inline and
    returns the stored record; `enqueue()` hands off to a background worker that
    batches and flushes, costing the caller a queue append.
@@ -17,6 +17,7 @@ import logging
 import queue
 import threading
 import time
+from itertools import islice
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -24,6 +25,29 @@ import httpx
 logger = logging.getLogger("aimonitor")
 
 DEFAULT_API_URL = "http://localhost:8000/api/v1"
+
+# Kept in sync with the server by test_sdk_sensitive_key_list_matches_server.
+_SENSITIVE_KEY_PARTS = (
+    "prompt", "completion", "response", "message", "content", "answer", "question", "query",
+    "input_text", "output_text", "system", "choices", "transcript", "document", "context_text",
+)
+_USAGE_FIELDS = (
+    "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens",
+)
+
+
+def _redact_metadata(value: Any, depth: int = 0) -> Any:
+    if isinstance(value, (dict, list)) and depth > 6:
+        return {"_truncated": "max depth exceeded"}
+    if isinstance(value, dict):
+        return {
+            str(key): "[redacted]" if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS)
+            else _redact_metadata(item, depth + 1)
+            for key, item in islice(value.items(), 50)
+        }
+    if isinstance(value, list):
+        return [_redact_metadata(item, depth + 1) for item in value[:50]]
+    return value
 
 
 def extract_usage(response: Any) -> Dict[str, int]:
@@ -38,6 +62,7 @@ def extract_usage(response: Any) -> Dict[str, int]:
         "completion_tokens": 0,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
+        "cache_write_1h_tokens": 0,
     }
     if response is None:
         return usage
@@ -71,6 +96,10 @@ def extract_usage(response: Any) -> Dict[str, int]:
         "cache_read_input_tokens", "cached_content_token_count", "cached_tokens"
     )
     usage["cache_write_tokens"] = read("cache_creation_input_tokens")
+    cache_creation = field(source, "cache_creation")
+    one_hour = field(cache_creation, "ephemeral_1h_input_tokens") if cache_creation is not None else None
+    if type(one_hour) is int:
+        usage["cache_write_1h_tokens"] = min(max(0, one_hour), max(0, usage["cache_write_tokens"]))
 
     # The server prices prompt_tokens as *uncached* input. Anthropic already
     # reports it that way; OpenAI and Google include the cached part in the
@@ -144,7 +173,7 @@ class AIMonitor:
         completion_tokens: int,
         cache_read_tokens: int,
         cache_write_tokens: int,
-        latency_ms: float,
+        latency_ms: Optional[float],
         status: str,
         error_message: Optional[str],
         session_id: Optional[str],
@@ -152,6 +181,7 @@ class AIMonitor:
         tags: Optional[List[str]],
         metadata: Optional[Dict[str, Any]],
         account_id: Optional[str] = None,
+        cache_write_1h_tokens: int = 0,
     ) -> Dict[str, Any]:
         return {
             "trace_id": trace_id,
@@ -161,13 +191,14 @@ class AIMonitor:
             "completion_tokens": max(0, completion_tokens),
             "cache_read_tokens": max(0, cache_read_tokens),
             "cache_write_tokens": max(0, cache_write_tokens),
-            "latency_ms": max(0.0, latency_ms),
+            "cache_write_1h_tokens": min(max(0, cache_write_1h_tokens), max(0, cache_write_tokens)),
+            "latency_ms": max(0.0, latency_ms) if latency_ms is not None else None,
             "status": status,
             "error_message": error_message,
             "session_id": session_id,
             "account_id": account_id,
             "tags": tags,
-            "metadata": metadata,
+            "metadata": _redact_metadata(metadata),
         }
 
     def _drain_loop(self) -> None:
@@ -208,7 +239,7 @@ class AIMonitor:
         completion_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
-        latency_ms: float = 0.0,
+        latency_ms: Optional[float] = None,
         status: str = "SUCCESS",
         error_message: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -216,14 +247,16 @@ class AIMonitor:
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         account_id: Optional[str] = None,
+        *,
+        cache_write_1h_tokens: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Send one trace inline and return the stored record, or None on failure."""
-        payload = self._build_payload(
-            provider, model_name, prompt_tokens, completion_tokens,
-            cache_read_tokens, cache_write_tokens, latency_ms, status,
-            error_message, session_id, trace_id, tags, metadata, account_id,
-        )
         try:
+            payload = self._build_payload(
+                provider, model_name, prompt_tokens, completion_tokens,
+                cache_read_tokens, cache_write_tokens, latency_ms, status,
+                error_message, session_id, trace_id, tags, metadata, account_id, cache_write_1h_tokens,
+            )
             res = self._sync_client.post(f"{self.api_url}/traces", json=payload)
             if res.status_code == 201:
                 return res.json()
@@ -249,7 +282,7 @@ class AIMonitor:
             kwargs.get("completion_tokens", 0),
             kwargs.get("cache_read_tokens", 0),
             kwargs.get("cache_write_tokens", 0),
-            kwargs.get("latency_ms", 0.0),
+            kwargs.get("latency_ms"),
             kwargs.get("status", "SUCCESS"),
             kwargs.get("error_message"),
             kwargs.get("session_id"),
@@ -257,6 +290,7 @@ class AIMonitor:
             kwargs.get("tags"),
             kwargs.get("metadata"),
             kwargs.get("account_id"),
+            kwargs.get("cache_write_1h_tokens", 0),
         )
         try:
             self._queue.put_nowait(payload)
@@ -283,7 +317,7 @@ class AIMonitor:
         completion_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
-        latency_ms: float = 0.0,
+        latency_ms: Optional[float] = None,
         status: str = "SUCCESS",
         error_message: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -291,14 +325,16 @@ class AIMonitor:
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         account_id: Optional[str] = None,
+        *,
+        cache_write_1h_tokens: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Asynchronously send a single trace event."""
-        payload = self._build_payload(
-            provider, model_name, prompt_tokens, completion_tokens,
-            cache_read_tokens, cache_write_tokens, latency_ms, status,
-            error_message, session_id, trace_id, tags, metadata, account_id,
-        )
         try:
+            payload = self._build_payload(
+                provider, model_name, prompt_tokens, completion_tokens,
+                cache_read_tokens, cache_write_tokens, latency_ms, status,
+                error_message, session_id, trace_id, tags, metadata, account_id, cache_write_1h_tokens,
+            )
             res = await self._get_async_client().post(f"{self.api_url}/traces", json=payload)
             if res.status_code == 201:
                 return res.json()
@@ -330,7 +366,16 @@ class AIMonitor:
                 if not capture_usage:
                     return {}
                 try:
-                    return extractor(result)
+                    extracted = extractor(result)
+                    if not isinstance(extracted, dict):
+                        return {}
+                    usage = {key: value for key, value in extracted.items() if key in _USAGE_FIELDS}
+                    if any(type(value) is not int or value > 1_000_000_000 for value in usage.values()):
+                        return {}
+                    usage = {key: max(0, value) for key, value in usage.items()}
+                    if sum(usage.get(key, 0) for key in _USAGE_FIELDS[:4]) > 1_000_000_000:
+                        return {}
+                    return usage
                 except Exception:
                     return {}
 
@@ -345,20 +390,23 @@ class AIMonitor:
                         return result
                     except Exception as e:
                         status_val = "ERROR"
-                        err_msg = str(e)
+                        err_msg = type(e).__name__
                         raise
                     finally:
-                        await self.a_track(
-                            provider=provider,
-                            model_name=model_name,
-                            latency_ms=round((time.perf_counter() - start_time) * 1000.0, 2),
-                            status=status_val,
-                            error_message=err_msg,
-                            session_id=session_id,
-                            account_id=account_id,
-                            tags=tags,
-                            **usage,
-                        )
+                        try:
+                            await self.a_track(
+                                provider=provider,
+                                model_name=model_name,
+                                latency_ms=round((time.perf_counter() - start_time) * 1000.0, 2),
+                                status=status_val,
+                                error_message=err_msg,
+                                session_id=session_id,
+                                account_id=account_id,
+                                tags=tags,
+                                **usage,
+                            )
+                        except Exception as exc:
+                            logger.debug("aimonitor: observation failed (%s)", type(exc).__name__)
                 return async_wrapper
 
             @functools.wraps(func)
@@ -371,21 +419,24 @@ class AIMonitor:
                     return result
                 except Exception as e:
                     status_val = "ERROR"
-                    err_msg = str(e)
+                    err_msg = type(e).__name__
                     raise
                 finally:
                     send = self.enqueue if self._queue is not None else self.track
-                    send(
-                        provider=provider,
-                        model_name=model_name,
-                        latency_ms=round((time.perf_counter() - start_time) * 1000.0, 2),
-                        status=status_val,
-                        error_message=err_msg,
-                        session_id=session_id,
-                        account_id=account_id,
-                        tags=tags,
-                        **usage,
-                    )
+                    try:
+                        send(
+                            provider=provider,
+                            model_name=model_name,
+                            latency_ms=round((time.perf_counter() - start_time) * 1000.0, 2),
+                            status=status_val,
+                            error_message=err_msg,
+                            session_id=session_id,
+                            account_id=account_id,
+                            tags=tags,
+                            **usage,
+                        )
+                    except Exception as exc:
+                        logger.debug("aimonitor: observation failed (%s)", type(exc).__name__)
             return sync_wrapper
         return decorator
 
