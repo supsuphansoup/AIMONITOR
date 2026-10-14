@@ -33,13 +33,17 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 | PATCH | `/keys/{provider}/{key_id}` | `{label}` — 이름만 변경 | 쓰기 |
 | DELETE | `/keys/{provider}/{key_id}` | 그 키만 삭제 | 쓰기 |
 | DELETE | `/keys/{provider}` | 그 공급자의 저장 키 모두 삭제 (환경 변수 키는 남음) | 쓰기 |
-| POST | `/keys/{provider}/verify` | 공급자의 모델 목록 API로 검증 | 쓰기 |
+| POST | `/keys/{provider}/verify` | 실제 대표 키를 모델 목록/잔액/관리자 비용 API로 검증 | 쓰기 |
+| POST | `/keys/{provider}/{key_id}/verify` | 지정한 키만 검증 (ID 패턴 `^[A-Za-z0-9_-]{1,32}$`) | 쓰기 |
 | GET | `/keys/spend` | 키별 공식 청구액·잔액 (15분 캐시) | 읽기 |
 
 키 라우터의 검증 오류는 일반 `Invalid key request` 메시지만 반환한다. 검증 실패도 요청·응답 원문을 싣지 않는다.
 
 데스크톱은 HTTP 대신 `api_key_manager`를 직접 import한다. `list_keys()`는 공급자 카드, `set_key(provider, key)`는 기본/첫 키 갱신,
 `get_registered_key(provider)`는 기본/첫 키 또는 환경 키를 반환한다. 개별 키용은 `list_keys(provider)`, `get_key(provider, key_id)`, `add_key`, `update_label`.
+`verify_key(provider, key_id=None)`는 실제 조회한 ID와 secret 지문을 고정하며, 결과 기록 시 같은 키인지 다시 확인한다.
+성공은 `valid`, 401/403은 `invalid`, 일시적 실패는 `verification_unavailable`이다. 환경변수 키의 검증 상태는 메모리에서만 유지한다.
+인증 성공과 잔액 확인은 별개이며 누락 잔액은 `잔액 확인 불가`, 한도 0은 0으로 표시한다. DeepSeek 잔액은 통화별로 표시하고 환산·통화 간 합산하지 않는다.
 
 ### 청구액 조회 (`provider_spend.py`)
 

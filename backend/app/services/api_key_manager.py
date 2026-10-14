@@ -1,5 +1,6 @@
 """API Key Manager for BYOK (Bring Your Own Key) & Provider Balance Tracking."""
 
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ import httpx
 
 from backend.app.core.timeutil import to_aware_utc, utc_now
 from backend.app.services import secret_store
-from backend.app.services.provider_spend import SpendService, month_start_utc
+from backend.app.services.provider_spend import SpendService, _amount, month_start_utc
 
 logger = logging.getLogger("aimonitor.api_key_manager")
 
@@ -76,6 +77,7 @@ class APIKeyManager:
         self.filepath = filepath or KEYS_FILE
         self._lock = threading.RLock()
         self._transaction_depth = 0
+        self._env_verification = {}
 
     @contextmanager
     def _transaction(self):
@@ -249,7 +251,11 @@ class APIKeyManager:
                     secret = self._stored_secret(entry)
                     individual.append(self._key_view(prov, key_id, entry, secret, "stored"))
                 if env_secret:
-                    individual.append(self._key_view(prov, "env", {"label": "환경 변수"}, env_secret, "env"))
+                    metadata = self._env_verification.get(prov, {})
+                    if metadata.get("identity") != hashlib.sha256(env_secret.encode()).digest():
+                        metadata = {}
+                    individual.append(self._key_view(prov, "env", {**metadata, "label": "환경 변수"},
+                                                     env_secret, "env"))
                 if provider is not None:
                     results.extend(individual)
                     continue
@@ -356,9 +362,28 @@ class APIKeyManager:
             self._save_raw(raw)
             return True
 
-    def verify_key(self, provider: str) -> Dict[str, Any]:
+    def verify_key(self, provider: str, key_id: Optional[str] = None) -> Dict[str, Any]:
+        with self._lock:
+            if key_id is None:
+                keys = self.list_keys(provider)
+                chosen = next((k for k in keys if k["key_id"] == "default" and k["has_key"]), None)
+                chosen = chosen or next((k for k in keys if k["has_key"]), None)
+                key_id = chosen["key_id"] if chosen else None
+            secret = self.get_key(provider, key_id) if key_id is not None else None
+        if not secret:
+            return {"valid": False, "error": "등록된 키가 없습니다"}
+        identity = hashlib.sha256(secret.encode()).digest()
+        result = self._verify_secret(provider, secret)
+        error = result.get("error", "")
+        verification_status = "valid" if result["valid"] else (
+            "invalid" if error.startswith(("HTTP 401", "HTTP 403", "인증 실패"))
+            else "verification_unavailable"
+        )
+        self._update_verification(provider, key_id, identity, verification_status, result.get("balance"))
+        return result
+
+    def _verify_secret(self, provider: str, key: str) -> Dict[str, Any]:
         """Test the API key with the provider's official endpoint and retrieve balance/model status."""
-        key = self.get_registered_key(provider)
         if not key:
             return {"valid": False, "error": "No API key found"}
 
@@ -371,12 +396,14 @@ class APIKeyManager:
                     )
                     if resp.status_code == 200:
                         data = resp.json().get("data", {})
-                        usage = data.get("usage", 0.0)
-                        limit = data.get("limit")
-                        balance_str = f"사용: ${usage:.2f}" + (
-                            f" / 한도: ${limit:.2f}" if limit else " (무제한)"
-                        )
-                        self._update_verification(provider, "valid", balance_str)
+                        try:
+                            usage = _amount(data.get("usage"))
+                            limit = data.get("limit")
+                            balance_str = f"사용: ${usage:.2f}" + (
+                                f" / 한도: ${_amount(limit):.2f}" if limit is not None else " (무제한)"
+                            )
+                        except (ValueError, TypeError, AttributeError):
+                            balance_str = "잔액 확인 불가"
                         return {"valid": True, "balance": balance_str}
                     return {"valid": False, "error": f"HTTP {resp.status_code}"}
 
@@ -387,11 +414,22 @@ class APIKeyManager:
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        infos = data.get("balance_infos", [])
-                        total_cny = sum(float(i.get("total_balance", 0)) for i in infos)
-                        curr = infos[0].get("currency", "CNY") if infos else "CNY"
-                        balance_str = f"잔여: {total_cny:.2f} {curr}"
-                        self._update_verification(provider, "valid", balance_str)
+                        try:
+                            infos = data.get("balance_infos")
+                            if not isinstance(infos, list) or not infos:
+                                raise ValueError("Missing balance")
+                            balances = {}
+                            for info in infos:
+                                currency = info["currency"].upper()
+                                if currency not in ("CNY", "USD"):
+                                    raise ValueError("Unknown currency")
+                                balances[currency] = _amount(balances.get(currency, 0) +
+                                                             _amount(info.get("total_balance")))
+                            balance_str = "잔여: " + " / ".join(
+                                f"{amount:.2f} {currency}" for currency, amount in balances.items()
+                            )
+                        except (ValueError, TypeError, KeyError, AttributeError):
+                            balance_str = "잔액 확인 불가"
                         return {"valid": True, "balance": balance_str}
                     elif resp.status_code in (401, 403):
                         return {"valid": False, "error": "인증 실패: 유효하지 않은 DeepSeek API 키"}
@@ -400,16 +438,14 @@ class APIKeyManager:
                         "https://api.deepseek.com/models", headers={"Authorization": f"Bearer {key}"}
                     )
                     if m_resp.status_code == 200:
-                        self._update_verification(provider, "valid", "정상 연동됨")
                         return {"valid": True, "balance": "정상 연동됨"}
-                    return {"valid": False, "error": f"HTTP {resp.status_code}"}
+                    return {"valid": False, "error": f"HTTP {m_resp.status_code}"}
 
                 elif provider == "openai":
                     resp = client.get(
                         "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "정상 연동됨 (API 가용)")
                         return {"valid": True, "balance": "정상 연동됨 (API 가용)"}
                     return {"valid": False, "error": f"HTTP {resp.status_code}"}
 
@@ -419,7 +455,6 @@ class APIKeyManager:
                         headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "정상 연동됨 (API 가용)")
                         return {"valid": True, "balance": "정상 연동됨 (API 가용)"}
                     return {"valid": False, "error": f"HTTP {resp.status_code}"}
 
@@ -429,7 +464,6 @@ class APIKeyManager:
                         headers={"x-goog-api-key": key},
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "정상 연동됨 (Gemini 가용)")
                         return {"valid": True, "balance": "정상 연동됨 (Gemini 가용)"}
                     return {"valid": False, "error": f"HTTP {resp.status_code}"}
 
@@ -440,7 +474,6 @@ class APIKeyManager:
                         headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "비용 리포트 조회 가능")
                         return {"valid": True, "balance": "비용 리포트 조회 가능"}
                     return {"valid": False, "error": f"HTTP {resp.status_code} (관리자 키가 필요합니다)"}
 
@@ -451,7 +484,6 @@ class APIKeyManager:
                         headers={"Authorization": f"Bearer {key}"},
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "비용 조회 가능")
                         return {"valid": True, "balance": "비용 조회 가능"}
                     return {"valid": False, "error": f"HTTP {resp.status_code} (관리자 키가 필요합니다)"}
 
@@ -460,7 +492,6 @@ class APIKeyManager:
                         "https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {key}"}
                     )
                     if resp.status_code == 200:
-                        self._update_verification(provider, "valid", "정상 연동됨 (Groq 초고속 가용)")
                         return {"valid": True, "balance": "정상 연동됨"}
                     return {"valid": False, "error": f"HTTP {resp.status_code}"}
 
@@ -471,18 +502,27 @@ class APIKeyManager:
             logger.debug("Verification exception for %s: %s", provider, type(e).__name__)
             return {"valid": False, "error": f"연결 실패 ({type(e).__name__})"}
 
-    def _update_verification(self, provider: str, status: str, balance_info: Optional[str]) -> None:
+    def _update_verification(self, provider: str, key_id: str, identity: bytes, status: str,
+                             balance_info: Optional[str]) -> None:
         with self._lock:
-            raw = self._load_raw()
-            if provider in raw:
-                entries = raw[provider]
-                key_id = "default" if "default" in entries else next(iter(entries), None)
-                if key_id is None:
-                    return
-                entries[key_id]["status"] = status
-                entries[key_id]["balance_info"] = balance_info
-                entries[key_id]["last_verified"] = to_aware_utc(utc_now()).isoformat()
-                self._save_raw(raw)
+            metadata = {"status": status, "balance_info": balance_info,
+                        "last_verified": to_aware_utc(utc_now()).isoformat()}
+            if key_id == "env":
+                current = self._env_key(provider)
+                if current and hashlib.sha256(current.encode()).digest() == identity:
+                    self._env_verification[provider] = {**metadata, "identity": identity}
+                return
+            try:
+                with self._transaction():
+                    self.migrate_plaintext()
+                    raw = self._load_raw()
+                    entry = raw.get(provider, {}).get(key_id)
+                    current = self._stored_secret(entry) if entry is not None else None
+                    if current and hashlib.sha256(current.encode()).digest() == identity:
+                        entry.update(metadata)
+                        self._save_raw(raw)
+            except ValueError:
+                logger.debug("Could not persist verification status")
 
 
 # Global singleton

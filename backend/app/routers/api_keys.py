@@ -130,3 +130,10 @@ def delete_key(provider: str) -> Dict[str, Any]:
 def verify_key(provider: str) -> Dict[str, Any]:
     """Verify an API key against provider official API and retrieve balance or model status."""
     return api_key_manager.verify_key(provider.lower().strip())
+
+
+@router.post("/{provider}/{key_id}/verify", dependencies=[Depends(require_write_auth)])
+def verify_individual_key(
+    provider: str, key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
+) -> Dict[str, Any]:
+    return api_key_manager.verify_key(provider.lower().strip(), key_id)
