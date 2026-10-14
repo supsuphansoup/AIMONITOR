@@ -47,13 +47,17 @@ def get_metrics_overview(
     """
     validate_account_filter(account_id, account_unknown)
     resolved_start = _query_time(start_time, "start_time")
+    resolved_end = _query_time(end_time, "end_time")
     if resolved_start is None and hours_back is not None:
-        resolved_start = utc_now() - timedelta(hours=hours_back)
+        now = utc_now()
+        resolved_start = now - timedelta(hours=hours_back)
+        if resolved_end is None:
+            resolved_end = now
 
     return MetricAggregator.get_overview_metrics(
         session=session,
         start_time=resolved_start,
-        end_time=_query_time(end_time, "end_time"),
+        end_time=resolved_end,
         provider=provider,
         account_id=account_id,
         account_unknown=account_unknown,

@@ -213,7 +213,8 @@ class MetricAggregator:
     ) -> List[Dict[str, Any]]:
         """Group metrics into fixed time buckets for charting."""
         interval_minutes = max(1, min(interval_minutes, 1440))
-        cutoff = utc_now() - timedelta(hours=hours_back)
+        now = utc_now()
+        cutoff = now - timedelta(hours=hours_back)
 
         # Descending, so a truncated window drops the OLDEST events. Ascending
         # order silently amputated the right-hand edge of the chart - the part a
@@ -230,6 +231,7 @@ class MetricAggregator:
                     col(TraceEvent.cost_source) == SOURCE_UNKNOWN,
                 ),
                 start_time=cutoff,
+                end_time=now,
                 provider=provider,
                 model_name=model_name,
                 account_id=account_id,
@@ -291,7 +293,8 @@ class MetricAggregator:
         account_unknown: bool = False,
     ) -> List[Dict[str, Any]]:
         """Per provider/model usage totals for the given window, grouped in SQL."""
-        cutoff = utc_now() - timedelta(hours=hours_back)
+        now = utc_now()
+        cutoff = now - timedelta(hours=hours_back)
 
         query = (
             select(
@@ -305,6 +308,7 @@ class MetricAggregator:
                 func.sum(case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0)),
             )
             .where(TraceEvent.timestamp >= cutoff)
+            .where(TraceEvent.timestamp <= now)
             .group_by(col(TraceEvent.provider), col(TraceEvent.model_name))
             .order_by(func.count(col(TraceEvent.id)).desc())
         )

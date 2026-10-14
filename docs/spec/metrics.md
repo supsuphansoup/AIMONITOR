@@ -27,6 +27,8 @@
 
 `overview`의 날짜 입력은 UTC로 정규화한다. 오프셋 변환 결과가 datetime 범위를 벗어나면 HTTP 422의 `detail` 배열로 응답하며 입력 원문·예외 문자열을 포함하지 않는다.
 
+rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·끝 경계에 사용하며 `timestamp <= now`다. overview는 명시적 `start_time`이 있으면 hours_back을 무시하고, 명시적 `end_time`은 그대로 적용한다. hours_back도 start_time도 생략한 전체 기간 조회에는 암묵적 현재 상한을 붙이지 않는다. 모든 명시적 기간 경계는 포함한다.
+
 ### 계산 방식
 
 - 건수·합계·평균: SQL `COUNT`/`SUM`/`AVG`, 모델별은 `GROUP BY` — 행을 ORM 객체로 올리지 않는다.
