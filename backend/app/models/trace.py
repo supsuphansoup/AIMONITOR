@@ -1,9 +1,9 @@
 from datetime import datetime
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 from pydantic import Field as PydanticField
-from sqlalchemy import DateTime, Index
+from sqlalchemy import DateTime, Index, text
 from sqlmodel import Field, SQLModel
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
@@ -17,6 +17,7 @@ from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 from backend.app.services.cost import SOURCE_UNKNOWN
 
 VALID_STATUSES: FrozenSet[str] = frozenset({"SUCCESS", "ERROR", "TIMEOUT", "RATE_LIMITED"})
+MAX_TOKENS_PER_TRACE = 1_000_000_000
 
 
 class TraceEventBase(SQLModel):
@@ -26,6 +27,9 @@ class TraceEventBase(SQLModel):
     )
     session_id: Optional[str] = Field(
         default=None, index=True, description="User or session identifier"
+    )
+    dedupe_key: Optional[str] = Field(
+        default=None, max_length=128, description="Opaque collector deduplication key",
     )
     account_id: Optional[str] = Field(default=None, index=True, max_length=ACCOUNT_ID_MAX_LENGTH)
     provider: str = Field(
@@ -64,6 +68,11 @@ class TraceEvent(TraceEventBase, table=True):
     __table_args__ = (
         Index("ix_trace_events_measured_timestamp", "latency_measured", "timestamp", "id"),
         Index("ix_trace_events_account_timestamp", "account_id", "timestamp"),
+        Index(
+            "ix_trace_events_dedupe_key", "dedupe_key", unique=True,
+            sqlite_where=text("dedupe_key IS NOT NULL"),
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -76,20 +85,23 @@ class TraceEventCreate(BaseModel):
     """Payload schema for single trace event ingestion."""
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
+    dedupe_key: Optional[str] = PydanticField(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     account_id: Optional[str] = PydanticField(
         default=None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN
     )
     timestamp: Optional[datetime] = None
     provider: str = Field(min_length=1, max_length=64)
     model_name: str = Field(min_length=1, max_length=200)
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    cache_write_1h_tokens: int = 0
-    total_tokens: Optional[int] = None
-    latency_ms: Optional[float] = None
-    cost_usd: Optional[float] = None
+    prompt_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
+    completion_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
+    cache_read_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
+    cache_write_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
+    cache_write_1h_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
+    total_tokens: Optional[int] = PydanticField(default=None, le=MAX_TOKENS_PER_TRACE)
+    latency_ms: Optional[float] = PydanticField(default=None, allow_inf_nan=False)
+    cost_usd: Optional[float] = PydanticField(default=None, allow_inf_nan=False)
     status: str = "SUCCESS"
     error_message: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -98,6 +110,16 @@ class TraceEventCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     _VALID_STATUSES: ClassVar[FrozenSet[str]] = VALID_STATUSES
+
+    @model_validator(mode="after")
+    def validate_derived_total(self) -> "TraceEventCreate":
+        if self.total_tokens is None:
+            total = sum(max(0, value) for value in (
+                self.prompt_tokens, self.completion_tokens, self.cache_read_tokens, self.cache_write_tokens,
+            ))
+            if total > MAX_TOKENS_PER_TRACE:
+                raise ValueError("Derived total_tokens exceeds the per-trace limit")
+        return self
 
     @field_validator("status", mode="before")
     @classmethod
@@ -118,7 +140,10 @@ class TraceEventCreate(BaseModel):
         Without this, `2026-08-28T10:00:00+09:00` was persisted as 10:00 UTC
         instead of 01:00 UTC, shifting the event nine hours into the future.
         """
-        return to_naive_utc(v)
+        try:
+            return to_naive_utc(v)
+        except (OverflowError, ValueError):
+            raise ValueError("Timestamp outside supported UTC range") from None
 
     @field_validator("error_message", mode="after")
     @classmethod

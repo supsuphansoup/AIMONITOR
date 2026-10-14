@@ -18,6 +18,7 @@
 | :--- | :--- |
 | `id` | PK, 자동 증가 |
 | `trace_id` | 인덱스. 미전달 시 UUID4 발급 |
+| `dedupe_key` | 선택·nullable. 1–128자, `^[A-Za-z0-9._:-]+$`. 중복 제거용 불투명 해시 식별자(원문 내용 금지), non-null 유일 부분 인덱스 |
 | `session_id` | 인덱스, 선택 |
 | `account_id` | 선택·nullable. `<tool>:<id>`, 최대 64자, `[A-Za-z0-9:_-]`. tool은 `claude_code`, `codex`, `antigravity`, `copilot`, `cursor`, `api`. `(account_id, timestamp)` 복합 인덱스 |
 | `timestamp` | 인덱스. 미전달 시 서버 시각. 입력 오프셋은 UTC로 변환 후 naive 저장 |
@@ -35,6 +36,36 @@
 | `tags` | 최대 `MAX_TAGS`(20)개, 각 64자, 쉼표 구분 저장 |
 | `metadata_json` | 정제 후 직렬화, 최대 `MAX_METADATA_BYTES`(8192) |
 
+메타데이터의 dict·list를 모두 재귀 순회하며, 중첩 리스트 안에서도 내용성 키는 대소문자와
+무관하게 `[redacted]`로 바꾼다. 컨테이너마다 첫 50개 항목만 보존하고 루트 깊이 0에서
+깊이 6을 넘는 컨테이너는 절단 표식으로 바꾼다. 저장 실패 로그에는 안전한 오류 코드·예외
+클래스·건수만 남기며 예외 문구·체인·SQL 매개변수는 기록하지 않는다.
+
+모든 토큰 필드와 미전달 시 파생하는 `total_tokens`의 상한은 1,000,000,000(10억)이며
+초과하면 단건·배치 모두 422로 거부한다. 음수 보정 후 네 구성 필드의 합을 검사하며,
+1시간 캐시 쓰기는 전체 쓰기의 부분집합이므로 합에 다시 더하지 않는다. 각 카운터의
+SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이상 누적되어야 하므로
+로컬 앱의 현실적인 저장 규모에서 정수 오버플로를 방지한다.
+
+`cost_usd`·`latency_ms`는 유한 float만 허용한다. NaN·±Infinity와 float 범위를 넘는
+`1e309` 등은 422이며, 음수 유한 값의 기존 보정 정책은 유지한다. UTC 정규화 결과가
+지원 시각 범위를 벗어나면 수집·조회·CSV 기간 필터 모두 422로 거부한다.
+
+수집 트랜잭션은 flush·refresh·응답 모델 검증을 모두 마친 뒤 커밋한다. 그 단계의
+실패는 단건·배치 전체를 롤백한다. 커밋 후 네트워크 단절까지 되돌릴 수는 없다.
+
+### 멱등 수집
+
+`dedupe_key`가 같으면 단건·배치 모두 기존 행을 그대로 반환하고 새 행을 만들지
+않는다. 같은 배치 안의 중복도 한 번만 저장하며 응답 목록은 입력 순서·길이를
+유지한다. 중복도 신규와 같은 201을 반환한다. SQLite·PostgreSQL의 유일 부분 인덱스와
+`INSERT ... ON CONFLICT DO NOTHING`으로 동시 요청을 보호한다. 중복 키를 다른 내용에
+재사용하면 처음 저장된 내용이 유지된다. 기존 DB는 `ensure_schema`가 nullable 컬럼과
+유일 부분 인덱스를 추가한다. CSV에는 이 키를 내보내지 않는다.
+
+`dedupe_key` 생략·null은 기존 중복 허용 동작을 유지한다. `trace_id`만 같아도 중복
+제거하지 않으며, 수집기는 재시도할 때 같은 이벤트의 키를 유지해야 한다.
+
 ### 수집 한도
 
 | 항목 | 기본값 | 위반 시 |
@@ -47,9 +78,11 @@
 - 필터: `provider`, `model_name`, `status`, `session_id`, `account_id`, `start_time`, `end_time`. 잘못된 `status`·`account_id`는 422 (빈 결과로 숨기지 않음).
 - 정렬: `timestamp DESC, id DESC` — 같은 시각 행이 페이지 경계에서 중복되지 않도록 `id`를 2차 키로 쓴다.
 - `limit` 기본 50(1–500), `offset` ≥ 0.
+- 단건 조회도 `timestamp DESC, id DESC LIMIT 1`로 최신 행 한 건을 선택한다.
 
 ### CSV 내보내기
 
+- 스트림 시작에 UTF-8 BOM을 한 번 붙여 Excel에서 한글을 인식하게 한다. 프로그램에서 읽을 때는 `utf-8-sig`로 디코딩한다.
 - 필터: `provider`, `model_name`, `status`, `account_id`, `start_time`, `end_time`을 함께 적용한다. `status`는 조회 API와 동일한 `VALID_STATUSES`를 사용해 공백 제거·대문자 변환 후 검증하며, 잘못된 값은 같은 422 오류로 거부한다 (빈 문자열은 status 필터 생략).
 - 기간 경계는 양쪽 모두 포함한다 (`timestamp >= start_time`, `timestamp <= end_time`). 오프셋이 있는 입력 시각은 `timeutil.to_naive_utc`로 변환해 비교한다.
 - 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags, account_id`. 계정 미상은 마지막 열을 빈 칸으로 둔다.
@@ -68,7 +101,7 @@
 
 ## Open questions
 
-- 동일 `trace_id` 재전송 시 중복 저장 → 이월: 현재는 중복 허용. SDK 재시도가 생기면 멱등 키 도입 필요.
+- SDK 자동 재시도 → 이월: 재시도를 넣을 때는 수집기와 같이 안정적인 `dedupe_key`를 전달해야 한다.
 
 ## Areas of concern
 

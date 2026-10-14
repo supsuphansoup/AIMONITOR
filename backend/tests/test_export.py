@@ -2,6 +2,7 @@
 import csv
 import io
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.routers.traces import CSV_COLUMNS
@@ -12,7 +13,19 @@ UNPRICED = {"provider": "acme", "model_name": "mystery-v9", "prompt_tokens": 100
 
 
 def _read(res) -> list:
-    return list(csv.DictReader(io.StringIO(res.text)))
+    return list(csv.DictReader(io.StringIO(res.content.decode("utf-8-sig"))))
+
+
+@pytest.mark.parametrize("row_count", [0, 3])
+def test_export_has_one_utf8_bom_and_preserves_korean(client: TestClient, row_count):
+    for _ in range(row_count):
+        assert client.post("/api/v1/traces", json={**PRICED, "tags": ["한글"]}).status_code == 201
+    res = client.get("/api/v1/traces/export.csv")
+    assert res.content.startswith(b"\xef\xbb\xbf")
+    assert res.content.count(b"\xef\xbb\xbf") == 1
+    rows = _read(res)
+    assert len(rows) == row_count
+    assert all(row["tags"] == "한글" for row in rows)
 
 
 def test_export_returns_a_csv_attachment(client: TestClient):
@@ -27,7 +40,8 @@ def test_export_returns_a_csv_attachment(client: TestClient):
 
 def test_export_header_matches_declared_columns(client: TestClient):
     client.post("/api/v1/traces", json=PRICED)
-    reader = csv.reader(io.StringIO(client.get("/api/v1/traces/export.csv").text))
+    body = client.get("/api/v1/traces/export.csv").content.decode("utf-8-sig")
+    reader = csv.reader(io.StringIO(body))
     assert next(reader) == CSV_COLUMNS
 
 
@@ -78,7 +92,7 @@ def test_export_respects_filters_and_limit(client: TestClient):
 
 def test_export_of_empty_table_is_header_only(client: TestClient):
     res = client.get("/api/v1/traces/export.csv")
-    assert res.text.strip() == ",".join(CSV_COLUMNS)
+    assert res.content.decode("utf-8-sig").strip() == ",".join(CSV_COLUMNS)
 
 
 def test_export_is_not_shadowed_by_the_trace_id_route(client: TestClient):

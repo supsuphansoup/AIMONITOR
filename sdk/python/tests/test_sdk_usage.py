@@ -49,6 +49,7 @@ def test_extract_anthropic_shape_with_cache_counters():
         "completion_tokens": 90,
         "cache_read_tokens": 8000,
         "cache_write_tokens": 1500,
+        "cache_write_1h_tokens": 0,
     }
 
 
@@ -121,6 +122,7 @@ def test_extract_unknown_shapes_are_zero(value):
     assert extract_usage(value) == {
         "prompt_tokens": 0, "completion_tokens": 0,
         "cache_read_tokens": 0, "cache_write_tokens": 0,
+        "cache_write_1h_tokens": 0,
     }
 
 
@@ -170,7 +172,7 @@ def test_observe_records_errors_and_reraises(client: TestClient):
 
     trace = client.get("/api/v1/traces").json()[0]
     assert trace["status"] == "ERROR"
-    assert "upstream 429" in trace["error_message"]
+    assert trace["error_message"] == "RuntimeError"
     monitor.close()
 
 

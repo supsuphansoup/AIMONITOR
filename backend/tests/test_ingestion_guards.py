@@ -3,9 +3,11 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlmodel import Session
 
 from backend.app.core.config import settings
-from backend.app.core.sanitize import REDACTED, normalize_tags, truncate_error_message
+from backend.app.core.sanitize import REDACTED, normalize_tags, redact_metadata, truncate_error_message
 
 TRACE = {"provider": "openai", "model_name": "gpt-4o", "prompt_tokens": 10, "completion_tokens": 5}
 
@@ -98,3 +100,47 @@ def test_truncate_error_message_passthrough():
     assert truncate_error_message("short") == "short"
     assert truncate_error_message("  ") is None
     assert truncate_error_message(None) is None
+
+
+def test_nested_list_metadata_is_redacted_before_storage_and_response(client: TestClient):
+    canary = "SYNTHETIC_PROMPT_CANARY"
+    res = client.post("/api/v1/traces", json={
+        **TRACE, "metadata": {"rows": [[{"PrOmPt": canary, "region": "kr"}]]},
+    })
+    assert res.status_code == 201
+    assert canary not in res.text
+    assert json.loads(res.json()["metadata_json"])["rows"][0][0] == {
+        "PrOmPt": REDACTED, "region": "kr",
+    }
+    assert canary not in client.get("/api/v1/traces").text
+
+
+def test_metadata_limits_every_container():
+    assert len(redact_metadata({str(i): i for i in range(60)})) == 50
+    assert len(redact_metadata({"rows": [list(range(60))]})["rows"][0]) == 50
+    nested = {"safe": "kept"}
+    for _ in range(8):
+        nested = [nested]
+    cleaned = redact_metadata({"rows": nested})
+    assert "kept" not in json.dumps(cleaned)
+    assert "max depth exceeded" in json.dumps(cleaned)
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_ingest_failure_logs_only_safe_context(client: TestClient, session: Session, caplog, batch):
+    canary = "SYNTHETIC_PRIVATE_ERROR"
+    payload = {**TRACE, "error_message": canary}
+    path = "/api/v1/traces/batch" if batch else "/api/v1/traces"
+    session.exec(text("PRAGMA query_only=ON"))
+    try:
+        res = client.post(path, json={"traces": [payload]} if batch else payload)
+        assert res.status_code == 500
+        assert canary not in res.text
+        records = [r for r in caplog.records if r.name == "backend.app.routers.traces"]
+        assert records and all(r.exc_info is None for r in records)
+        assert canary not in caplog.text
+        assert "OperationalError" in caplog.text
+        assert "count=1" in caplog.text
+    finally:
+        session.rollback()
+        session.exec(text("PRAGMA query_only=OFF"))

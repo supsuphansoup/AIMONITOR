@@ -3,11 +3,13 @@ import io
 import logging
 import uuid
 from datetime import datetime
-from typing import Iterator, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, col, select
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
@@ -29,6 +31,15 @@ logger = logging.getLogger(__name__)
 HTTP_422_UNPROCESSABLE = 422
 
 router = APIRouter(prefix="/traces", tags=["Traces"])
+
+
+def _utc_filter_time(value: datetime) -> Optional[datetime]:
+    try:
+        return to_naive_utc(value)
+    except (OverflowError, ValueError):
+        raise HTTPException(
+            status_code=HTTP_422_UNPROCESSABLE, detail="Timestamp outside supported UTC range",
+        ) from None
 
 
 def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
@@ -59,6 +70,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     kwargs = {
         "trace_id": payload.trace_id or str(uuid.uuid4()),
         "session_id": payload.session_id,
+        "dedupe_key": payload.dedupe_key,
         "account_id": payload.account_id,
         "provider": payload.provider,
         "model_name": payload.model_name,
@@ -84,6 +96,24 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     return TraceEvent(**kwargs)
 
 
+def _dedupe_insert_statement(event: TraceEvent, dialect_name: str) -> Any:
+    insert = {"sqlite": sqlite_insert, "postgresql": postgresql_insert}[dialect_name]
+    return insert(TraceEvent).values(**event.model_dump(exclude={"id"})).on_conflict_do_nothing(
+        index_elements=[TraceEvent.dedupe_key], index_where=col(TraceEvent.dedupe_key).is_not(None),
+    )
+
+
+def _store_trace(payload: TraceEventCreate, session: Session) -> TraceEvent:
+    event = process_single_trace_create(payload)
+    if event.dedupe_key is None:
+        session.add(event)
+        return event
+    # No read-before-write race or savepoint release outside the batch transaction.
+    session.flush()
+    session.execute(_dedupe_insert_statement(event, session.get_bind().dialect.name))
+    return session.exec(select(TraceEvent).where(TraceEvent.dedupe_key == event.dedupe_key)).one()
+
+
 @router.post(
     "",
     response_model=TraceEventRead,
@@ -95,17 +125,16 @@ def ingest_trace(
     session: Session = Depends(get_session),
 ):
     """Ingest a single LLM trace event."""
-    event = process_single_trace_create(payload)
     try:
-        session.add(event)
-        session.commit()
+        event = _store_trace(payload, session)
+        session.flush()
         session.refresh(event)
-        return TraceEventRead.model_validate(event)
-    except Exception:
+        response = TraceEventRead.model_validate(event)
+        session.commit()
+        return response
+    except Exception as exc:
         session.rollback()
-        # The exception text can echo the submitted payload, so it is logged
-        # server-side and never returned to the caller.
-        logger.exception("Failed to ingest trace")
+        logger.error("Ingest failed code=INGEST_FAILED error_type=%s count=1", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to ingest trace.",
@@ -123,16 +152,20 @@ def ingest_batch_traces(
     session: Session = Depends(get_session),
 ):
     """Ingest multiple LLM trace events in a single transaction."""
-    events = [process_single_trace_create(item) for item in payload.traces]
     try:
-        session.add_all(events)
-        session.commit()
+        events = [_store_trace(item, session) for item in payload.traces]
+        session.flush()
         for event in events:
             session.refresh(event)
-        return [TraceEventRead.model_validate(e) for e in events]
-    except Exception:
+        responses = [TraceEventRead.model_validate(e) for e in events]
+        session.commit()
+        return responses
+    except Exception as exc:
         session.rollback()
-        logger.exception("Failed to ingest batch of %d traces", len(events))
+        logger.error(
+            "Ingest failed code=INGEST_BATCH_FAILED error_type=%s count=%d",
+            type(exc).__name__, len(payload.traces),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to ingest batch traces.",
@@ -182,9 +215,9 @@ def list_traces(
     if account_unknown:
         filters.append(col(TraceEvent.account_id).is_(None))
     if start_time:
-        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
     if end_time:
-        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one()
     response.headers["X-Total-Count"] = str(total or 0)
@@ -260,9 +293,9 @@ def export_traces_csv(
             )
         filters.append(TraceEvent.status == normalized)
     if start_time:
-        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
     if end_time:
-        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one() or 0
     query = (
@@ -273,6 +306,7 @@ def export_traces_csv(
     )
 
     def rows() -> Iterator[str]:
+        yield "\ufeff"
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
         writer.writerow(CSV_COLUMNS)
@@ -321,7 +355,8 @@ def get_trace_detail(
     query = (
         select(TraceEvent)
         .where(TraceEvent.trace_id == trace_id)
-        .order_by(col(TraceEvent.timestamp).desc())
+        .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+        .limit(1)
     )
     event = session.exec(query).first()
     if not event:
