@@ -210,7 +210,11 @@ M = 1_000_000
 ])
 def test_rate_card_matches_published_prices(provider, model, rates):
     input_rate, output_rate, write_rate, read_rate = rates
-    assert calculate_cost_detail(provider, model, M, 0).cost_usd == pytest.approx(input_rate)
+    # Keep input below context thresholds; long tiers have separate boundary tests.
+    tokens = M // 10
+    assert calculate_cost_detail(provider, model, tokens, 0).cost_usd == pytest.approx(input_rate / 10)
     assert calculate_cost_detail(provider, model, 0, M).cost_usd == pytest.approx(output_rate)
-    assert calculate_cost_detail(provider, model, 0, 0, cache_write_tokens=M).cost_usd == pytest.approx(write_rate)
-    assert calculate_cost_detail(provider, model, 0, 0, cache_read_tokens=M).cost_usd == pytest.approx(read_rate)
+    assert calculate_cost_detail(provider, model, 0, 0,
+                                 cache_write_tokens=tokens).cost_usd == pytest.approx(write_rate / 10)
+    assert calculate_cost_detail(provider, model, 0, 0,
+                                 cache_read_tokens=tokens).cost_usd == pytest.approx(read_rate / 10)

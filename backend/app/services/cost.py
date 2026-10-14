@@ -12,7 +12,10 @@ Two invariants this module exists to protect:
 """
 import math
 import re
-from typing import Dict, NamedTuple, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, NamedTuple, Optional, Tuple
+
+from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
 
 # --- Cost source markers ---------------------------------------------------
 SOURCE_CUSTOM = "custom"          # caller supplied the cost outright
@@ -36,6 +39,16 @@ class CostResult(NamedTuple):
     @property
     def is_computable(self) -> bool:
         return self.source != SOURCE_UNKNOWN
+
+
+class LongContextPricing(NamedTuple):
+    input_tokens_gt: int
+    pricing: ModelPricing
+
+
+class PriceChange(NamedTuple):
+    effective_from: datetime  # naive UTC, inclusive
+    pricing: ModelPricing
 
 
 #: Providers whose inference runs on hardware the operator already pays for.
@@ -88,7 +101,7 @@ def _anthropic(input_rate: float, output_rate: float, write_5m: float, read: flo
 
 
 def _gemini(input_rate: float, output_rate: float, cached: float) -> ModelPricing:
-    # Prompt rates are the <=200k-token tier; hourly cache storage is not modelled.
+    # Hourly cache storage is not modelled; context tiers are selected separately.
     return ModelPricing(input_rate, output_rate, input_rate, cached)
 
 
@@ -178,12 +191,10 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "claude-3-haiku": ModelPricing(0.25, 1.25, 0.30, 0.03),
 
     # --- Google Gemini, verified PRICING_AS_OF (paid tier, text input)
-    # 3.6-3.8 Flash are at promotional rates through 2026-12-31; they double on
-    # 2027-01-01, so this card must be refreshed before then.
+    # 3.6/3.8 Flash base prices are promotional; the dated schedule below expires them.
     "gemini-3.8-flash": _gemini(0.75, 3.75, 0.075),
-    "gemini-3.7-flash": _gemini(0.75, 3.75, 0.075),
     "gemini-3.6-flash": _gemini(0.75, 3.75, 0.075),
-    # gemini-3.5-flash: routing to 3.6 is documented, alias billing is not confirmed.
+    # 3.5/3.7 Flash: routing to 3.6/3.8 is documented, alias billing is not confirmed.
     "gemini-3.5-flash-lite": _gemini(0.30, 2.50, 0.03),
     "gemini-3.1-flash-lite": _gemini(0.25, 1.50, 0.025),
     "gemini-3.1-pro-preview": _gemini(2.00, 12.00, 0.20),
@@ -219,6 +230,33 @@ _VERIFIED_MODEL_ALIASES: Dict[str, str] = {
     "claude-opus-4-5-20251101": "claude-opus-4-5",
 }
 
+
+# Standard text-token tiers verified 2026-10-14. OpenAI's expanded official
+# pricing table publishes all four long-context rates (including cached input).
+# No provider-wide multiplier or guessed tier is used.
+MODEL_LONG_CONTEXT_PRICING: Dict[str, LongContextPricing] = {
+    "gpt-6-astra": LongContextPricing(272_000, _openai(20.00, 75.00, 2.00, write=25.00)),
+    "gpt-6.1-sol": LongContextPricing(272_000, _openai(4.00, 15.00, 0.20, write=5.00)),
+    "gpt-6-sol": LongContextPricing(272_000, _openai(4.00, 15.00, 0.40, write=5.00)),
+    "gpt-6-luna": LongContextPricing(272_000, _openai(0.20, 0.75, 0.02, write=0.25)),
+    "gpt-5.6-sol": LongContextPricing(272_000, _openai(8.00, 30.00, 0.80, write=10.00)),
+    "gpt-5.6-terra": LongContextPricing(272_000, _openai(4.00, 18.00, 0.40, write=5.00)),
+    "gpt-5.6-luna": LongContextPricing(272_000, _openai(0.40, 1.80, 0.04, write=0.50)),
+    "gpt-5.5": LongContextPricing(272_000, _openai(10.00, 45.00, 1.00)),
+    "gpt-5.5-pro": LongContextPricing(272_000, _openai(60.00, 270.00, None)),
+    "gpt-5.4": LongContextPricing(272_000, _openai(5.00, 22.50, 0.50)),
+    "gpt-5.4-pro": LongContextPricing(272_000, _openai(60.00, 270.00, None)),
+    "gemini-3.1-pro-preview": LongContextPricing(200_000, _gemini(4.00, 18.00, 0.40)),
+    "gemini-2.5-pro": LongContextPricing(200_000, _gemini(2.50, 15.00, 0.25)),
+}
+
+# Google specifies the date but not an effective time/timezone. Product policy:
+# switch at 2027-01-01 00:00 UTC, using each record's timestamp, not arrival time.
+MODEL_PRICING_SCHEDULE: Dict[str, Tuple[PriceChange, ...]] = {
+    "gemini-3.6-flash": (PriceChange(datetime(2027, 1, 1), _gemini(1.50, 7.50, 0.15)),),
+    "gemini-3.8-flash": (PriceChange(datetime(2027, 1, 1), _gemini(1.50, 7.50, 0.15)),),
+}
+
 # Preserve routing aliases/version tags, but never strip an unverified date.
 _VERSION_SUFFIX = r"(?:[-@](?:latest|v\d+(?::\d+)?))*"
 
@@ -244,11 +282,70 @@ def normalize_model_name(name: str) -> str:
     return cleaned
 
 
-def resolve_pricing(provider: str, model_name: str) -> Optional[ModelPricing]:
+def resolve_pricing(
+    provider: str, model_name: str, *, input_tokens: int = 0, timestamp: Optional[datetime] = None,
+) -> Optional[ModelPricing]:
     """Look up the rate card for a call, or None when the model is unpriced."""
     if provider.strip().lower() in LOCAL_PROVIDERS:
         return ModelPricing(0.0, 0.0, 0.0, 0.0)
-    return MODEL_PRICING_USD_PER_1M.get(normalize_model_name(model_name))
+    key = normalize_model_name(model_name)
+    pricing = MODEL_PRICING_USD_PER_1M.get(key)
+    if pricing is None:
+        return None
+    effective_at = to_naive_utc(timestamp) or utc_now()
+    for change in MODEL_PRICING_SCHEDULE.get(key, ()):
+        if effective_at >= change.effective_from:
+            pricing = change.pricing
+    long_context = MODEL_LONG_CONTEXT_PRICING.get(key)
+    if long_context and input_tokens > long_context.input_tokens_gt:
+        pricing = long_context.pricing
+    return pricing
+
+
+def _pricing_fields(pricing: ModelPricing) -> Dict[str, Optional[float]]:
+    return {
+        "input": pricing.input_per_1m,
+        "output": pricing.output_per_1m,
+        "cache_write": pricing.cache_write_per_1m,
+        "cache_read": pricing.cache_read_per_1m,
+        "cache_write_1h": pricing.cache_write_1h_per_1m,
+    }
+
+
+def pricing_table_payload() -> Dict[str, Any]:
+    """Expose the calculation's current card, long tiers, and UTC price periods."""
+    effective_at = utc_now()
+    models = {}
+    for name, base in MODEL_PRICING_USD_PER_1M.items():
+        current = resolve_pricing("api", name, timestamp=effective_at)
+        row: Dict[str, Any] = _pricing_fields(current)
+        tier = MODEL_LONG_CONTEXT_PRICING.get(name)
+        row["long_context"] = (
+            {"input_tokens_gt": tier.input_tokens_gt, **_pricing_fields(tier.pricing)} if tier else None
+        )
+        periods = []
+        start = None
+        pricing = base
+        for change in MODEL_PRICING_SCHEDULE.get(name, ()):
+            end = to_aware_utc(change.effective_from).isoformat()
+            periods.append({"effective_from": start, "effective_until": end, **_pricing_fields(pricing)})
+            start = end
+            pricing = change.pricing
+        periods.append({"effective_from": start, "effective_until": None, **_pricing_fields(pricing)})
+        row["price_periods"] = periods
+        models[name] = row
+    return {
+        "unit": "USD per 1,000,000 tokens",
+        "as_of": PRICING_AS_OF,
+        "effective_at": to_aware_utc(effective_at).isoformat(),
+        "sources": PRICING_SOURCES,
+        "local_free_providers": sorted(LOCAL_PROVIDERS),
+        "provider_cache_multipliers": {
+            provider: {"cache_write": write, "cache_read": read}
+            for provider, (write, read) in PROVIDER_CACHE_MULTIPLIERS.items()
+        },
+        "models": models,
+    }
 
 
 def cache_rates(provider: str, pricing: ModelPricing) -> Tuple[float, float]:
@@ -285,6 +382,8 @@ def calculate_cost_detail(
     cache_write_tokens: int = 0,
     custom_cost_usd: Optional[float] = None,
     cache_write_1h_tokens: int = 0,
+    *,
+    timestamp: Optional[datetime] = None,
 ) -> CostResult:
     """Price a single call, reporting where the number came from.
 
@@ -303,17 +402,17 @@ def calculate_cost_detail(
     if provider.strip().lower() in LOCAL_PROVIDERS:
         return CostResult(0.0, SOURCE_LOCAL_FREE)
 
-    pricing = resolve_pricing(provider, model_name)
-    if pricing is None:
-        # No rate card: report as not computable rather than inventing a price.
-        return CostResult(0.0, SOURCE_UNKNOWN)
-
-    write_rate, read_rate = cache_rates(provider, pricing)
-
     prompt_tokens = max(0, prompt_tokens)
     completion_tokens = max(0, completion_tokens)
     cache_read_tokens = max(0, cache_read_tokens)
     cache_write_tokens = max(0, cache_write_tokens)
+
+    # One trace represents one API call. 1h writes are already part of total writes.
+    input_tokens = prompt_tokens + cache_read_tokens + cache_write_tokens
+    pricing = resolve_pricing(provider, model_name, input_tokens=input_tokens, timestamp=timestamp)
+    if pricing is None:
+        return CostResult(0.0, SOURCE_UNKNOWN)
+    write_rate, read_rate = cache_rates(provider, pricing)
 
     cache_write_1h_tokens = min(max(0, cache_write_1h_tokens), cache_write_tokens)
     if cache_write_1h_tokens and pricing.cache_write_1h_per_1m is None:
@@ -340,6 +439,8 @@ def calculate_cost(
     cache_write_tokens: int = 0,
     custom_cost_usd: Optional[float] = None,
     cache_write_1h_tokens: int = 0,
+    *,
+    timestamp: Optional[datetime] = None,
 ) -> float:
     """Cost in USD; 0.0 when unpriced.
 
@@ -355,4 +456,5 @@ def calculate_cost(
         cache_write_tokens=cache_write_tokens,
         custom_cost_usd=custom_cost_usd,
         cache_write_1h_tokens=cache_write_1h_tokens,
+        timestamp=timestamp,
     ).cost_usd

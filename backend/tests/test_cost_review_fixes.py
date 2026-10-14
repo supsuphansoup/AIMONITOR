@@ -42,11 +42,21 @@ def test_review_official_short_context_rates(provider, model, rates):
         assert result.cost_usd == pytest.approx(rate / 10, abs=1e-12)
 
 
-def test_review_unconfirmed_gemini35_alias_is_unknown():
+@pytest.mark.parametrize("model,old_cost", [("gemini-3.5-flash", 0.0105), ("gemini-3.7-flash", 0.0045)])
+def test_review_unconfirmed_gemini_alias_is_unknown_without_repricing_old_rows(model, old_cost, session):
     # CST-03: routing is documented, alias billing is not; do not infer a price.
     # https://ai.google.dev/gemini-api/docs/changelog (2026-10-08 entry; checked 2026-10-14)
-    result = cost.calculate_cost_detail("gemini", "gemini-3.5-flash", 1000, 1000)
+    from backend.app.models.trace import TraceEvent
+
+    row = TraceEvent(trace_id="old-gemini-alias", provider="gemini", model_name=model,
+                     prompt_tokens=1000, completion_tokens=1000, cost_usd=old_cost,
+                     cost_source=cost.SOURCE_PRICING_TABLE)
+    session.add(row)
+    session.commit()
+    result = cost.calculate_cost_detail("gemini", model, 1000, 1000)
     assert result == cost.CostResult(0.0, cost.SOURCE_UNKNOWN)
+    session.refresh(row)
+    assert row.cost_usd == old_cost and row.cost_source == cost.SOURCE_PRICING_TABLE
 
 
 def test_review_o1mini_price_update_does_not_recalculate_existing_rows(session):
