@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 import httpx
 from sqlmodel import Session, col, select, update
 
+from backend.app.core.config import settings
 from backend.app.core.metrics_catalog import (
     LOWER_BOUND_OPERATORS,
     METRIC_FIELD_MAP,
@@ -199,6 +200,7 @@ class AlertEvaluator:
         session: Session,
         rule_ids: Optional[List[int]] = None,
         ignore_cooldown: bool = False,
+        skipped_rules: Optional[List[Dict[str, Any]]] = None,
     ) -> List[AlertHistory]:
         """Evaluate active rules against recent metrics; log and dispatch hits.
 
@@ -236,6 +238,19 @@ class AlertEvaluator:
             overview = overview_cache[window_minutes]
 
             metric_key = resolve_metric_key(rule.metric_type)
+            if overview.get("latency_sampled") and metric_key in {
+                "p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
+            }:
+                logger.info("Alert rule_id=%s skipped reason=latency_sampled", rule.id)
+                if skipped_rules is not None:
+                    skipped_rules.append({
+                        "rule_id": rule.id,
+                        "reason": "latency_sampled",
+                        "sample_count": min(int(overview.get("latency_measured_count") or 0),
+                                            settings.MAX_AGGREGATION_ROWS),
+                        "sample_limit": settings.MAX_AGGREGATION_ROWS,
+                    })
+                continue
             if not overview.get("total_requests") and metric_key in UNDEFINED_WITHOUT_TRAFFIC:
                 # An empty window has no P95 or error rate; reading it as 0 used
                 # to fire every "p95 < 100ms" style rule whenever traffic paused.

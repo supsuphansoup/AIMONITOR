@@ -2,7 +2,7 @@ import ipaddress
 import re
 from datetime import datetime
 from socket import SOCK_STREAM, gaierror, getaddrinfo
-from typing import Any, ClassVar, FrozenSet, Optional
+from typing import Any, ClassVar, FrozenSet, List, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, computed_field, field_serializer, field_validator
@@ -288,3 +288,15 @@ class AlertHistoryRead(AlertHistoryBase):
     def serialize_created_at(self, value: datetime, _info: Any) -> str:
         aware = to_aware_utc(value)
         return aware.isoformat() if aware else ""
+
+
+class AlertSkippedRuleRead(BaseModel):
+    rule_id: int
+    reason: Literal["latency_sampled"]
+    sample_count: int
+    sample_limit: int
+
+
+class AlertEvaluationRead(BaseModel):
+    histories: List[AlertHistoryRead]
+    skipped_rules: List[AlertSkippedRuleRead]

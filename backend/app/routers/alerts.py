@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session, col, delete, select
@@ -9,6 +9,7 @@ from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.db.session import get_session
 from backend.app.models.alert import (
     VALID_OPERATORS,
+    AlertEvaluationRead,
     AlertHistory,
     AlertHistoryRead,
     AlertRule,
@@ -153,7 +154,7 @@ def list_alert_history(
 
 @router.post(
     "/evaluate",
-    response_model=List[AlertHistoryRead],
+    response_model=Union[List[AlertHistoryRead], AlertEvaluationRead],
     dependencies=[Depends(require_write_auth)],
 )
 def trigger_alert_evaluation(
@@ -165,6 +166,9 @@ def trigger_alert_evaluation(
             "history and dispatches webhooks, but leaves the cooldown untouched."
         ),
     ),
+    include_skipped: bool = Query(
+        False, description="Return histories and safe diagnostics for sampled rules",
+    ),
 ):
     """Evaluate all active rules now.
 
@@ -173,4 +177,10 @@ def trigger_alert_evaluation(
     real evaluation - history and webhooks included - without consuming or
     resetting the cooldown that governs the scheduled passes.
     """
-    return AlertEvaluator.evaluate_rules(session=session, ignore_cooldown=ignore_cooldown)
+    skipped: Optional[List[Dict[str, Any]]] = [] if include_skipped else None
+    histories = AlertEvaluator.evaluate_rules(
+        session=session, ignore_cooldown=ignore_cooldown, skipped_rules=skipped,
+    )
+    if include_skipped:
+        return {"histories": histories, "skipped_rules": skipped}
+    return histories

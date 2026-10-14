@@ -22,6 +22,16 @@
 | POST | `/alerts/evaluate?ignore_cooldown=` | 수동 평가 |
 | GET | `/alerts/history` | 발동 이력 |
 
+`POST /alerts/evaluate`는 기본적으로 기존 이력 배열을 반환한다.
+`?include_skipped=true`이면 `{histories: [...], skipped_rules: [...]}` 객체를 반환한다.
+표본 상한 때문에 건너뛴 항목의 형식은 다음과 같고 비밀 URL·규칙명은 포함하지 않는다.
+
+```json
+{"rule_id": 1, "reason": "latency_sampled", "sample_count": 200000, "sample_limit": 200000}
+```
+
+기본 응답에서도 서버 로그에 규칙 ID와 `latency_sampled` 이유 코드를 남긴다.
+
 ### 데이터 (`alert_rules`, `alert_histories`)
 
 | 필드 | 규칙 |
@@ -61,6 +71,8 @@ Discord는 소문자로 정규화한 `discord.com`·`discordapp.com` 호스트�
 1. 활성 규칙을 읽는다. 같은 `window_minutes`를 쓰는 규칙은 overview 집계 1회를 공유한다.
 2. 쿨다운 중이면 건너뛴다 (`ignore_cooldown`이면 무시).
 3. 판정 불가 규칙을 건너뛴다.
+   - `latency_sampled=true`인 창의 P50·P95·P99 규칙(별칭 포함)은 건너뛰고 쿨다운을 소비하지 않는다.
+     평균 지연·건수·비용의 SQL 집계는 전체 창을 사용하므로 그대로 평가한다.
    - 창의 `total_requests == 0`이고 지표가 에러율·평균/P50/P95/P99 지연이면 건너뜀 (`UNDEFINED_WITHOUT_TRAFFIC`). 요청 수·비용·토큰은 0이 실제 값이므로 평가 — `total_requests < 1` 무트래픽 감시는 동작.
    - 비용 지표이고 창에 `cost_unknown_count > 0`이면 알려진 비용은 하한값이다. `>`·`>=`만 평가하고 메시지 끝에 `- excludes N call(s) with unknown pricing; the actual cost may be higher`를 붙인다. `<`·`<=`·`==`·`!=`는 건너뜀.
 4. 조건을 평가한다 — 조건이 거짓인 규칙은 쿨다운을 소모하지 않는다.
