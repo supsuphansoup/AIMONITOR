@@ -7,7 +7,7 @@ AIMONITOR는 다른 도구의 로그와 로그인 파일을 읽는 앱입니다.
 
 ## 요약
 
-- 로컬 로그에서는 **토큰 수·모델·시각만** 모읍니다. 프롬프트와 응답 본문은 저장하거나 보내지 않습니다.
+- 로컬 로그에서는 **토큰·요청 수, 모델, 시각, 세션 ID와 계정·중복 제거용 해시만** 모읍니다. 프롬프트와 응답 본문은 저장하거나 보내지 않습니다.
 - 데스크톱 앱이 밖으로 보내는 곳은 아래 표의 네 종류뿐입니다. **텔레메트리·분석·자동 업데이트는 없습니다.**
 - 공급자 API 키는 Windows DPAPI로 암호화해 이 PC의 현재 사용자만 풀 수 있습니다.
 - 로컬 API는 `127.0.0.1`에서만 열립니다.
@@ -21,9 +21,9 @@ AIMONITOR는 다른 도구의 로그와 로그인 파일을 읽는 앱입니다.
 | Claude `.claude.json` | 계정 UUID — 12자 해시로만 저장합니다. |
 | Codex 세션 로그 (`~/.codex/sessions`, `~/.codex-*`, `CODEX_HOME`) | 토큰 수·모델·시각, 한도 스냅샷(`rate_limits`) |
 | Codex `auth.json` | 계정 ID — 해시로만 저장합니다. 플랜 종류도 읽습니다. 액세스 토큰·API 키는 읽지 않습니다. |
-| Copilot 세션 로그 (`~/.copilot/session-state`) | 세션 종료 이벤트의 모델별 토큰·요청 수 |
+| Copilot 세션 로그 (`~/.copilot/session-state`) | 세션 종료 이벤트의 모델별 토큰·요청 수, 프리미엄 요청 사용량(`requests.cost`), 세션 API 시간(`totalApiDurationMs`) |
 | Copilot `auth.db` | 로그인 토큰 **개수만** 셉니다. 값은 읽지 않습니다. |
-| Antigravity 로그 (`~/.gemini/antigravity/brain/…/transcript.jsonl`) | 본문 **길이**로 토큰을 추정합니다. 본문은 메모리에서 길이만 재고 저장·전송하지 않습니다. |
+| Antigravity 로그 (`~/.gemini/antigravity/brain/…/transcript.jsonl`) | 본문 **길이**로 토큰을 추정합니다. 출력은 `content`·`thinking`, 입력은 `input_text`·`prompt`·`input` 중 처음 확인되는 문자열의 길이이며 없으면 입력은 추정하지 않습니다. 모델·공급자·시각·세션 ID도 씁니다. 본문은 메모리에서 길이만 재고 저장·전송하지 않습니다. |
 | VS Code·Antigravity 설정 DB (`state.vscdb`) | 구독 등급·Copilot 활성 여부·Antigravity가 보고한 모델명. 연결 AI 표시에 쓰며 **읽기 전용**으로 엽니다. |
 | 로컬 Ollama API (`127.0.0.1:11434/api/tags`) | 설치된 모델 이름·개수와 연결 상태. 연결 AI 표시에 씁니다. |
 | Cursor·Windsurf·Ollama 폴더 | 설치 여부만 |
@@ -57,10 +57,10 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 | `~/.aimonitor/api_keys.json` | 키 원문만 DPAPI로 암호화해(`sealed`) 저장합니다. 공급자·키 ID·라벨·검증 상태·마지막 검증 시각·잔액 설명은 평문입니다. |
 | `~/.aimonitor/api_keys.json.lock` | 데스크톱과 서버가 키 파일을 동시에 고치지 않게 하는 잠금 파일. 비밀값은 없습니다. |
 | `~/.aimonitor/desktop_config.json` | 화면 설정, 서버 주소, 서버 인증 키(DPAPI 암호화), USD/KRW 환율과 출처·기준일·마지막 조회 성공 시각 |
-| `~/.aimonitor/accounts.json`, `account_timeline.json` | 계정 해시·라벨·설정 폴더 경로·관측 시각 |
+| `~/.aimonitor/accounts.json`, `account_timeline.json` | 계정 해시·라벨·설정 폴더 경로·관측 시각 (타임라인은 최신 5,000개까지) |
 | `~/.aimonitor/quota/`, `claude_official_quota.json` | 한도 조회 결과(퍼센트·리셋 시각·구독 종류). 토큰은 없습니다. |
-| `~/.aimonitor/*offsets*.json`, `ai_seen_claude.json` | 로그 파일별 읽은 위치와 중복 제거 키. 본문은 없습니다. |
-| `~/.aimonitor/logs/` (exe만) | 역할별 실행 로그 (파일당 1 MiB, 백업 3개). 요청 로그는 요청 ID·메서드·경로·상태·소요 시간만 남기고 쿼리 문자열·요청 본문은 남기지 않습니다. 오류 로그는 예외 종류만 남기고 예외 문구·SQL 매개변수는 남기지 않습니다. |
+| `~/.aimonitor/*offsets*.json`, `folder_offsets/`, `ai_cursors.json`, `ai_seen_claude.json` | 로그 파일별 읽은 위치와 중복 제거 키, 파일 교체를 알아보기 위한 파일 ID·크기·시각과 앞부분 일부의 해시. 본문은 없습니다. 30일 동안 사라진 파일의 기록은 지웁니다. |
+| `~/.aimonitor/logs/` (exe만) | 역할별 실행 로그 (파일당 1 MiB, 백업 3개). 손상된 로그 줄은 원문 없이 건수만 남깁니다. 요청 로그는 요청 ID·메서드·경로·상태·소요 시간만 남기고 쿼리 문자열·요청 본문은 남기지 않습니다. 오류 로그는 예외 종류만 남기고 예외 문구·SQL 매개변수는 남기지 않습니다. |
 | 레지스트리 `HKCU\…\Run\AIMONITOR` | 자동 실행을 켰을 때만 |
 
 API 응답은 Webhook URL을 `scheme://host/…`로 가려서 돌려주지만 원본은 DB에 평문으로 남습니다. DB 파일과 백업은 비밀값처럼 다루세요.

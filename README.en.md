@@ -65,7 +65,7 @@ pythonw run_desktop.pyw
 
 AIMONITOR reads other tools' logs and login files, so everything it reads and sends is listed → **[full list](docs/privacy.en.md)**
 
-- From local logs it collects token counts, model and time only. Prompt and response text is never stored or sent.
+- From local logs it collects only token and request counts, model, time, session IDs and account hashes. Prompt and response text is never stored or sent.
 - It sends to: the Claude usage lookup (`api.anthropic.com`, an unofficial endpoint), exchange-rate APIs, providers of keys you registered, and webhooks you configure. No telemetry.
 - Provider API keys are encrypted with Windows DPAPI. The local API listens on `127.0.0.1` only.
 

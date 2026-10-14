@@ -7,7 +7,7 @@ If the code behaves differently from this page, that is a bug — please [open a
 
 ## Summary
 
-- From local logs it collects **token counts, model and time only**. Prompt and response text is never stored or sent.
+- From local logs it collects **only token and request counts, model, time, session IDs, and account and de-duplication hashes**. Prompt and response text is never stored or sent.
 - The desktop app sends data to the four kinds of destination below and nowhere else. **No telemetry, analytics or auto-update.**
 - Provider API keys are encrypted with Windows DPAPI, readable only by the current user on this PC.
 - The local API listens on `127.0.0.1` only.
@@ -21,9 +21,9 @@ If the code behaves differently from this page, that is a bug — please [open a
 | Claude `.claude.json` | Account UUID — stored only as a 12-character hash |
 | Codex session logs (`~/.codex/sessions`, `~/.codex-*`, `CODEX_HOME`) | Token counts, model, time, limit snapshots (`rate_limits`) |
 | Codex `auth.json` | Account ID — stored only as a hash. The plan type is read too. Access tokens and API keys are not read. |
-| Copilot session logs (`~/.copilot/session-state`) | Per-model tokens and request counts from session-end events |
+| Copilot session logs (`~/.copilot/session-state`) | Per-model tokens and request counts, premium request usage (`requests.cost`) and session API time (`totalApiDurationMs`) from session-end events |
 | Copilot `auth.db` | Only **counts** login tokens; their values are not read |
-| Antigravity logs (`~/.gemini/antigravity/brain/…/transcript.jsonl`) | Tokens are estimated from text **length**. The text is only measured in memory, never stored or sent. |
+| Antigravity logs (`~/.gemini/antigravity/brain/…/transcript.jsonl`) | Tokens are estimated from text **length**: output from `content` and `thinking`, input from the first of `input_text`, `prompt` or `input` that is present (otherwise input is not estimated). Model, provider, time and session ID are used too. The text is only measured in memory, never stored or sent. |
 | VS Code and Antigravity settings DBs (`state.vscdb`) | Subscription tier, whether Copilot is active, and model names reported by Antigravity, for the connected-AI display. Opened **read-only**. |
 | Local Ollama API (`127.0.0.1:11434/api/tags`) | Installed model names and count, and whether it responds, for the connected-AI display |
 | Cursor, Windsurf, Ollama folders | Whether they are installed |
@@ -57,10 +57,10 @@ tags, redacted metadata and `error_message` you pass; if you set `api_key`, it i
 | `~/.aimonitor/api_keys.json` | Only the key secret is encrypted with DPAPI (`sealed`). Provider, key ID, label, verification status, last verification time and balance description are plain text. |
 | `~/.aimonitor/api_keys.json.lock` | A lock file that stops the desktop app and the server from editing the key file at the same time. No secrets. |
 | `~/.aimonitor/desktop_config.json` | UI settings, server address, the server auth key (DPAPI-encrypted), and the USD/KRW rate with its source, reference date and last successful fetch time |
-| `~/.aimonitor/accounts.json`, `account_timeline.json` | Account hashes, labels, config folder paths, times seen |
+| `~/.aimonitor/accounts.json`, `account_timeline.json` | Account hashes, labels, config folder paths, times seen (the timeline keeps the latest 5,000) |
 | `~/.aimonitor/quota/`, `claude_official_quota.json` | Limit lookup results (percent, reset time, subscription type). No tokens. |
-| `~/.aimonitor/*offsets*.json`, `ai_seen_claude.json` | Read positions per log file and de-duplication keys. No text. |
-| `~/.aimonitor/logs/` (exe only) | Run logs per role (1 MiB per file, three backups). Request logs keep only the request ID, method, path, status and duration — no query strings or request bodies. Error logs keep only the exception type — no exception text or SQL parameters. |
+| `~/.aimonitor/*offsets*.json`, `folder_offsets/`, `ai_cursors.json`, `ai_seen_claude.json` | Read positions per log file and de-duplication keys, plus file ID, size, times and a hash of the file's beginning to notice replaced files. No text. Entries for files missing for 30 days are removed. |
+| `~/.aimonitor/logs/` (exe only) | Run logs per role (1 MiB per file, three backups). Corrupt log lines are counted, never copied. Request logs keep only the request ID, method, path, status and duration — no query strings or request bodies. Error logs keep only the exception type — no exception text or SQL parameters. |
 | Registry `HKCU\…\Run\AIMONITOR` | Only when autostart is on |
 
 API responses mask webhook URLs as `scheme://host/…`, but the original stays in the database in plain text. Treat the database file and its backups as secrets.
