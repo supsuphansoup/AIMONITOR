@@ -7,7 +7,7 @@ import os
 import tempfile
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -67,23 +67,28 @@ def test_concurrent_evaluators_fire_once(file_engine):
 
     def slow_webhook(*_args, **_kwargs):
         time.sleep(0.3)
-        response = MagicMock()
-        response.status_code = 200
-        return response
+        return True
 
     barrier = threading.Barrier(4)
+    errors = []
 
     def worker():
-        barrier.wait()
-        with Session(file_engine, expire_on_commit=False) as session:
-            AlertEvaluator.evaluate_rules(session=session)
+        try:
+            barrier.wait(timeout=5)
+            with Session(file_engine, expire_on_commit=False) as session:
+                AlertEvaluator.evaluate_rules(session=session)
+        except Exception as exc:
+            errors.append(exc)
 
-    with patch("httpx.Client.post", side_effect=slow_webhook):
+    with patch.object(AlertEvaluator, "dispatch_webhook", side_effect=slow_webhook) as dispatch:
         threads = [threading.Thread(target=worker) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(10)
+            assert not t.is_alive()
+        assert not errors
+        assert dispatch.call_count == 1
 
     with Session(file_engine) as session:
         assert len(session.exec(select(AlertHistory)).all()) == 1

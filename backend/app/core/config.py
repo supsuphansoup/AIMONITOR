@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     # --- Background jobs ------------------------------------------------
     SCHEDULER_ENABLED: bool = True
     ALERT_INTERVAL_SECONDS: int = 60
+    ALERT_ALLOW_PRIVATE_WEBHOOKS: bool = False
     RETENTION_INTERVAL_SECONDS: int = 3600
     # 0 disables automatic purging; otherwise traces older than N days are removed.
     RETENTION_DAYS: int = 0

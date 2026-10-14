@@ -1,5 +1,6 @@
+import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -9,6 +10,7 @@ from sqlmodel.pool import StaticPool
 
 from backend.app.db.session import get_session
 from backend.app.main import app
+from backend.app.models import alert as alert_models
 from backend.app.models.alert import AlertRule
 from backend.app.services.alert import (
     AlertEvaluator,
@@ -21,6 +23,11 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    monkeypatch.setattr(alert_models, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))])
 
 
 @pytest.fixture(name="session")
@@ -61,7 +68,8 @@ def test_create_alert_rule(client: TestClient):
     assert data["operator"] == ">"
     assert data["threshold_value"] == 5.0
     assert data["window_minutes"] == 10
-    assert data["webhook_url"] == "https://hooks.slack.com/services/test/webhook"
+    assert data["webhook_url"] == "https://hooks.slack.com/…"
+    assert data["webhook_configured"] is True
     assert data["is_active"] is True
     assert "created_at" in data
 
@@ -259,20 +267,23 @@ def test_alert_webhook_dispatch_success(session: Session):
     session.commit()
     session.refresh(rule)
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
+    requests = []
 
-    with patch("httpx.Client.post", return_value=mock_resp) as mock_post:
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200)
+
+    original = httpx.AsyncClient
+    with patch("httpx.AsyncClient", side_effect=lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs)):
         success = AlertEvaluator.dispatch_webhook(
             rule=rule,
             metric_value=25.0,
             triggered_at=datetime.now(timezone.utc),
         )
         assert success is True
-        assert mock_post.called
-        call_args = mock_post.call_args
-        assert call_args[0][0] == "https://hooks.slack.com/services/mock"
-        assert call_args[1]["json"]["triggered_value"] == 25.0
+        assert len(requests) == 1
+        assert str(requests[0].url) == "https://hooks.slack.com/services/mock"
+        assert json.loads(requests[0].content)["triggered_value"] == 25.0
 
 
 def test_alert_webhook_dispatch_graceful_failure(session: Session):
@@ -289,10 +300,8 @@ def test_alert_webhook_dispatch_graceful_failure(session: Session):
     session.refresh(rule)
 
     # Test HTTP 500 status response
-    mock_resp = MagicMock()
-    mock_resp.status_code = 500
-    mock_resp.text = "Internal Server Error"
-    with patch("httpx.Client.post", return_value=mock_resp):
+    original = httpx.AsyncClient
+    with patch("httpx.AsyncClient", side_effect=lambda **kwargs: original(transport=httpx.MockTransport(lambda request: httpx.Response(500)), **kwargs)):
         success = AlertEvaluator.dispatch_webhook(
             rule=rule,
             metric_value=30.0,
@@ -301,7 +310,10 @@ def test_alert_webhook_dispatch_graceful_failure(session: Session):
         assert success is False
 
     # Test network exception / timeout
-    with patch("httpx.Client.post", side_effect=httpx.ConnectError("Connection refused")):
+    def failure(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    with patch("httpx.AsyncClient", side_effect=lambda **kwargs: original(transport=httpx.MockTransport(failure), **kwargs)):
         success_exc = AlertEvaluator.dispatch_webhook(
             rule=rule,
             metric_value=30.0,

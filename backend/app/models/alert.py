@@ -1,10 +1,15 @@
+import ipaddress
+import re
 from datetime import datetime
-from typing import Any, ClassVar, FrozenSet, Optional
+from socket import SOCK_STREAM, gaierror, getaddrinfo
+from typing import Any, ClassVar, FrozenSet, List, Literal, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_serializer, field_validator
 from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
 
+from backend.app.core.config import settings
 from backend.app.core.metrics_catalog import VALID_METRIC_TYPES
 from backend.app.core.timeutil import to_aware_utc, utc_now
 
@@ -12,6 +17,7 @@ VALID_OPERATORS: FrozenSet[str] = frozenset({">", ">=", "<", "<=", "==", "!="})
 
 MAX_WINDOW_MINUTES = 1440
 MAX_COOLDOWN_MINUTES = 10_080  # one week
+DELIVERY_PENDING_PREFIX = "[delivery pending] "
 
 
 class AlertRuleBase(SQLModel):
@@ -63,9 +69,68 @@ def _validate_webhook_url(v: Optional[str]) -> Optional[str]:
     stripped = str(v).strip()
     if not stripped:
         return None
-    if not stripped.startswith(("http://", "https://")):
-        raise ValueError("webhook_url must start with http:// or https://")
+    if "…" in stripped:
+        raise ValueError("A masked webhook_url cannot be saved; omit it to keep the current URL")
+    try:
+        parsed = urlsplit(stripped)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise ValueError("webhook_url has an invalid host or port") from None
+    if parsed.scheme not in ("http", "https") or not host:
+        raise ValueError("webhook_url must be an absolute http:// or https:// URL")
+    if any(ord(char) < 32 or ord(char) == 127 for char in stripped):
+        raise ValueError("webhook_url must not contain control characters")
+    allow_private = settings.ALERT_ALLOW_PRIVATE_WEBHOOKS
+    if not allow_private and (parsed.username is not None or parsed.password is not None):
+        raise ValueError("webhook_url must not contain userinfo")
+
+    address = _webhook_ip(host.rstrip("."))
+    if address is not None:
+        addresses = [address]
+        canonical_host = str(address)
+        if ":" in canonical_host:
+            canonical_host = f"[{canonical_host}]"
+        userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+        netloc = userinfo + canonical_host + (f":{port}" if port is not None else "")
+        stripped = parsed._replace(netloc=netloc).geturl()
+    else:
+        try:
+            answers = getaddrinfo(host, port or (443 if parsed.scheme == "https" else 80), type=SOCK_STREAM)
+            addresses = [ipaddress.ip_address(answer[4][0].split("%", 1)[0]) for answer in answers]
+        except (gaierror, ValueError, UnicodeError, OSError):
+            raise ValueError("webhook_url host could not be resolved") from None
+        if not addresses:
+            raise ValueError("webhook_url host could not be resolved")
+    if not allow_private:
+        for address in addresses:
+            address = getattr(address, "ipv4_mapped", None) or address
+            if (not address.is_global or address.is_multicast or address.is_reserved
+                    or getattr(address, "is_site_local", False)):
+                raise ValueError("webhook_url must resolve only to public unicast addresses")
     return stripped
+
+
+def _webhook_ip(host: str) -> Optional[Any]:
+    """Recognize IPv6 and legacy IPv4 forms before the OS resolver can reinterpret them."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or not all(re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", p) for p in parts):
+        return None
+    try:
+        numbers = [int(p, 16 if p.lower().startswith("0x") else 8 if len(p) > 1 and p[0] == "0" else 10)
+                   for p in parts]
+    except ValueError:
+        raise ValueError("webhook_url contains an invalid IP address") from None
+    if any(n > 255 for n in numbers[:-1]) or numbers[-1] >= 1 << (8 * (5 - len(numbers))):
+        raise ValueError("webhook_url contains an invalid IP address")
+    number = numbers[-1]
+    for index, part in enumerate(numbers[:-1]):
+        number += part << (8 * (3 - index))
+    return ipaddress.IPv4Address(number)
 
 
 class AlertRuleCreate(BaseModel):
@@ -78,13 +143,15 @@ class AlertRuleCreate(BaseModel):
     webhook_url: Optional[str] = None
     is_active: bool = True
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     _VALID_OPERATORS: ClassVar[FrozenSet[str]] = VALID_OPERATORS
 
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Alert rule name must not be null")
         stripped = str(v).strip()
         if not stripped:
             raise ValueError("Alert rule name must not be empty")
@@ -117,7 +184,17 @@ class AlertRuleUpdate(BaseModel):
     webhook_url: Optional[str] = None
     is_active: Optional[bool] = None
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+    @field_validator(
+        "name", "metric_type", "operator", "threshold_value", "window_minutes",
+        "cooldown_minutes", "is_active", mode="before",
+    )
+    @classmethod
+    def reject_explicit_null(cls, v: Any) -> Any:
+        if v is None:
+            raise ValueError("This field must not be null; omit it to keep the current value")
+        return v
 
     @field_validator("name", mode="before")
     @classmethod
@@ -150,6 +227,25 @@ class AlertRuleRead(AlertRuleBase):
     created_at: datetime
     last_triggered_at: Optional[datetime] = None
 
+    @computed_field
+    @property
+    def webhook_configured(self) -> bool:
+        return bool(self.webhook_url)
+
+    @field_serializer("webhook_url")
+    def mask_webhook_url(self, value: Optional[str], _info: Any) -> Optional[str]:
+        if not value:
+            return None
+        try:
+            parsed = urlsplit(value)
+            host = parsed.hostname
+            if parsed.scheme in ("http", "https") and host:
+                host = f"[{host}]" if ":" in host else host
+                return f"{parsed.scheme}://{host}/…"
+        except ValueError:
+            pass
+        return "[configured]"
+
     @field_serializer("created_at")
     def serialize_created_at(self, value: datetime, _info: Any) -> str:
         aware = to_aware_utc(value)
@@ -181,7 +277,26 @@ class AlertHistoryRead(AlertHistoryBase):
     id: int
     created_at: datetime
 
+    @computed_field
+    @property
+    def delivery_status(self) -> str:
+        if self.message.startswith(DELIVERY_PENDING_PREFIX):
+            return "pending"
+        return "succeeded" if self.sent_successfully else "failed"
+
     @field_serializer("created_at")
     def serialize_created_at(self, value: datetime, _info: Any) -> str:
         aware = to_aware_utc(value)
         return aware.isoformat() if aware else ""
+
+
+class AlertSkippedRuleRead(BaseModel):
+    rule_id: int
+    reason: Literal["latency_sampled"]
+    sample_count: int
+    sample_limit: int
+
+
+class AlertEvaluationRead(BaseModel):
+    histories: List[AlertHistoryRead]
+    skipped_rules: List[AlertSkippedRuleRead]
