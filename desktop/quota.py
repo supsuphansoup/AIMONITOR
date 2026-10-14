@@ -14,6 +14,7 @@ Every window carries ``as_of`` (when the number was observed) and ``stale``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -331,6 +332,7 @@ def copilot_premium_requests_this_month(
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     total = 0.0
+    seen = set()
     files_read = files_failed = incomplete = 0
     last_seen: Optional[datetime] = None
     if session_state.exists():
@@ -359,12 +361,22 @@ def copilot_premium_requests_this_month(
                         if not isinstance(metrics, dict) or not metrics:
                             incomplete += 1
                             continue
-                        for m in metrics.values():
+                        event_id = d.get("id")
+                        for model_name, m in metrics.items():
                             requests = m.get("requests") if isinstance(m, dict) else None
                             cost = _number(requests.get("cost")) if isinstance(requests, dict) else None
                             if cost is None or cost < 0:
                                 incomplete += 1
                             else:
+                                if (isinstance(event_id, str) and 0 < len(event_id) <= 512
+                                        and isinstance(model_name, str) and 0 < len(model_name) <= 200):
+                                    # Same ID/model key as the Copilot trace collector.
+                                    key = hashlib.sha256(
+                                        f"{event_id}:{model_name}".encode("utf-8")
+                                    ).hexdigest()[:32]
+                                    if key in seen:
+                                        continue
+                                    seen.add(key)
                                 total += cost
                         last_seen = max(last_seen, ts) if last_seen else ts
                 files_read += 1
@@ -571,14 +583,21 @@ def account_quotas(registry: Any = None, force: bool = False,
         registry = _account_registry
     result = []
     fetched = {}
-    for row in registry.refresh(now=now):
+    rows = registry.refresh(now=now)
+    identity_home = getattr(registry, "home", None)
+    claude_sources: Dict[str, List[Path]] = {}
+    for row in rows:
+        if row["tool"] == "claude_code":
+            directory = Path(row["config_dir"])
+            if account_id_for("claude_code", directory, identity_home) == row["account_id"]:
+                claude_sources.setdefault(row["account_id"], []).append(directory)
+    for row in rows:
         tool = row["tool"]
         directory = Path(row["config_dir"])
         windows = []
         if tool == "claude_code":
             # Read-only consumers may pass historical manifest rows. Current folder
             # credentials must never be used to claim another account's quota.
-            identity_home = getattr(registry, "home", None)
             if account_id_for(tool, directory, identity_home) != row["account_id"]:
                 result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
                 result[-1]["quota_windows"] = claude_windows(None, now)
@@ -592,7 +611,9 @@ def account_quotas(registry: Any = None, force: bool = False,
                     _account_syncers[key] = syncer
                 syncer._last_used_monotonic = tick
             if key not in fetched:
-                fetched[key] = syncer.get_quota(force=force)
+                fetched[key] = syncer.get_quota_for_account(
+                    row["account_id"], claude_sources.get(row["account_id"], []), identity_home, force=force,
+                )
             windows = claude_windows(fetched[key], now)
         elif tool == "codex":
             snapshot = latest_codex_rate_limits(

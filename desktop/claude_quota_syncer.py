@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -67,8 +67,37 @@ class ClaudeQuotaSyncer:
         with self._lock:
             return self._get_quota_locked(force)
 
-    def _get_quota_locked(self, force: bool) -> Optional[Dict[str, Any]]:
-        now = time.time()
+    def get_quota_for_account(
+        self, account_id: str, config_dirs: List[Path], home: Optional[Path] = None, force: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Select a current OAuth source under the same lock as the account cache."""
+        from desktop.accounts import account_id_for
+
+        with self._lock:
+            for directory in config_dirs:
+                if account_id_for("claude_code", directory, home) != account_id:
+                    continue
+                cred_file = directory / ".credentials.json"
+                try:
+                    creds = json.loads(cred_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+                token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+                if not isinstance(token, str) or not token.strip():
+                    continue
+                # A login can change while the credential file is being read.
+                if account_id_for("claude_code", directory, home) != account_id:
+                    continue
+                self.cred_file = cred_file
+                return self._get_quota_locked(force, oauth)
+            # A cached number cannot establish the folder's current login.
+            return None
+
+    def _get_quota_locked(
+        self, force: bool, oauth: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        now = time.monotonic()
         # If previously throttled (429), serve cached quota without hitting API
         if now < self._retry_after:
             return self._last_result
@@ -77,7 +106,7 @@ class ClaudeQuotaSyncer:
                 and (now - self._last_fetch_time) < CACHE_TTL_SECONDS):
             return self._last_result
 
-        fetched = self.fetch_fresh()
+        fetched = self.fetch_fresh(oauth)
         if fetched:
             self._last_result = fetched
             self._last_fetch_time = now
@@ -88,14 +117,15 @@ class ClaudeQuotaSyncer:
             self._last_fetch_time = now
             return self._last_result
 
-    def fetch_fresh(self) -> Optional[Dict[str, Any]]:
+    def fetch_fresh(self, oauth: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Call Anthropic OAuth usage API directly."""
-        if not self.cred_file.exists():
+        if oauth is None and not self.cred_file.exists():
             return None
 
         try:
-            creds = json.loads(self.cred_file.read_text(encoding="utf-8"))
-            oauth = creds.get("claudeAiOauth", {})
+            if oauth is None:
+                creds = json.loads(self.cred_file.read_text(encoding="utf-8"))
+                oauth = creds.get("claudeAiOauth", {})
             token = oauth.get("accessToken")
             if not token:
                 return None
@@ -108,7 +138,7 @@ class ClaudeQuotaSyncer:
             res = httpx.get("https://api.anthropic.com/api/oauth/usage", headers=headers, timeout=4.0)
             if res.status_code == 429:
                 logger.info("Anthropic usage API 429 received, backing off for 120 seconds")
-                self._retry_after = time.time() + 120.0
+                self._retry_after = time.monotonic() + 120.0
                 return None
             if res.status_code != 200:
                 logger.debug("Anthropic usage API returned HTTP %s", res.status_code)
