@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from backend.tests.test_accounts_watcher_regressions import batch_results
 from desktop import ai_watcher
 from desktop.accounts import AccountRegistry, canonical_path
 
@@ -56,8 +57,9 @@ def _watcher(home, state, monkeypatch):
     sent = []
 
     def receive(request):
-        sent.extend(json.loads(request.content)["traces"])
-        return httpx.Response(201)
+        traces = json.loads(request.content)["traces"]
+        sent.extend(traces)
+        return httpx.Response(201, json=batch_results(traces))
 
     client = httpx.Client
     monkeypatch.setattr(ai_watcher.httpx, "Client",

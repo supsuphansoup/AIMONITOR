@@ -24,10 +24,35 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from backend.app.models import trace as trace_models
 from desktop.accounts import AccountRegistry, canonical_path, config_dir_hash, discover_folders
 from desktop.config import backend_headers
 
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
+MAX_COST_USD_PER_TRACE = getattr(trace_models, "MAX_COST_USD_PER_TRACE", 1_000_000_000)
+MAX_LATENCY_MS_PER_TRACE = getattr(trace_models, "MAX_LATENCY_MS_PER_TRACE", 1_000_000_000)
+
+
+def _validate_trace(trace: Dict[str, Any]) -> None:
+    # Validate before committing seen/cumulative state. Never log validation input.
+    trace_models.TraceEventCreate.model_validate(trace)
+    for field, limit in (("cost_usd", MAX_COST_USD_PER_TRACE), ("latency_ms", MAX_LATENCY_MS_PER_TRACE)):
+        value = trace.get(field)
+        if value is not None and value > limit:
+            raise ValueError("Trace numeric limit exceeded")
+
+
+def _validate_batch_response(response: httpx.Response, traces: List[Dict[str, Any]]) -> None:
+    result = response.json()
+    if not isinstance(result, list) or len(result) != len(traces):
+        raise ValueError("Invalid batch result count")
+    for item, sent in zip(result, traces, strict=True):
+        if not isinstance(item, dict):
+            raise ValueError("Invalid batch result")
+        saved = trace_models.TraceEventRead.model_validate(item)
+        if (saved.dedupe_key != sent.get("dedupe_key")
+                or (sent.get("trace_id") is not None and saved.trace_id != sent["trace_id"])):
+            raise ValueError("Invalid batch result identity")
 
 
 def _count(value: Any) -> int:
@@ -850,6 +875,7 @@ class UnifiedAIWatcher:
         if trace_id:
             trace["trace_id"] = trace_id
             trace["dedupe_key"] = trace_id
+        _validate_trace(trace)
         if not self._mark_seen(dedupe_key):
             return None
         return trace
@@ -917,7 +943,7 @@ class UnifiedAIWatcher:
                             if incoming + outgoing == 0:
                                 continue
                             trace_id = self._event_key("cx", key, start, line)
-                            traces.append({
+                            trace = {
                                 "account_id": self._account_at(directory, obj.get("timestamp")),
                                 "timestamp": _event_timestamp(obj.get("timestamp")),
                                 "trace_id": trace_id, "dedupe_key": trace_id,
@@ -925,7 +951,9 @@ class UnifiedAIWatcher:
                                 "prompt_tokens": incoming - cached, "cache_read_tokens": cached,
                                 "completion_tokens": outgoing, "status": "SUCCESS", "tags": ["codex", "cli"],
                                 "metadata": {"source": "codex-watcher"},
-                            })
+                            }
+                            _validate_trace(trace)
+                            traces.append(trace)
                             if total is not None:
                                 self._offsets[total_key] = total
                         except (ValueError, TypeError, AttributeError, OverflowError):
@@ -1029,13 +1057,13 @@ class UnifiedAIWatcher:
         status = "SUCCESS" if obj.get("status") == "DONE" else "ERROR"
 
         trace_id = self._event_key("ag", identity_key, prev_offset, line)
-        return {
+        trace = {
             "trace_id": trace_id, "dedupe_key": trace_id,
             "account_id": None,
             "timestamp": ts,
             "session_id": conv_id,
-            "provider": provider if isinstance(provider, str) and 0 < len(provider) <= 64 else "unknown",
-            "model_name": model if isinstance(model, str) and 0 < len(model) <= 200 else "unknown",
+            "provider": provider if isinstance(provider, str) and provider else "unknown",
+            "model_name": model if isinstance(model, str) and model else "unknown",
             "prompt_tokens": prompt_tokens,
             "completion_tokens": comp_tokens,
             "cache_read_tokens": 0,
@@ -1046,6 +1074,8 @@ class UnifiedAIWatcher:
             "metadata": {"source": "antigravity-watcher", "tokens": "estimated",
                          "input_tokens_estimate": "body_length" if input_body is not None else "unavailable"},
         }
+        _validate_trace(trace)
+        return trace
 
     # 3. GitHub Copilot Scanner (~/.copilot/session-state/**/events.jsonl)
     #
@@ -1116,8 +1146,10 @@ class UnifiedAIWatcher:
             raise ValueError("Invalid event identifier")
         duration_ms = _event_number(data.get("totalApiDurationMs"))
         traces = []
+        invalid = 0
         for model_name, m in metrics.items():
             if not isinstance(m, dict) or not isinstance(model_name, str) or not 0 < len(model_name) <= 200:
+                invalid += 1
                 continue
             usage = m.get("usage") or {}
             requests = m.get("requests") or {}
@@ -1160,7 +1192,14 @@ class UnifiedAIWatcher:
             # The API time is a session total; it maps to one model only when one was used.
             if len(metrics) == 1 and count > 0 and isinstance(duration_ms, (int, float)) and duration_ms > 0:
                 trace["latency_ms"] = float(duration_ms) / count
+            try:
+                _validate_trace(trace)
+            except ValueError:
+                invalid += 1
+                continue
             traces.append(trace)
+        if invalid:
+            logger.warning("Skipped invalid Copilot events: %s", invalid)
         return traces
 
     # 4. GPT / Cursor
@@ -1170,25 +1209,54 @@ class UnifiedAIWatcher:
         return []
 
     def _send_traces(self, traces: List[Dict[str, Any]]) -> bool:
-        """Send all traces in chunks. Returns False if any chunk was not accepted."""
+        """Send chunks, isolating permanent 422s; retry other failures without advancing cursors."""
         stop_event = getattr(self, "_stop_event", None)
         if stop_event is not None and stop_event.is_set():
             return False
         url = f"{self.backend_url}/api/v1/traces/batch"
         chunk_size = 200
+
+        def accepted(response: httpx.Response, chunk: List[Dict[str, Any]]) -> bool:
+            if 200 <= response.status_code < 300:
+                try:
+                    _validate_batch_response(response, chunk)
+                    return True
+                except (ValueError, TypeError):
+                    logger.warning("Backend returned invalid batch response for %d traces", len(chunk))
+                    return False
+            if response.status_code in (401, 403):
+                logger.warning("인증 필요: 백엔드 수집 권한을 확인하세요")
+            logger.warning("Backend rejected %d traces: HTTP %d", len(chunk), response.status_code)
+            return False
+
         try:
+            stored = 0
             with httpx.Client(timeout=8.0, headers=backend_headers()) as client:
                 for i in range(0, len(traces), chunk_size):
                     if stop_event is not None and stop_event.is_set():
                         return False
                     chunk = traces[i : i + chunk_size]
                     res = client.post(url, json={"traces": chunk})
-                    if res.status_code >= 300:
-                        if res.status_code in (401, 403):
-                            logger.warning("인증 필요: 백엔드 수집 권한을 확인하세요")
-                        logger.warning("Backend rejected %d traces: HTTP %d", len(chunk), res.status_code)
+                    if res.status_code == 422:
+                        invalid = 0
+                        for trace in chunk:
+                            if stop_event is not None and stop_event.is_set():
+                                return False
+                            single = [trace]
+                            response = client.post(url, json={"traces": single})
+                            if response.status_code == 422:
+                                invalid += 1
+                                continue
+                            if not accepted(response, single):
+                                return False
+                            stored += 1
+                        if invalid:
+                            logger.warning("Skipped invalid backend traces: %d", invalid)
+                    elif not accepted(res, chunk):
                         return False
-            logger.info("Auto-ingested %d traces across Antigravity, Claude, and GPT", len(traces))
+                    else:
+                        stored += len(chunk)
+            logger.info("Auto-ingested %d traces across Antigravity, Claude, and GPT", stored)
             return True
         except Exception as e:
             logger.debug("Failed to send traces: %s", type(e).__name__)
