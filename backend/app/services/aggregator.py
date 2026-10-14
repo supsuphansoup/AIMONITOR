@@ -227,6 +227,7 @@ class MetricAggregator:
                     KNOWN_COST,
                     col(TraceEvent.total_tokens),
                     col(TraceEvent.latency_measured),
+                    col(TraceEvent.cost_source) == SOURCE_UNKNOWN,
                 ),
                 start_time=cutoff,
                 provider=provider,
@@ -235,16 +236,17 @@ class MetricAggregator:
                 account_unknown=account_unknown,
             )
             .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
-            .limit(settings.MAX_AGGREGATION_ROWS)
+            .limit(settings.MAX_AGGREGATION_ROWS + 1)
         )
 
         rows = list(session.exec(query).all())
         if not rows:
             return []
-        truncated = len(rows) >= settings.MAX_AGGREGATION_ROWS
+        truncated = len(rows) > settings.MAX_AGGREGATION_ROWS
+        rows = rows[:settings.MAX_AGGREGATION_ROWS]
 
         buckets: Dict[datetime, List[Any]] = {}
-        for ts, status, latency, cost, tokens, measured in rows:
+        for ts, status, latency, cost, tokens, measured, unknown in rows:
             if ts is None:
                 continue
             # Bucket on minutes-since-midnight so intervals that do not divide 60
@@ -252,7 +254,9 @@ class MetricAggregator:
             minutes_of_day = ts.hour * 60 + ts.minute
             floored = (minutes_of_day // interval_minutes) * interval_minutes
             bucket_dt = ts.replace(hour=floored // 60, minute=floored % 60, second=0, microsecond=0)
-            buckets.setdefault(bucket_dt, []).append((status, latency if measured else None, cost, tokens))
+            buckets.setdefault(bucket_dt, []).append(
+                (status, latency if measured else None, cost, tokens, unknown)
+            )
 
         ordered = sorted(buckets)
         results: List[Dict[str, Any]] = []
@@ -269,6 +273,7 @@ class MetricAggregator:
                     "avg_latency_ms": round(sum(lats) / len(lats), 2) if lats else None,
                     "p95_latency_ms": round(percentile(lats, 95), 2) if lats else None,
                     "total_cost_usd": round(sum(e[2] for e in entries), 6),
+                    "cost_unknown_count": sum(1 for e in entries if e[4]),
                     "total_tokens": sum(e[3] for e in entries),
                     # The row cap cuts into the oldest bucket, so its counts are a
                     # floor rather than a total. Flagged instead of quietly shipped.

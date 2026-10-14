@@ -29,10 +29,11 @@
 
 - 건수·합계·평균: SQL `COUNT`/`SUM`/`AVG`, 모델별은 `GROUP BY` — 행을 ORM 객체로 올리지 않는다.
 - 백분위수: `latency_ms` 컬럼만 **최신순(`DESC`)으로 최대 `MAX_AGGREGATION_ROWS`(200,000)행** 조회 후 선형 보간(numpy 기본과 동일). 상한에 걸리면 `latency_sampled: true`.
-- 시계열: 같은 상한을 최신순으로 적용한다. 잘리는 쪽은 항상 과거이며, 잘린 가장 오래된 버킷에 `partial: true`.
+- 시계열: 상한+1행을 최신순으로 읽어 실제 초과 여부를 확인한 뒤 같은 상한을 적용한다. 정확히 상한과 같으면 `partial: false`다. 잘리는 쪽은 항상 과거이며, 잘린 가장 오래된 버킷에 `partial: true`.
 - 버킷 경계: UTC 자정 기준 경과 분을 `interval_minutes`로 내림. 60의 약수가 아닌 간격도 겹치지 않는다.
 - 에러율 = `error_count / total_requests × 100`. `SUCCESS` 외 상태(`ERROR`, `TIMEOUT`, `RATE_LIMITED`)는 모두 에러로 센다.
 - 비용 합계는 `SUM(CASE WHEN cost_source='unknown' THEN 0 ELSE cost_usd END)`(`KNOWN_COST`)이다. overview·timeseries·breakdown 모두 같다. 미상 건수는 `cost_unknown_count`로 따로 준다. 저장값은 바꾸지 않는다.
+- 시계열의 `cost_unknown_count`도 버킷별 정수다. 전부 미상인 0원 소계와 실제 무료·알려진 0원은 미상 건수로 구별한다. 일부 미상은 알려진 소계와 미상 건수를 함께 반환한다.
 
 ### 도구별 사용량 (`/metrics/active_contexts`)
 

@@ -87,3 +87,13 @@ def test_complete_timeseries_flags_nothing_partial(skewed_history):
     )
     assert all(p["partial"] is False for p in points)
     assert sum(p["request_count"] for p in points) == 200
+
+
+@pytest.mark.parametrize("cap,partial", [(199, True), (200, False), (201, False)])
+def test_timeseries_partial_requires_actual_overflow(skewed_history, monkeypatch, cap, partial):
+    monkeypatch.setattr(settings, "MAX_AGGREGATION_ROWS", cap)
+    points = MetricAggregator.get_timeseries_metrics(skewed_history, interval_minutes=60)
+    assert sum(p["request_count"] for p in points) == min(cap, 200)
+    assert points[0]["partial"] is partial
+    assert all(p["partial"] is False for p in points[1:])
+    assert points[-1]["avg_latency_ms"] == 10.0  # Ties retain the newest IDs.
