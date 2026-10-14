@@ -30,6 +30,7 @@ from backend.app.core.timeutil import to_aware_utc, utc_now
 logger = logging.getLogger("aimonitor.provider_spend")
 
 CACHE_TTL_SECONDS = 15 * 60
+REFRESH_COOLDOWN_SECONDS = 60
 SPEND_BUDGET_SECONDS = 10.0
 MAX_CACHE_ENTRIES = 128
 MAX_PENDING_FETCHES = 16
@@ -280,7 +281,16 @@ class SpendService:
         self._cache: Dict[Any, tuple] = OrderedDict()
         self._inflight: Dict[Any, Future] = {}
         self._pending = 0
+        self._last_refresh: Optional[float] = None
         self._lock = threading.RLock()
+
+    def refresh_snapshot(self, entries) -> Dict[str, Any]:
+        with self._lock:
+            now = time.monotonic()
+            if self._last_refresh is not None and now - self._last_refresh < REFRESH_COOLDOWN_SECONDS:
+                raise ValueError("Billing refresh too frequent")
+            self._last_refresh = now
+        return self.spend_snapshot(entries, force=True)
 
     def invalidate(self, provider: str) -> None:
         with self._lock:

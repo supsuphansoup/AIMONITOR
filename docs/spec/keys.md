@@ -36,8 +36,11 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 | POST | `/keys/{provider}/verify` | 실제 대표 키를 모델 목록/잔액/관리자 비용 API로 검증 | 쓰기 |
 | POST | `/keys/{provider}/{key_id}/verify` | 지정한 키만 검증 (ID 패턴 `^[A-Za-z0-9_-]{1,32}$`) | 쓰기 |
 | GET | `/keys/spend` | 키별 공식 청구액·잔액 (15분 캐시) | 읽기 |
+| POST | `/keys/spend/refresh` | 캐시를 우회하여 강제 갱신 (최소 간격 60초) | 쓰기 |
 
 키 라우터의 검증 오류는 일반 `Invalid key request` 메시지만 반환한다. 검증 실패도 요청·응답 원문을 싣지 않는다.
+`GET /keys/spend?force=true`는 공급자를 호출하지 않고 400을 반환한다. 강제 갱신 POST는 쓰기 인증·Origin 방어를 적용하며,
+동일 서비스에서 60초 이내의 재시도는 429와 `Retry-After: 60`을 반환한다. 실패한 조회도 갱신 간격 제한에 포함한다.
 
 데스크톱은 HTTP 대신 `api_key_manager`를 직접 import한다. `list_keys()`는 공급자 카드, `set_key(provider, key)`는 기본/첫 키 갱신,
 `get_registered_key(provider)`는 기본/첫 키 또는 환경 키를 반환한다. 개별 키용은 `list_keys(provider)`, `get_key(provider, key_id)`, `add_key`, `update_label`.

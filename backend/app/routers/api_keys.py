@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.services.api_key_manager import api_key_manager, spend_service
+from backend.app.services.provider_spend import REFRESH_COOLDOWN_SECONDS
 
 
 class SecretRoute(APIRoute):
@@ -46,13 +47,26 @@ def list_keys() -> List[Dict[str, Any]]:
 
 
 @router.get("/spend", response_model=Dict[str, Any], dependencies=[Depends(require_read_auth)])
-def get_spend(force: bool = Query(False, description="Bypass the 15-minute cache")) -> Dict[str, Any]:
+def get_spend(
+    force: bool = Query(False, description="Unsupported; use POST /keys/spend/refresh"),
+) -> Dict[str, Any]:
     """Provider-reported spend or balance for every API card that has a key.
 
     Keyed by desktop card key (`openai_api`, `anthropic_api`, ...). A provider
     with no billing endpoint for its key reports kind `unavailable`.
     """
-    return spend_service.spend_snapshot(api_key_manager.billing_snapshot(), force=force)
+    if force:
+        raise HTTPException(status_code=400, detail="Use POST /keys/spend/refresh to force refresh")
+    return spend_service.spend_snapshot(api_key_manager.billing_snapshot())
+
+
+@router.post("/spend/refresh", response_model=Dict[str, Any], dependencies=[Depends(require_write_auth)])
+def refresh_spend() -> Dict[str, Any]:
+    try:
+        return spend_service.refresh_snapshot(api_key_manager.billing_snapshot())
+    except ValueError:
+        raise HTTPException(status_code=429, detail="Billing refresh too frequent",
+                            headers={"Retry-After": str(REFRESH_COOLDOWN_SECONDS)}) from None
 
 
 @router.post(

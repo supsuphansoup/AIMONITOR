@@ -149,7 +149,7 @@ def test_key_spend_uses_correct_secrets_independent_cache_and_unknown(manager, m
     count = len(calls)
     client.get("/api/v1/keys/spend")
     assert len(calls) == count
-    client.get("/api/v1/keys/spend?force=true")
+    client.post("/api/v1/keys/spend/refresh")
     assert len(calls) > count
     assert "billing-secret" not in response.text and "regular-key" not in response.text
 
