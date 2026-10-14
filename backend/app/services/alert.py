@@ -3,7 +3,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -201,6 +201,7 @@ class AlertEvaluator:
         rule_ids: Optional[List[int]] = None,
         ignore_cooldown: bool = False,
         skipped_rules: Optional[List[Dict[str, Any]]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> List[AlertHistory]:
         """Evaluate active rules against recent metrics; log and dispatch hits.
 
@@ -225,6 +226,8 @@ class AlertEvaluator:
         overview_cache: Dict[int, Dict[str, Any]] = {}
 
         for rule in rules:
+            if should_stop is not None and should_stop():
+                break
             if not ignore_cooldown and cls.is_in_cooldown(rule, now):
                 continue
 
@@ -273,6 +276,8 @@ class AlertEvaluator:
             metric_val = extract_metric_value(overview, rule.metric_type)
             if not compare_operator(metric_val, rule.operator, rule.threshold_value):
                 continue
+            if should_stop is not None and should_stop():
+                break
 
             message = cls.build_message(rule, metric_val, note)
             try:
@@ -298,6 +303,8 @@ class AlertEvaluator:
                 raise
             triggered_histories.append(history)
 
+            if should_stop is not None and should_stop():
+                break
             sent_ok = cls.dispatch_webhook(rule, metric_val, now, message)
             try:
                 history.message = message
