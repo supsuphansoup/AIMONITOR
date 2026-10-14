@@ -27,6 +27,8 @@ from desktop.tray import TrayManager
 from desktop.widget import FloatingWidget
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+for _http_logger in ("httpx", "httpcore"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 logger = logging.getLogger("aimonitor.desktop")
 
 
@@ -34,7 +36,8 @@ def backend_command(port: int = 8000, host: str = "127.0.0.1") -> List[str]:
     """Command that serves the local API. A packaged build serves it from its own exe."""
     if getattr(sys, "frozen", False):
         return [sys.executable, "--serve-backend", "--port", str(port), "--host", host]
-    return [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", host, "--port", str(port)]
+    return [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", host, "--port", str(port),
+            "--no-access-log"]
 
 
 def local_backend_address(url: str):

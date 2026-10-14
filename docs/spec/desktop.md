@@ -55,6 +55,8 @@ import한 뒤 종료 코드로 결과를 알린다. exe 실행 시 작업 폴더
 `~/.aimonitor/aimonitor.db`, `.env`도 그 폴더에서 읽는다. 콘솔이 없으므로 출력은 `~/.aimonitor/logs/<역할>.log`에
 역할별로 회전 저장한다(UTF-8, 파일당 최대 1MiB, 백업 3개, 역할당 최대 4MiB).
 한 번의 로그 쓰기는 16KiB 이하로 잘라 기록하고 잘림 표식을 남긴다. 백엔드 접근 로그는 끈다.
+소스 모드에서 자동 실행하는 uvicorn도 `--no-access-log`를 사용한다. 데스크톱의 httpx·httpcore 로거는
+WARNING 이상으로 제한해 INFO 요청 URL이 쿼리 문자열과 함께 로그에 남지 않게 한다.
 데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄운다.
 코드 서명이 없어 첫 실행 시 SmartScreen 경고가 뜰 수 있다. 빌드·릴리스 절차는 [security-ops.md](security-ops.md)의 배포 절.
 
