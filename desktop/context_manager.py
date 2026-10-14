@@ -89,6 +89,8 @@ def _usage_block(raw: Optional[Dict[str, Any]], krw_rate: float) -> Dict[str, An
         "cost_unknown": int(raw.get("cost_unknown") or 0),
     }
     out["cost_krw"] = int(round(out["cost_usd"] * krw_rate))
+    if "record_count" in raw:
+        out["record_count"] = int(raw["record_count"])
     if raw.get("since"):
         out["since"] = raw["since"]
     return out

@@ -1,13 +1,15 @@
 """Metric aggregation.
 
-Counts and sums are computed by the database; only the latency column is pulled
-into Python, and even that is capped. The previous implementation materialized
+Counts and sums are computed by the database; capped latency samples and streamed
+Copilot request metadata are read into Python. The previous implementation materialized
 every matching row as an ORM object to add up four integers, which is fine for a
 demo and fatal for a table that has been collecting traffic for a month.
 """
 
+import json
 import math
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import Select, case, func
@@ -353,11 +355,13 @@ class MetricAggregator:
         Watcher rows are grouped by the tool that produced them (Claude Code,
         Antigravity, Copilot), not by provider: Copilot also calls Claude models,
         and those calls are not Claude Code usage. Every other row is grouped as
-        `<provider>_api`.
+        `<provider>_api`, except local Ollama usage which keeps `ollama`.
 
         Windows: rolling 5 hours, today and this month in the PC's local time,
         and the last 7 days. Cost sums only priced rows; `cost_unknown` counts
         the rest so a caller can say "계산 불가" instead of showing a low total.
+        Copilot requests use positive integer metadata counts; `record_count`
+        remains the number of traces, also the unit of `cost_unknown`.
         """
         _ensure_read_snapshot(session)
         now_utc = to_aware_utc(now) if now else to_aware_utc(utc_now())
@@ -367,9 +371,13 @@ class MetricAggregator:
             "7d": now_utc - timedelta(days=7),
             "month": local_period_start_utc(now_utc, month_start=True),
         }
+        window_starts = {name: to_naive_utc(since) for name, since in windows.items()}
 
+        tool_key = func.coalesce(_watcher_key(), case(
+            (TraceEvent.provider == "ollama", "ollama"), else_=col(TraceEvent.provider) + "_api",
+        ))
         source = select(
-            func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api").label("tool_key"),
+            tool_key.label("tool_key"),
             col(TraceEvent.account_id), col(TraceEvent.timestamp),
             col(TraceEvent.total_tokens), KNOWN_COST.label("known_cost"),
             case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0).label("unknown_cost"),
@@ -388,8 +396,39 @@ class MetricAggregator:
             source.c.timestamp >= min(to_naive_utc(since) for since in windows.values()),
         ).group_by(source.c.tool_key, source.c.account_id)
         summaries = {
-            (row.tool_key, row.account_id): row._mapping for row in session.exec(usage_query).all()
+            (row.tool_key, row.account_id): dict(row._mapping) for row in session.exec(usage_query).all()
         }
+        for usage in summaries.values():
+            for name in windows:
+                usage[name + "_record_count"] = usage[name + "_requests"]
+        if any(key == "copilot" for key, account_id in summaries):
+            # Parse JSON portably; the bounded cache lives only for this request.
+            @lru_cache(maxsize=128)
+            def request_count(metadata_json: Optional[str]) -> int:
+                try:
+                    metadata = json.loads(metadata_json) if metadata_json else {}
+                except (TypeError, ValueError, RecursionError):
+                    return 1
+                count = metadata.get("requests") if isinstance(metadata, dict) else None
+                return count if type(count) is int and count > 0 else 1
+
+            request_windows = [(since, name + "_requests") for name, since in window_starts.items()]
+            copilot_query = select(
+                col(TraceEvent.account_id), col(TraceEvent.timestamp), col(TraceEvent.metadata_json),
+            ).where(
+                _watcher_key() == "copilot",
+                col(TraceEvent.timestamp) >= min(window_starts.values()),
+                col(TraceEvent.timestamp) <= to_naive_utc(now_utc),
+            ).execution_options(yield_per=1000)
+            for account_id, timestamp, metadata_json in session.connection().execute(copilot_query):
+                count = request_count(metadata_json)
+                if count == 1:
+                    continue
+                usage = summaries[("copilot", account_id)]
+                additional = count - 1
+                for since, column in request_windows:
+                    if timestamp >= since:
+                        usage[column] += additional
         latest_times = select(
             source.c.tool_key, source.c.account_id, func.max(source.c.timestamp).label("timestamp"),
         ).group_by(source.c.tool_key, source.c.account_id).subquery("latest_times")
@@ -398,7 +437,7 @@ class MetricAggregator:
         ).select_from(latest_times).join(TraceEvent, (
             (col(TraceEvent.timestamp) == latest_times.c.timestamp)
             & col(TraceEvent.account_id).is_not_distinct_from(latest_times.c.account_id)
-            & (func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api") == latest_times.c.tool_key)
+            & (tool_key == latest_times.c.tool_key)
         )).group_by(latest_times.c.tool_key, latest_times.c.account_id).subquery("latest_ids")
         query = select(
             latest_ids.c.tool_key, latest_ids.c.account_id,
@@ -432,7 +471,7 @@ class MetricAggregator:
             if key not in results:
                 results[key] = {**latest, "windows": {
                     name: {"since": to_aware_utc(since).isoformat(), "requests": 0, "tokens": 0,
-                           "cost_usd": 0.0, "cost_unknown": 0, "earliest": None}
+                           "record_count": 0, "cost_usd": 0.0, "cost_unknown": 0, "earliest": None}
                     for name, since in windows.items()
                 }, "accounts": []}
             total = results[key]
@@ -447,13 +486,14 @@ class MetricAggregator:
                 usage = {
                     "since": total["windows"][name]["since"],
                     "requests": int(usage_row.get(name + "_requests", 0)),
+                    "record_count": int(usage_row.get(name + "_record_count", 0)),
                     "tokens": int(usage_row.get(name + "_tokens", 0)),
                     "cost_usd": float(usage_row.get(name + "_cost", 0.0)),
                     "cost_unknown": int(usage_row.get(name + "_unknown", 0)),
                     "earliest": to_aware_utc(earliest).isoformat() if earliest else None,
                 }
                 combined = total["windows"][name]
-                for field in ("requests", "tokens", "cost_usd", "cost_unknown"):
+                for field in ("requests", "record_count", "tokens", "cost_usd", "cost_unknown"):
                     combined[field] += usage[field]
                 if usage["earliest"] and (
                     not combined["earliest"] or usage["earliest"] < combined["earliest"]

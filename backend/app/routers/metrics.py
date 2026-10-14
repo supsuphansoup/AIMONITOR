@@ -183,8 +183,8 @@ def _sanitize_connected_item(item: Dict[str, Any]) -> None:
         for field in ("as_of", "period_start"):
             if spend.get(field):
                 spend[field] = to_aware_utc(datetime.fromisoformat(spend[field])).isoformat()
-    # A zero priced subtotal is not a zero bill when every call is unpriced.
+    # A zero priced subtotal is not a zero bill when every trace is unpriced.
     for usage in item["usage"].values():
-        if usage["cost_unknown"] and usage["cost_unknown"] == usage["requests"]:
+        if usage["cost_unknown"] and usage["cost_unknown"] == usage.get("record_count", usage["requests"]):
             usage["cost_usd"] = None
             usage["cost_krw"] = None

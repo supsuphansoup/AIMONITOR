@@ -42,12 +42,13 @@ rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·�
 
 ### 도구별 사용량 (`/metrics/active_contexts`)
 
-- 대소문자까지 정확한 쉼표 구분 태그로 도구를 구분하며, 나머지는 `<provider>_api`로 묶는다. watcher 태그가 여럿이면 `WATCHER_TAGS` 정의 순서인 `claude-code` → `antigravity` → `copilot` → `codex` → `cursor` 중 처음 일치한 도구 하나에만 귀속한다. 입력·SDK 계약은 바꾸지 않으며 도구별 요청 수 합계는 원본 요청 수와 같다.
+- 대소문자까지 정확한 쉼표 구분 태그로 도구를 구분하며, 나머지는 `<provider>_api`로 묶는다. 로컬 예외인 provider `ollama`는 감지 키와 같은 `ollama`로 집계하며 최신 컨텍스트에도 같은 분류를 쓴다. watcher 태그가 여럿이면 `WATCHER_TAGS` 정의 순서인 `claude-code` → `antigravity` → `copilot` → `codex` → `cursor` 중 처음 일치한 도구 하나에만 귀속한다. 입력·SDK 계약은 바꾸지 않으며 도구별 `record_count` 합계는 원본 기록 수와 같다.
+- 각 창의 `requests`는 Copilot에 한해 저장된 `metadata.requests`가 양의 정수(JSON boolean·실수·문자열 제외)이면 그 값, 아니면 1을 더한 도구의 실제 요청 수다. 다른 도구는 기록당 1이며 overview·breakdown·timeseries의 건수는 모두 기록(트레이스) 수를 유지한다. `record_count`는 모든 도구·계정·창의 기록 수다. 토큰·비용은 요청 수를 다시 곱하지 않고, `cost_unknown`도 미상 기록 수이므로 전부 미상 판정은 `record_count`와 비교한다.
 - 오늘·이번 달 경계는 백엔드 PC의 로컬 시각, 응답 시각은 UTC 오프셋 ISO-8601이다. SQL 합계에서 미상 비용을 제외하고 `cost_unknown`을 반환한다.
 - 로컬 자정·월초는 해당 현지 naive 시각에 적용되는 시스템 시간대 규칙으로 UTC 변환한다. DST 전환 후의 현재 오프셋을 과거 경계에 재사용하지 않는다. 변환은 공통 timeutil에서 수행한다.
 - 최신 요청은 `timestamp DESC, id DESC`로 선택하며 미래 시각 행을 제외한다. Copilot 세션 합계와 Antigravity 추정 토큰은 컨텍스트 크기로 쓰지 않는다.
 - 도구별 합계·기존 필드를 유지하고 `accounts` 배열에 계정별로 같은 창/컨텍스트 구조를 둔다. `null` 계정은 별도 항목이다.
-- 4개 창과 모든 계정의 합계는 한 조건부 집계 SELECT로 계산한다. 계정별 최신 요청은 별도 SELECT에서 최대 timestamp 및 동률 최대 id로 선택하고 도구 합계·최신 요청은 계정 결과에서 합친다. 두 SELECT는 같은 스냅샷이며 SQL 횟수는 계정 수에 비례하지 않는다.
+- 4개 창과 모든 계정의 기록·토큰·비용 합계는 한 조건부 집계 SELECT로 계산한다. 계정별 최신 요청은 별도 SELECT에서 최대 timestamp 및 동률 최대 id로 선택하고 도구 합계·최신 요청은 계정 결과에서 합친다. Copilot 기록이 있으면 같은 기간의 계정·시각·메타데이터만 추가 SELECT 하나로 1,000행씩 읽어 실제 요청 수를 더한다. 메타데이터 파싱 결과 캐시는 호출 안에서 최대 128항목만 유지한다. 모든 SELECT는 같은 스냅샷이며 SQL 횟수는 계정 수에 비례하지 않는다.
 
 ### 연결 AI (`/metrics/connected_ais`)
 
@@ -61,7 +62,7 @@ rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·�
 - 도구 감지 실패는 대상별로 격리한다. 실패 항목은 `detection_status='unavailable'`, `plan_name='감지 불가'`로 남기며 정상 항목은 `detection_status='available'`이다. 감지기의 연결·구독 상태는 실패 시 `null`이며 미설치(`false`)와 구별한다. 실패 대상의 공식 한도·청구를 추측하지 않는다.
 - `MetricAggregator.get_active_contexts`를 그대로 재사용한다. 사용 창은 5시간·오늘·7일·이번 달이며 오늘/월 경계는 백엔드 PC의 로컬 시각이다. SQL 합계에는 표본 상한이 없고 최신 컨텍스트는 계정별 최대 timestamp 및 동률 최대 id로 선택한다. 미래 행은 제외하며 정확한 도구 태그로 구분한다.
 - 연결 감지·한도·요약은 기존 `desktop.ai_detector`/`desktop.context_manager`를 재사용하며 데스크톱 파일을 변경하지 않는다. 데스크톱 설정의 숨김 목록도 반영한다. 공식 청구/잔액은 기존 `spend_service`의 15분 캐시를 사용한다.
-- `context`와 `official_spend`는 없으면 `null`, 공식 한도의 `remaining_pct`도 모르면 `null`이다. `usage`의 `cost_unknown`이 요청 수와 같고 0보다 크면 비용은 `cost_usd=null, cost_krw=null`이다. 일부 미상은 알려진 소계와 미상 건수를 반환한다. `total.billed_*`는 로컬 기록의 알려진 비용 소계로 공식 청구액이 아니며 `billed_unknown_month`를 함께 읽어야 한다.
+- `context`와 `official_spend`는 없으면 `null`, 공식 한도의 `remaining_pct`도 모르면 `null`이다. `usage`의 `cost_unknown`이 `record_count`와 같고 0보다 크면 비용은 `cost_usd=null, cost_krw=null`이다. 일부 미상은 알려진 소계와 미상 기록 수를 반환한다. `total.billed_*`는 로컬 기록의 알려진 비용 소계로 공식 청구액이 아니며 `billed_unknown_month`를 함께 읽어야 한다.
 - 모든 응답 시각(`last_request_at`, 컨텍스트/한도의 `as_of`, `resets_at`, 청구액의 `as_of`, `period_start`)은 공통 timeutil로 UTC 오프셋 ISO-8601을 만든다. 로컬 경로·감지기의 예외 상세·공급자 조회 오류 상세는 응답에서 제외한다. 키·프롬프트·응답·세션 원문을 추가로 저장하거나 반환하지 않는다.
 
 ## Open questions

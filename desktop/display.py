@@ -170,7 +170,9 @@ def usage_cost_text(block: Dict[str, Any], meaning: str) -> str:
         return "￦0 (로컬)"
     if not block or block.get("cost_krw") is None:
         return "계산 불가" if block.get("cost_unknown") else "기록 없음"
-    if block.get("cost_unknown") and block.get("cost_unknown") == block.get("requests"):
+    if block.get("cost_unknown") and block.get("cost_unknown") == block.get(
+        "record_count", block.get("requests"),
+    ):
         return "계산 불가"
     text = krw(block.get("cost_krw", 0))
     if meaning == "api_equivalent":
