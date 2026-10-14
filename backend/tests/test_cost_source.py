@@ -193,7 +193,7 @@ M = 1_000_000
     # pricing pages as of PRICING_AS_OF.
     ("anthropic", "claude-opus-5-5", (4.00, 20.00, 5.00, 0.20)),       # cache read 0.05x
     ("anthropic", "claude-fable-5-1", (10.00, 50.00, 12.50, 0.25)),    # cache read 0.025x
-    ("anthropic", "claude-sonnet-5-5", (2.00, 10.00, 2.50, 0.20)),
+    ("anthropic", "claude-sonnet-5-5", (2.00, 10.00, 2.50, 0.10)),
     ("anthropic", "claude-sonnet-4-5-20250929", (3.00, 15.00, 3.75, 0.30)),
     ("anthropic", "claude-haiku-4-5", (1.00, 5.00, 1.25, 0.10)),
     ("openai", "gpt-5", (1.25, 10.00, 1.25, 0.125)),                   # cache read 0.1x

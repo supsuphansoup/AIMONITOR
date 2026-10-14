@@ -54,21 +54,32 @@ DEFAULT_CACHE_MULTIPLIERS: Tuple[float, float] = (1.00, 1.00)
 #: When the published prices below were last checked against the sources.
 #: Bump it together with the table; /system/pricing reports it so a stale card
 #: is visible rather than silently wrong.
-PRICING_AS_OF = "2026-10-06"
+PRICING_AS_OF = "2026-10-14"
 PRICING_SOURCES: Dict[str, str] = {
     "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
     "openai": "https://developers.openai.com/api/docs/pricing",
     "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
+    "gemini_changelog": "https://ai.google.dev/gemini-api/docs/changelog",
+    "gemini_flash_8b": (
+        "https://developers.googleblog.com/en/gemini-15-flash-8b-is-now-generally-available-for-use/"
+    ),
+    "openai_gpt_6_sol": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+    "openai_gpt_5_6_terra": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "openai_gpt_5_6_luna": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    "openai_o1_mini": "https://developers.openai.com/api/docs/models/o1-mini",
 }
 
 
-def _openai(input_rate: float, output_rate: float, cached: Optional[float]) -> ModelPricing:
-    """OpenAI: no cache-write premium; models without a cached rate get no discount."""
-    return ModelPricing(input_rate, output_rate, input_rate, input_rate if cached is None else cached)
+def _openai(
+    input_rate: float, output_rate: float, cached: Optional[float], write: Optional[float] = None,
+) -> ModelPricing:
+    """Use each model's published cache rates; older models write at the input rate."""
+    return ModelPricing(input_rate, output_rate, input_rate if write is None else write,
+                        input_rate if cached is None else cached)
 
 
 def _anthropic(input_rate: float, output_rate: float, write_5m: float, read: float) -> ModelPricing:
-    # PRICING_SOURCES["anthropic"], verified 2026-10-06: 1-hour writes cost 2x input.
+    # PRICING_SOURCES["anthropic"], verified 2026-10-14: 1-hour writes cost 2x input.
     return ModelPricing(input_rate, output_rate, write_5m, read, input_rate * 2)
 
 
@@ -85,13 +96,13 @@ def _gemini(input_rate: float, output_rate: float, cached: float) -> ModelPricin
 # own - some snapshots are priced differently (gpt-4o-2024-05-13), so list those.
 MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     # --- OpenAI, verified PRICING_AS_OF (Standard tier; "<272K" models at the short-context rate)
-    "gpt-6-astra": _openai(10.00, 50.00, 1.00),
-    "gpt-6.1-sol": _openai(2.00, 10.00, 0.10),
-    "gpt-6-sol": _openai(2.00, 10.00, 0.20),
-    "gpt-6-luna": _openai(0.10, 0.50, 0.01),
-    "gpt-5.6-sol": _openai(4.00, 20.00, 0.40),
-    "gpt-5.6-terra": _openai(2.00, 12.00, 0.20),
-    "gpt-5.6-luna": _openai(0.20, 1.20, 0.02),
+    "gpt-6-astra": _openai(10.00, 50.00, 1.00, write=12.50),
+    "gpt-6.1-sol": _openai(2.00, 10.00, 0.10, write=2.50),
+    "gpt-6-sol": _openai(2.00, 10.00, 0.20, write=2.50),
+    "gpt-6-luna": _openai(0.10, 0.50, 0.01, write=0.125),
+    "gpt-5.6-sol": _openai(4.00, 20.00, 0.40, write=5.00),
+    "gpt-5.6-terra": _openai(2.00, 12.00, 0.20, write=2.50),
+    "gpt-5.6-luna": _openai(0.20, 1.20, 0.02, write=0.25),
     "gpt-5.5": _openai(5.00, 30.00, 0.50),
     "gpt-5.5-pro": _openai(30.00, 180.00, None),
     "gpt-5.4": _openai(2.50, 15.00, 0.25),
@@ -117,6 +128,7 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "o3": _openai(2.00, 8.00, 0.50),
     "o4-mini": _openai(1.10, 4.40, 0.275),
     "o3-mini": _openai(1.10, 4.40, 0.55),
+    "o1-mini": _openai(1.10, 4.40, 0.55),
     "gpt-4-turbo": _openai(10.00, 30.00, None),          # gpt-4-turbo-2024-04-09
     "gpt-4": _openai(30.00, 60.00, None),                # gpt-4-0613
     "gpt-3.5-turbo": _openai(0.50, 1.50, None),
@@ -127,7 +139,6 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     # OpenAI, retired or unlisted - kept at their last known price, not re-verified
     "gpt-4o-2024-11-20": _openai(2.50, 10.00, 1.25),
     "gpt-4o-2024-08-06": _openai(2.50, 10.00, 1.25),
-    "o1-mini": ModelPricing(3.00, 12.00),
 
     # --- Anthropic, verified PRICING_AS_OF (first-party API; Bedrock/Vertex regional endpoints differ)
     "claude-fable-5-1": _anthropic(10.00, 50.00, 12.50, 0.25),
@@ -142,7 +153,7 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "claude-opus-4-5": _anthropic(5.00, 25.00, 6.25, 0.50),
     "claude-opus-4-1": _anthropic(15.00, 75.00, 18.75, 1.50),
     "claude-opus-4": _anthropic(15.00, 75.00, 18.75, 1.50),
-    "claude-sonnet-5-5": _anthropic(2.00, 10.00, 2.50, 0.20),
+    "claude-sonnet-5-5": _anthropic(2.00, 10.00, 2.50, 0.10),
     "claude-sonnet-5": _anthropic(2.00, 10.00, 2.50, 0.20),
     "claude-sonnet-4-6": _anthropic(3.00, 15.00, 3.75, 0.30),
     "claude-sonnet-4-5": _anthropic(3.00, 15.00, 3.75, 0.30),
@@ -166,7 +177,7 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gemini-3.8-flash": _gemini(0.75, 3.75, 0.075),
     "gemini-3.7-flash": _gemini(0.75, 3.75, 0.075),
     "gemini-3.6-flash": _gemini(0.75, 3.75, 0.075),
-    "gemini-3.5-flash": _gemini(1.50, 9.00, 0.15),
+    # gemini-3.5-flash: routing to 3.6 is documented, alias billing is not confirmed.
     "gemini-3.5-flash-lite": _gemini(0.30, 2.50, 0.03),
     "gemini-3.1-flash-lite": _gemini(0.25, 1.50, 0.025),
     "gemini-3.1-pro-preview": _gemini(2.00, 12.00, 0.20),
@@ -177,7 +188,8 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gemini-2.0-flash-lite": ModelPricing(0.075, 0.30),
     "gemini-1.5-pro": ModelPricing(1.25, 5.00),
     "gemini-1.5-flash": ModelPricing(0.075, 0.30),
-    "gemini-1.5-flash-8b": ModelPricing(0.0375, 0.15),
+    # Historical <128K price verified in PRICING_SOURCES["gemini_flash_8b"].
+    "gemini-1.5-flash-8b": _gemini(0.0375, 0.15, 0.01),
 }
 
 #: What may follow a pricing key for a name to still mean that model: dated
