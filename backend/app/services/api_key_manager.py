@@ -131,7 +131,7 @@ class APIKeyManager:
 
     def _save_raw(self, data: Dict[str, Dict[str, Any]]) -> None:
         if secret_store.AVAILABLE_SCHEME == "unavailable":
-            raise secret_store.StorageError("Key storage encryption unavailable")
+            raise secret_store.StorageError("Encrypted key storage is unavailable")
         for provider, entries in list(data.items()):
             if any(field in entries for field in ("key", "sealed", "scheme")):
                 entries = {"default": {**entries, "label": "기본"}}
@@ -303,7 +303,7 @@ class APIKeyManager:
 
     def _write_key(self, provider: str, key_id: str, key_value: str, label: str) -> Dict[str, Any]:
         if secret_store.AVAILABLE_SCHEME == "unavailable":
-            raise secret_store.StorageError("Key storage encryption unavailable")
+            raise secret_store.StorageError("Encrypted key storage is unavailable")
         if len(key_value) > MAX_KEY_LENGTH or any(ord(c) < 32 or ord(c) > 126 for c in key_value):
             raise ValueError("Invalid provider or key")
         key_value = key_value.strip()
