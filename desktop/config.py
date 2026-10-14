@@ -25,6 +25,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "api_key": None,  # Decrypted in memory only; save_config seals it on disk.
     "krw_rate_source": None,
     "krw_rate_as_of": None,
+    "krw_rate_last_success": None,
     # Widget items the user picked (ids from desktop.display.widget_entries); None = defaults.
     "widget_items": None,
     # Copilot has no public remaining-quota value; the user may type their plan's limit.
@@ -66,7 +67,7 @@ def _validated(data: Dict[str, Any]) -> Dict[str, Any]:
                 isinstance(value, list) and all(isinstance(item, str) for item in value))
         elif key == "backend_url":
             valid = isinstance(value, str) and value.startswith(("http://", "https://"))
-        elif key in ("api_key", "krw_rate_source", "krw_rate_as_of"):
+        elif key in ("api_key", "krw_rate_source", "krw_rate_as_of", "krw_rate_last_success"):
             valid = value is None or isinstance(value, str)
         if not valid:
             config[key] = deepcopy(DEFAULT_CONFIG[key])

@@ -7,14 +7,34 @@ next to every won amount rather than calling a daily rate "real-time".
 
 import json
 import logging
+import math
 import threading
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger("aimonitor.desktop.rate_fetcher")
 
 DEFAULT_RATE = 1380.0
+
+
+def _valid_rate(value) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 100 < value < 10000 and math.isfinite(value))
+
+
+def _date(value) -> Optional[datetime]:
+    try:
+        result = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        if result.tzinfo is None:
+            return result.replace(tzinfo=timezone.utc)
+        return result.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _stale(as_of: Optional[datetime], now: datetime) -> bool:
+    return as_of is None or now - as_of > timedelta(days=7) or as_of - now > timedelta(days=1)
 
 
 def _parse_er_api(data: dict) -> Tuple[Optional[float], Optional[datetime]]:
@@ -43,17 +63,27 @@ EXCHANGE_APIS = [
 ]
 
 
-def fetch_usd_krw_rate() -> Tuple[Optional[float], Optional[str], Optional[datetime]]:
-    """Return (rate, source label, provider timestamp) from the first source that answers."""
+def fetch_usd_krw_rate(
+    now: Optional[datetime] = None,
+) -> Tuple[Optional[float], Optional[str], Optional[datetime]]:
+    """Prefer a fresh dated source; otherwise return the newest dated candidate."""
+    now = _date(now) or datetime.now(timezone.utc)
+    candidates = []
     for url, label, parse in EXCHANGE_APIS:
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "AIMONITOR"})
             with urllib.request.urlopen(req, timeout=3.5) as resp:
                 rate, as_of = parse(json.loads(resp.read().decode("utf-8")))
-            if rate and 100 < rate < 10000:  # reject an obviously broken payload
-                return rate, label, as_of
+            if _valid_rate(rate):
+                as_of = _date(as_of)
+                candidate = (rate, label, as_of)
+                if not _stale(as_of, now):
+                    return candidate
+                candidates.append(candidate)
         except Exception as e:
             logger.debug("Failed to fetch rate from %s: %s", label, type(e).__name__)
+    if candidates:
+        return max(candidates, key=lambda c: c[2] or datetime.min.replace(tzinfo=timezone.utc))
     return None, None, None
 
 
@@ -65,13 +95,18 @@ class AutoRateUpdater:
         current_rate: float = DEFAULT_RATE,
         on_rate_updated: Optional[Callable[[float, str], None]] = None,
         interval_sec: float = 1800.0,
-        source: str = "저장된 값",
+        source: Optional[str] = None,
         as_of: Optional[datetime] = None,
+        last_success_at: Optional[datetime] = None,
     ):
-        self.rate = current_rate
+        valid = _valid_rate(current_rate)
+        self.rate = float(current_rate) if valid else DEFAULT_RATE
         self.interval_sec = interval_sec
-        self.source = source
-        self.as_of = as_of  # when the provider published the rate
+        self.source = source if valid and isinstance(source, str) and source.strip() else (
+            "저장된 값" if valid and self.rate != DEFAULT_RATE else "기본 환율")
+        self.as_of = _date(as_of) if valid else None  # when the provider published the rate
+        self.last_success_at = _date(last_success_at) if valid else None
+        self.last_failure_at: Optional[datetime] = None
         self.persistence_failed = False
         self._listeners: List[Callable[[float, str], None]] = []
         if on_rate_updated:
@@ -103,25 +138,39 @@ class AutoRateUpdater:
 
     def describe(self) -> str:
         """`1 USD = ￦1,382.4 (open.er-api.com · 10/04 기준)`"""
-        when = f" · {self.as_of.astimezone().strftime('%m/%d')} 기준" if self.as_of else ""
-        return f"1 USD = ￦{self.rate:,.1f} ({self.source}{when})"
+        parts = [self.source]
+        if self.as_of:
+            parts.append(self.as_of.strftime("%Y-%m-%d") + " UTC 기준")
+        elif self.source != "기본 환율":
+            parts.append("기준일 확인 불가")
+        if self.source != "기본 환율" and _stale(self.as_of, datetime.now(timezone.utc)):
+            parts.append("오래됨")
+        if self.last_success_at:
+            parts.append("최종 성공 " + self.last_success_at.strftime("%Y-%m-%d %H:%M UTC"))
+        if self.last_failure_at:
+            parts.append("온라인 조회 실패 " + self.last_failure_at.strftime("%Y-%m-%d %H:%M UTC"))
+        return f"1 USD = ￦{self.rate:,.1f} ({' · '.join(parts)})"
 
     def update_now(self) -> Optional[float]:
         self.persistence_failed = False
         rate, src, as_of = fetch_usd_krw_rate()
-        if not rate:
-            return None
-        self.rate = round(rate, 1)
-        self.source = src or "온라인"
-        self.as_of = as_of
-        logger.info("Updated USD/KRW rate: %.1f from %s", self.rate, self.source)
-        self.persistence_failed = not _persist(self)
+        ok = _valid_rate(rate)
+        if ok:
+            self.rate = round(rate, 1)
+            self.source = src or "온라인"
+            self.as_of = _date(as_of)
+            self.last_success_at = datetime.now(timezone.utc)
+            self.last_failure_at = None
+            logger.info("Updated USD/KRW rate: %.1f from %s", self.rate, self.source)
+            self.persistence_failed = not _persist(self)
+        else:
+            self.last_failure_at = datetime.now(timezone.utc)
         for fn in list(self._listeners):
             try:
                 fn(self.rate, self.source)
             except Exception as e:
                 logger.debug("rate listener failed: %s", type(e).__name__)
-        return self.rate
+        return self.rate if ok else None
 
 
 def _persist(updater: AutoRateUpdater) -> bool:
@@ -129,7 +178,9 @@ def _persist(updater: AutoRateUpdater) -> bool:
         from desktop.config import update_config
 
         update_config({"krw_per_usd": updater.rate, "krw_rate_source": updater.source,
-                       "krw_rate_as_of": updater.as_of.isoformat() if updater.as_of else None})
+                       "krw_rate_as_of": updater.as_of.isoformat() if updater.as_of else None,
+                       "krw_rate_last_success": (updater.last_success_at.isoformat()
+                                                 if updater.last_success_at else None)})
         return True
     except Exception as e:
         logger.warning("could not persist rate: %s", type(e).__name__)
@@ -148,16 +199,11 @@ def shared_updater() -> AutoRateUpdater:
             from desktop.config import load_config
 
             cfg = load_config()
-            as_of = None
-            try:
-                if cfg.get("krw_rate_as_of"):
-                    as_of = datetime.fromisoformat(cfg["krw_rate_as_of"])
-            except ValueError:
-                pass
             _shared = AutoRateUpdater(
-                current_rate=float(cfg.get("krw_per_usd") or DEFAULT_RATE),
-                source=cfg.get("krw_rate_source") or "저장된 값",
-                as_of=as_of,
+                current_rate=cfg.get("krw_per_usd", DEFAULT_RATE),
+                source=cfg.get("krw_rate_source"),
+                as_of=cfg.get("krw_rate_as_of"),
+                last_success_at=cfg.get("krw_rate_last_success"),
             )
         _shared.start()
         return _shared

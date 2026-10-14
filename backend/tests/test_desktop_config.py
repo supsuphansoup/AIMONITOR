@@ -60,7 +60,8 @@ def test_rate_persistence_sends_only_rate_patch(monkeypatch):
     monkeypatch.setattr(config, "update_config", patch, raising=False)
     updater = rate_fetcher.AutoRateUpdater(current_rate=1400, source="test")
     rate_fetcher._persist(updater)
-    patch.assert_called_once_with({"krw_per_usd": 1400, "krw_rate_source": "test", "krw_rate_as_of": None})
+    patch.assert_called_once_with({"krw_per_usd": 1400, "krw_rate_source": "test", "krw_rate_as_of": None,
+                                   "krw_rate_last_success": None})
 
 
 def test_rate_update_reports_persistence_failure(monkeypatch):
