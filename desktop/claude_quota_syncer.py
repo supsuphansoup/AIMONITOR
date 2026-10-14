@@ -97,7 +97,7 @@ class ClaudeQuotaSyncer:
     def _get_quota_locked(
         self, force: bool, oauth: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        now = time.time()
+        now = time.monotonic()
         # If previously throttled (429), serve cached quota without hitting API
         if now < self._retry_after:
             return self._last_result
@@ -138,7 +138,7 @@ class ClaudeQuotaSyncer:
             res = httpx.get("https://api.anthropic.com/api/oauth/usage", headers=headers, timeout=4.0)
             if res.status_code == 429:
                 logger.info("Anthropic usage API 429 received, backing off for 120 seconds")
-                self._retry_after = time.time() + 120.0
+                self._retry_after = time.monotonic() + 120.0
                 return None
             if res.status_code != 200:
                 logger.debug("Anthropic usage API returned HTTP %s", res.status_code)

@@ -36,7 +36,7 @@ def test_acc10_failed_initial_fetch_observes_ttl_and_429(tmp_path, monkeypatch):
     directory = tmp_path / ".claude"
     credentials(directory)
     clock = [1_000_000.0]
-    monkeypatch.setattr(claude_quota_syncer.time, "time", lambda: clock[0])
+    monkeypatch.setattr(claude_quota_syncer.time, "monotonic", lambda: clock[0])
     get = Mock(side_effect=[httpx.Response(401), httpx.Response(429), httpx.Response(401)])
     monkeypatch.setattr(claude_quota_syncer.httpx, "get", get)
     syncer = claude_quota_syncer.ClaudeQuotaSyncer(directory, tmp_path / "cache.json")
