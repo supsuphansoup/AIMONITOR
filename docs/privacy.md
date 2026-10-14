@@ -17,10 +17,10 @@ AIMONITOR는 다른 도구의 로그와 로그인 파일을 읽는 앱입니다.
 | 대상 | 쓰는 값 |
 | :--- | :--- |
 | Claude Code 세션 로그 (`~/.claude/projects/**/*.jsonl`, `~/.claude-*`, `CLAUDE_CONFIG_DIR`, 직접 추가한 폴더) | 응답의 토큰 수·모델·시각·응답/요청 ID. 본문은 쓰지 않습니다. |
-| Claude `.credentials.json` | 로그인 토큰(`accessToken`) — 아래 Anthropic 사용량 조회에만 씁니다. 저장·기록하지 않습니다. `refreshToken`은 읽지 않습니다. 구독 종류(Pro/Max)도 읽습니다. |
+| Claude `.credentials.json` (계정별 설정 폴더) | 로그인 토큰(`accessToken`) — 아래 Anthropic 사용량 조회에만 씁니다. 저장·기록하지 않습니다. `refreshToken`은 읽지 않습니다. 구독 종류(Pro/Max)와 OAuth·`anthropicApiKey`의 설정 여부로 청구 방식을 구분합니다. API 키는 비어 있지 않은지만 확인하고 즉시 버리며 저장·로그·전송하지 않습니다. |
 | Claude `.claude.json` | 계정 UUID — 12자 해시로만 저장합니다. |
 | Codex 세션 로그 (`~/.codex/sessions`, `~/.codex-*`, `CODEX_HOME`) | 토큰 수·모델·시각, 한도 스냅샷(`rate_limits`) |
-| Codex `auth.json` | 계정 ID — 해시로만 저장합니다. 플랜 종류도 읽습니다. 액세스 토큰·API 키는 읽지 않습니다. |
+| Codex `auth.json` (계정별 설정 폴더) | 계정 ID — 해시로만 저장합니다. `id_token`의 계정·플랜 claim을 로컬에서 읽습니다. JSON을 메모리에 읽어 ChatGPT 로그인 토큰 필드와 `OPENAI_API_KEY`가 비어 있지 않은지 확인해 청구 방식을 구분합니다. API 키·액세스/갱신 토큰 값은 이 설정 여부 판단 직후 버리며 저장·로그·전송하지 않습니다. |
 | Copilot 세션 로그 (`~/.copilot/session-state`) | 세션 종료 이벤트의 모델별 토큰·요청 수, 프리미엄 요청 사용량(`requests.cost`), 세션 API 시간(`totalApiDurationMs`) |
 | Copilot `auth.db` | 로그인 토큰 **개수만** 셉니다. 값은 읽지 않습니다. |
 | Antigravity 로그 (`~/.gemini/antigravity/brain/…/transcript.jsonl`) | 본문 **길이**로 토큰을 추정합니다. 출력은 `content`·`thinking`, 입력은 `input_text`·`prompt`·`input` 중 처음 확인되는 문자열의 길이이며 없으면 입력은 추정하지 않습니다. 모델·공급자·시각·세션 ID도 씁니다. 본문은 메모리에서 길이만 재고 저장·전송하지 않습니다. |
@@ -57,7 +57,7 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 | `~/.aimonitor/api_keys.json` | 키 원문만 DPAPI로 암호화해(`sealed`) 저장합니다. 공급자·키 ID·라벨·검증 상태·마지막 검증 시각·잔액 설명은 평문입니다. |
 | `~/.aimonitor/api_keys.json.lock` | 데스크톱과 서버가 키 파일을 동시에 고치지 않게 하는 잠금 파일. 비밀값은 없습니다. |
 | `~/.aimonitor/desktop_config.json` | 화면 설정, 서버 주소, 서버 인증 키(DPAPI 암호화), USD/KRW 환율과 출처·기준일·마지막 조회 성공 시각 |
-| `~/.aimonitor/accounts.json`, `account_timeline.json` | 계정 해시·라벨·설정 폴더 경로·관측 시각 (타임라인은 최신 5,000개까지) |
+| `~/.aimonitor/accounts.json`, `account_timeline.json` | 계정 해시·라벨·설정 폴더 경로·관측 시각 (타임라인은 최신 5,000개까지). `accounts.json`에는 계정별 인증 방식(`subscription/api/unknown`), 현재 방식 첫 관측·마지막 변경 시각도 저장합니다. 키·토큰 값은 없습니다. |
 | `~/.aimonitor/quota/`, `claude_official_quota.json` | 한도 조회 결과(퍼센트·리셋 시각·구독 종류). 토큰은 없습니다. |
 | `~/.aimonitor/*offsets*.json`, `folder_offsets/`, `ai_cursors.json`, `ai_seen_claude.json` | 로그 파일별 읽은 위치와 중복 제거 키, 파일 교체를 알아보기 위한 파일 ID·크기·시각과 앞부분 일부의 해시. 본문은 없습니다. 30일 동안 사라진 파일의 기록은 지웁니다. |
 | `~/.aimonitor/logs/` (exe만) | 역할별 실행 로그 (파일당 1 MiB, 백업 3개). 손상된 로그 줄은 원문 없이 건수만 남깁니다. 요청 로그는 요청 ID·메서드·경로·상태·소요 시간만 남기고 쿼리 문자열·요청 본문은 남기지 않습니다. 오류 로그는 예외 종류만 남기고 예외 문구·SQL 매개변수는 남기지 않습니다. |

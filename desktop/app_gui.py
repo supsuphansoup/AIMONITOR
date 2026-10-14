@@ -61,6 +61,7 @@ from desktop.display import (
     krw,
     remaining_color,
     spend_text,
+    unclassified_total_text,
     usage_cost_text,
     window_text,
 )
@@ -1787,6 +1788,7 @@ class DesktopMainWindow(ctk.CTk):
             if len(groups) == 1 and groups[0].get("account_id") is None:
                 status = f"계정 미상 · {status}"
             w["lbl_session_status"].configure(text=status)
+            w["lbl_billing_note"].configure(text=item["billing_note"])
             if self._render_account_card(w, item):
                 continue
             windows = item["quota_windows"]
@@ -1827,10 +1829,12 @@ class DesktopMainWindow(ctk.CTk):
         self.lbl_total_cost_title.configure(text="이번 달 실제 청구 (API 종량제 · 이 PC 기록)")
         unknown = f" · {tot['billed_unknown_month']}건 계산 불가" if tot["billed_unknown_month"] else ""
         self.lbl_total_cost_krw.configure(text=f"{krw(tot['billed_month_krw'])}{unknown}")
+        unclassified = unclassified_total_text(tot)
+        unclassified_note = f"구분 미상 {unclassified} · " if unclassified is not None else ""
         self.lbl_total_cost_usd.configure(
             text=(
                 f"구독 사용분 API 환산 {krw(tot['api_equivalent_month_krw'])} (청구 아님) · "
-                f"{self.rate_updater.describe()}"
+                f"{unclassified_note}{self.rate_updater.describe()}"
             )
         )
         self.lbl_total_requests.configure(text=f"오늘 {tot['requests_today']:,}회 요청")

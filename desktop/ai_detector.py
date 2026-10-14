@@ -32,10 +32,11 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
 
 
-def _codex_plan_type(auth_file: Path) -> Optional[str]:
+def _codex_plan_type(auth_file: Path, data: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Plan claim from the ChatGPT id_token Codex stores. Read-only, never logged."""
     try:
-        data = json.loads(auth_file.read_text(encoding="utf-8"))
+        if data is None:
+            data = json.loads(auth_file.read_text(encoding="utf-8"))
         token = ((data.get("tokens") or {}).get("id_token")) or ""
         if isinstance(token, dict):  # some versions store the parsed token
             claims = token
@@ -130,6 +131,8 @@ class AIDetector:
 
     def _check_claude(self) -> Dict[str, Any]:
         """Check Claude Code installation and Claude.ai subscription."""
+        from desktop.accounts import auth_info_for
+
         claude_dir = self.home / ".claude"
         cred_file = claude_dir / ".credentials.json"
         projects_dir = claude_dir / "projects"
@@ -139,33 +142,27 @@ class AIDetector:
         plan_name = "미연동"
         detail = "Claude Code 미설치"
         max_context = 200_000
+        auth = auth_info_for("claude_code", claude_dir, self.home)
 
         if claude_dir.exists():
             is_connected = True
             # Check credentials for paid subscription
             if cred_file.exists():
-                try:
-                    cred_data = json.loads(cred_file.read_text(encoding="utf-8", errors="ignore"))
-                    if "claudeAiOauth" in cred_data:
-                        is_subscribed = True
-                        sub = str(cred_data["claudeAiOauth"].get("subscriptionType") or "").lower()
-                        plan_name = CLAUDE_PLAN_NAMES.get(sub, "Claude 구독 (플랜 확인 불가)")
-                        detail = "Claude.ai 계정 로그인 (공식 사용량 조회 가능)"
-                    elif "anthropicApiKey" in cred_data or os.environ.get("ANTHROPIC_API_KEY"):
-                        is_subscribed = True
-                        plan_name = "Anthropic API 종량제"
-                        detail = "API Key 직접 결제 연동됨"
-                    else:
-                        plan_name = "Claude Code (로컬)"
-                        detail = "로그인 정보 확인 중"
-                except Exception as e:
-                    detail = f"자격 증명 읽기 오류: {e}"
+                is_subscribed = auth["auth_mode"] != "unknown"
+                plan_name = auth["plan_name"]
+                detail = ("Claude.ai 계정 로그인 (공식 사용량 조회 가능)"
+                          if auth["auth_mode"] == "subscription" else "로그인 방식 확인 중")
+            elif auth["auth_mode"] == "api":
+                is_subscribed = True
+                plan_name = auth["plan_name"]
+                detail = "API Key 직접 결제 연동됨"
             elif projects_dir.exists() and any(projects_dir.glob("**/*.jsonl")):
                 plan_name = "Claude Code (로그인 정보 없음)"
                 detail = "대화 기록은 있으나 로그인 정보가 없어 플랜 확인 불가"
 
         if not is_connected and self._has_custom_profile("claude_code"):
             is_connected = True
+            auth = {"auth_mode": "unknown"}
             plan_name = "Claude Code (플랜 확인 불가)"
             detail = "사용자 지정 계정 폴더 감지됨"
 
@@ -177,6 +174,7 @@ class AIDetector:
             "is_connected": is_connected,
             "is_subscribed": is_subscribed,
             "plan_name": plan_name,
+            "auth_mode": auth["auth_mode"],
             "detail": detail,
             "max_context_tokens": max_context,
             "badge_color": "#a855f7",
@@ -385,6 +383,8 @@ class AIDetector:
 
     def _check_codex(self) -> Dict[str, Any]:
         """Codex CLI signed in with a ChatGPT plan (its logs carry official usage limits)."""
+        from desktop.accounts import auth_info_for
+
         codex_dir = self.home / ".codex"
         auth_file = codex_dir / "auth.json"
         is_connected = codex_dir.exists() and (auth_file.exists() or (codex_dir / "sessions").exists())
@@ -393,9 +393,9 @@ class AIDetector:
             is_connected = True
         plan_name = "미연동"
         detail = "Codex CLI 미설치"
+        auth = auth_info_for("codex", codex_dir, self.home) if default_connected else {"auth_mode": "unknown"}
         if is_connected:
-            plan = _codex_plan_type(auth_file)
-            plan_name = f"ChatGPT {plan.capitalize()}" if plan else "ChatGPT 플랜 (확인 불가)"
+            plan_name = auth.get("plan_name", "ChatGPT 플랜 (확인 불가)")
             detail = "Codex CLI 세션 로그에서 공식 사용 한도 확인"
         return {
             "key": "codex",
@@ -405,6 +405,7 @@ class AIDetector:
             "is_connected": is_connected,
             "is_subscribed": is_connected,
             "plan_name": plan_name,
+            "auth_mode": auth["auth_mode"],
             "detail": detail,
             "max_context_tokens": 400_000,
             "badge_color": "#10b981",

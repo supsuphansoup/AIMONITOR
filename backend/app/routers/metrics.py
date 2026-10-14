@@ -114,13 +114,16 @@ def get_active_contexts(session: Session = Depends(get_session)):
 def get_connected_ais(session: Session = Depends(get_session)):
     """Connected tools, sourced quotas and local usage; never credentials or local paths."""
     from backend.app.services.api_key_manager import spend_service
+    from desktop.accounts import AccountRegistry, account_billing_info
     from desktop.ai_detector import detect_connected_ais
     from desktop.config import load_config
-    from desktop.context_manager import get_connected_ai_summary
+    from desktop.context_manager import apply_account_billing, get_connected_ai_summary
 
     config = load_config()
     ais = detect_connected_ais()
     active = MetricAggregator.get_active_contexts(session=session)
+    now = to_aware_utc(utc_now())
+    billing = account_billing_info(AccountRegistry().list_accounts(), now=now)
     account_quotas = get_account_quota_windows(active)
     rate = float(config.get("krw_per_usd") or 1380.0)
     summary = get_connected_ai_summary(
@@ -143,7 +146,10 @@ def get_connected_ais(session: Session = Depends(get_session)):
         accounts = []
         for account in active.get(item["key"], {}).get("accounts", []):
             # A default credential's quota/bill cannot be attributed to another account.
-            account_ai = {**ai, "plan_name": "플랜 확인 불가"} if item["key"] in ("claude", "codex") else ai
+            info = billing.get((item["key"], account["account_id"]), {})
+            account_ai = {**ai, "plan_name": info.get("plan_name", "플랜 확인 불가"),
+                          "auth_mode": info.get("auth_mode", "unknown")} if item["key"] in (
+                              "claude", "codex") else ai
             account_item = get_connected_ai_summary(
                 active_ais=[account_ai], usage_by_ai={item["key"]: account}, krw_rate=rate,
                 config=config, quota_overrides={item["key"]: []}, official_spend={},
@@ -154,7 +160,7 @@ def get_connected_ais(session: Session = Depends(get_session)):
             accounts.append(account_item)
         item["accounts"] = accounts
         _sanitize_connected_item(item)
-    return summary
+    return apply_account_billing(summary, billing, now=now)
 
 
 def _sanitize_connected_item(item: Dict[str, Any]) -> None:
