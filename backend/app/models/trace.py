@@ -18,6 +18,8 @@ from backend.app.services.cost import SOURCE_UNKNOWN
 
 VALID_STATUSES: FrozenSet[str] = frozenset({"SUCCESS", "ERROR", "TIMEOUT", "RATE_LIMITED"})
 MAX_TOKENS_PER_TRACE = 1_000_000_000
+MAX_COST_USD_PER_TRACE = 1_000_000_000
+MAX_LATENCY_MS_PER_TRACE = 1_000_000_000
 
 
 class TraceEventBase(SQLModel):
@@ -100,8 +102,10 @@ class TraceEventCreate(BaseModel):
     cache_write_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
     cache_write_1h_tokens: int = PydanticField(default=0, le=MAX_TOKENS_PER_TRACE)
     total_tokens: Optional[int] = PydanticField(default=None, le=MAX_TOKENS_PER_TRACE)
-    latency_ms: Optional[float] = PydanticField(default=None, allow_inf_nan=False)
-    cost_usd: Optional[float] = PydanticField(default=None, allow_inf_nan=False)
+    latency_ms: Optional[float] = PydanticField(
+        default=None, allow_inf_nan=False, le=MAX_LATENCY_MS_PER_TRACE,
+    )
+    cost_usd: Optional[float] = PydanticField(default=None, allow_inf_nan=False, le=MAX_COST_USD_PER_TRACE)
     status: str = "SUCCESS"
     error_message: Optional[str] = None
     tags: Optional[List[str]] = None

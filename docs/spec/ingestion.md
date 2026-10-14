@@ -47,7 +47,10 @@
 SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이상 누적되어야 하므로
 로컬 앱의 현실적인 저장 규모에서 정수 오버플로를 방지한다.
 
-`cost_usd`·`latency_ms`는 유한 float만 허용한다. NaN·±Infinity와 float 범위를 넘는
+`cost_usd`·`latency_ms`는 각각 1,000,000,000 이하의 유한 float만 허용한다. 상한 단위는
+각각 달러·밀리초이며, 초과값은 단건·배치 모두 입력 검증에서 거부한다. 최대값 여러 건을
+합산해도 로컬 앱의 현실적인 저장 규모에서 float 범위를 넘지 않는다.
+NaN·±Infinity와 float 범위를 넘는
 `1e309` 등은 422이며, 음수 유한 값의 기존 보정 정책은 유지한다. UTC 정규화 결과가
 지원 시각 범위를 벗어나면 수집·조회·CSV 기간 필터 모두 422로 거부한다.
 
@@ -92,6 +95,8 @@ SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이�
 - 호출자가 정하는 문자열(`trace_id`, `session_id`, `provider`, `model_name`, `tags`)이 `=` `+` `-` `@` 탭·CR로 시작하면 앞에 `'`를 붙인다 — 스프레드시트에서 수식으로 실행되지 않게 (OWASP CSV injection). 숫자 컬럼은 그대로.
 - `limit` 기본 10,000(최대 100,000), 500행 단위 스트리밍.
 - `timestamp DESC, id DESC`로 최신 행부터 상한을 적용한다. `X-Total-Count`는 필터에 맞는 전체 건수이며, 그 건수가 `limit`보다 클 때만 `X-Export-Partial: true`를 반환한다 (그 외 `false`). HTTP 클라이언트는 `X-Total-Count`와 요청 상한으로도 잘림 여부를 확인할 수 있다.
+- SQLite는 COUNT 전에 실제 읽기 트랜잭션을 시작하고 스트리밍 종료까지 같은 Session·스냅샷을 유지한다.
+  `X-Total-Count`·`X-Export-Partial`과 CSV 행은 같은 시점을 설명하며, WAL 모드의 다른 writer는 계속 커밋할 수 있다.
 
 ### 계정 식별
 
