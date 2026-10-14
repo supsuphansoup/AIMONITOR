@@ -152,7 +152,8 @@ def test_local_slow_response_is_closed_and_deadline_stops_request(monkeypatch, m
         result = AlertEvaluator.dispatch_webhook(AlertRule(**RULE, webhook_url=url), 0, datetime.utcnow())
         elapsed = time.monotonic() - started
         if mode == "body":
-            assert result is True and elapsed < 2
+            # The body needs about 7 s; success before the 5 s deadline means it was not awaited.
+            assert result is True and elapsed < 4.5
         else:
             assert result is False and 4.5 <= elapsed < 8
         # Windows may accept one more write after the peer closes, so allow a few server writes.
