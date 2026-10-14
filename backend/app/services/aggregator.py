@@ -90,6 +90,15 @@ WATCHER_TAGS = {
 }
 
 
+def _watcher_key() -> Any:
+    tags = "," + func.coalesce(col(TraceEvent.tags), "") + ","
+    # replace is case-sensitive on SQLite and PostgreSQL; SQLite LIKE is not.
+    return case(*[
+        (func.replace(tags, f",{tag},", "") != tags, key)
+        for key, tag in WATCHER_TAGS.items()
+    ], else_=None)
+
+
 class MetricAggregator:
     @staticmethod
     def get_overview_metrics(
@@ -367,11 +376,11 @@ class MetricAggregator:
             "month": local_period_start_utc(now_utc, month_start=True),
         }
 
-        tags = "," + func.coalesce(col(TraceEvent.tags), "") + ","
+        watcher_key = _watcher_key()
         groups: List[tuple] = [
-            (key, "watcher", [tags.like(f"%,{tag},%")]) for key, tag in WATCHER_TAGS.items()
+            (key, "watcher", [watcher_key == key]) for key in WATCHER_TAGS
         ]
-        not_watcher = [~tags.like(f"%,{tag},%") for tag in WATCHER_TAGS.values()]
+        not_watcher = [watcher_key.is_(None)]
         providers = session.exec(select(TraceEvent.provider).where(*not_watcher).distinct()).all()
         groups += [
             (f"{prov}_api", "api", not_watcher + [col(TraceEvent.provider) == prov]) for prov in providers

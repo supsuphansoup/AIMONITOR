@@ -41,7 +41,7 @@ rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·�
 
 ### 도구별 사용량 (`/metrics/active_contexts`)
 
-- 정확한 쉼표 구분 태그 `claude-code`·`codex`·`copilot`·`antigravity`·`cursor`로 도구를 구분하며, 나머지는 `<provider>_api`로 묶는다.
+- 대소문자까지 정확한 쉼표 구분 태그로 도구를 구분하며, 나머지는 `<provider>_api`로 묶는다. watcher 태그가 여럿이면 `WATCHER_TAGS` 정의 순서인 `claude-code` → `antigravity` → `copilot` → `codex` → `cursor` 중 처음 일치한 도구 하나에만 귀속한다. 입력·SDK 계약은 바꾸지 않으며 도구별 요청 수 합계는 원본 요청 수와 같다.
 - 오늘·이번 달 경계는 백엔드 PC의 로컬 시각, 응답 시각은 UTC 오프셋 ISO-8601이다. SQL 합계에서 미상 비용을 제외하고 `cost_unknown`을 반환한다.
 - 로컬 자정·월초는 해당 현지 naive 시각에 적용되는 시스템 시간대 규칙으로 UTC 변환한다. DST 전환 후의 현재 오프셋을 과거 경계에 재사용하지 않는다. 변환은 공통 timeutil에서 수행한다.
 - 최신 요청은 `timestamp DESC, id DESC`로 선택하며 미래 시각 행을 제외한다. Copilot 세션 합계와 Antigravity 추정 토큰은 컨텍스트 크기로 쓰지 않는다.

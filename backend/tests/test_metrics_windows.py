@@ -2,8 +2,11 @@
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.dialects import postgresql
 
 from backend.app.models.trace import TraceEvent
+from backend.app.services.aggregator import MetricAggregator
 
 NOW = datetime(2026, 10, 14, 3)
 
@@ -53,3 +56,47 @@ def test_explicit_and_all_time_overview_contracts(client, session, monkeypatch, 
     response = client.get("/api/v1/metrics/overview", params=params)
     assert response.status_code == 200
     assert response.json()["total_requests"] == 2
+
+
+@pytest.mark.parametrize("tags,key", [
+    (None, "openai_api"), ("", "openai_api"), ("CODEX", "openai_api"),
+    ("Codex", "openai_api"), ("prefix-codex", "openai_api"), ("codex-suffix", "openai_api"),
+    ("junk,codex,other", "codex"), ("codex,codex", "codex"),
+    ("codex,claude-code", "claude"), ("claude-code,codex", "claude"),
+    ("copilot,cursor,antigravity,codex", "antigravity"), ("cursor,copilot", "copilot"),
+])
+def test_tool_tags_are_case_sensitive_and_exclusive(session, tags, key):
+    add_trace(session, "tagged", tags=tags)
+    result = MetricAggregator.get_active_contexts(session, now=NOW)
+    assert set(result) == {key}
+    assert result[key]["windows"]["5h"]["requests"] == 1
+
+
+def test_tool_request_totals_match_source_and_accounts(session):
+    for index, tags in enumerate(["claude-code,codex", "copilot,cursor", "CODEX", "codex", None]):
+        add_trace(session, str(index), tags=tags, account_id=None if index % 2 else "codex:dir-a")
+    result = MetricAggregator.get_active_contexts(session, now=NOW)
+    assert sum(item["windows"]["5h"]["requests"] for item in result.values()) == 5
+    for item in result.values():
+        assert item["windows"]["5h"]["requests"] == sum(
+            account["windows"]["5h"]["requests"] for account in item["accounts"]
+        )
+
+
+def test_active_context_queries_compile_for_postgres(session):
+    add_trace(session, "tagged", tags="codex,claude-code")
+    statements = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if context.compiled:
+            statements.append(context.compiled.statement)
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        MetricAggregator.get_active_contexts(session, now=NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert statements
+    for statement in statements:
+        assert str(statement.compile(dialect=postgresql.dialect()))
