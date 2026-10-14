@@ -3,7 +3,7 @@ from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 from pydantic import Field as PydanticField
-from sqlalchemy import DateTime, Index
+from sqlalchemy import DateTime, Index, text
 from sqlmodel import Field, SQLModel
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
@@ -27,6 +27,9 @@ class TraceEventBase(SQLModel):
     )
     session_id: Optional[str] = Field(
         default=None, index=True, description="User or session identifier"
+    )
+    dedupe_key: Optional[str] = Field(
+        default=None, max_length=128, description="Opaque collector deduplication key",
     )
     account_id: Optional[str] = Field(default=None, index=True, max_length=ACCOUNT_ID_MAX_LENGTH)
     provider: str = Field(
@@ -65,6 +68,11 @@ class TraceEvent(TraceEventBase, table=True):
     __table_args__ = (
         Index("ix_trace_events_measured_timestamp", "latency_measured", "timestamp", "id"),
         Index("ix_trace_events_account_timestamp", "account_id", "timestamp"),
+        Index(
+            "ix_trace_events_dedupe_key", "dedupe_key", unique=True,
+            sqlite_where=text("dedupe_key IS NOT NULL"),
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -77,6 +85,9 @@ class TraceEventCreate(BaseModel):
     """Payload schema for single trace event ingestion."""
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
+    dedupe_key: Optional[str] = PydanticField(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$",
+    )
     account_id: Optional[str] = PydanticField(
         default=None, max_length=ACCOUNT_ID_MAX_LENGTH, pattern=ACCOUNT_ID_PATTERN
     )

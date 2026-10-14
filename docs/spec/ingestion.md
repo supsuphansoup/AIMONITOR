@@ -18,6 +18,7 @@
 | :--- | :--- |
 | `id` | PK, 자동 증가 |
 | `trace_id` | 인덱스. 미전달 시 UUID4 발급 |
+| `dedupe_key` | 선택·nullable. 1–128자, `^[A-Za-z0-9._:-]+$`. 중복 제거용 불투명 해시 식별자(원문 내용 금지), non-null 유일 부분 인덱스 |
 | `session_id` | 인덱스, 선택 |
 | `account_id` | 선택·nullable. `<tool>:<id>`, 최대 64자, `[A-Za-z0-9:_-]`. tool은 `claude_code`, `codex`, `antigravity`, `copilot`, `cursor`, `api`. `(account_id, timestamp)` 복합 인덱스 |
 | `timestamp` | 인덱스. 미전달 시 서버 시각. 입력 오프셋은 UTC로 변환 후 naive 저장 |
@@ -52,6 +53,18 @@ SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이�
 
 수집 트랜잭션은 flush·refresh·응답 모델 검증을 모두 마친 뒤 커밋한다. 그 단계의
 실패는 단건·배치 전체를 롤백한다. 커밋 후 네트워크 단절까지 되돌릴 수는 없다.
+
+### 멱등 수집
+
+`dedupe_key`가 같으면 단건·배치 모두 기존 행을 그대로 반환하고 새 행을 만들지
+않는다. 같은 배치 안의 중복도 한 번만 저장하며 응답 목록은 입력 순서·길이를
+유지한다. 중복도 신규와 같은 201을 반환한다. SQLite·PostgreSQL의 유일 부분 인덱스와
+`INSERT ... ON CONFLICT DO NOTHING`으로 동시 요청을 보호한다. 중복 키를 다른 내용에
+재사용하면 처음 저장된 내용이 유지된다. 기존 DB는 `ensure_schema`가 nullable 컬럼과
+유일 부분 인덱스를 추가한다. CSV에는 이 키를 내보내지 않는다.
+
+`dedupe_key` 생략·null은 기존 중복 허용 동작을 유지한다. `trace_id`만 같아도 중복
+제거하지 않으며, 수집기는 재시도할 때 같은 이벤트의 키를 유지해야 한다.
 
 ### 수집 한도
 
@@ -88,7 +101,7 @@ SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이�
 
 ## Open questions
 
-- 동일 `trace_id` 재전송 시 중복 저장 → 이월: 현재는 중복 허용. SDK 재시도가 생기면 멱등 키 도입 필요.
+- SDK 자동 재시도 → 이월: 재시도를 넣을 때는 수집기와 같이 안정적인 `dedupe_key`를 전달해야 한다.
 
 ## Areas of concern
 

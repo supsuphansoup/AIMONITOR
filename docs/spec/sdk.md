@@ -73,7 +73,7 @@ SDK는 공급자·모델명, 토큰 카운터, 지연 시간·상태와 선택 �
 
 ## Open questions
 
-- 전송 실패 시 재시도 → 이월: 현재는 버린다. 재시도를 넣으면 서버 쪽 `trace_id` 멱등 처리가 먼저 필요 ([ingestion.md](ingestion.md)).
+- 전송 실패 시 재시도 → 이월: 현재는 버리고 실패 건수를 노출한다. 재시도를 넣을 때는 서버의 선택적 `dedupe_key`를 SDK에서도 안정적으로 전달해야 한다 ([ingestion.md](ingestion.md)).
 - 다른 언어 SDK(JS/TS) → 이월.
 
 ## Areas of concern

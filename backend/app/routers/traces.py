@@ -3,11 +3,13 @@ import io
 import logging
 import uuid
 from datetime import datetime
-from typing import Iterator, List, Optional
+from typing import Any, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, col, select
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
@@ -68,6 +70,7 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     kwargs = {
         "trace_id": payload.trace_id or str(uuid.uuid4()),
         "session_id": payload.session_id,
+        "dedupe_key": payload.dedupe_key,
         "account_id": payload.account_id,
         "provider": payload.provider,
         "model_name": payload.model_name,
@@ -93,6 +96,24 @@ def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     return TraceEvent(**kwargs)
 
 
+def _dedupe_insert_statement(event: TraceEvent, dialect_name: str) -> Any:
+    insert = {"sqlite": sqlite_insert, "postgresql": postgresql_insert}[dialect_name]
+    return insert(TraceEvent).values(**event.model_dump(exclude={"id"})).on_conflict_do_nothing(
+        index_elements=[TraceEvent.dedupe_key], index_where=col(TraceEvent.dedupe_key).is_not(None),
+    )
+
+
+def _store_trace(payload: TraceEventCreate, session: Session) -> TraceEvent:
+    event = process_single_trace_create(payload)
+    if event.dedupe_key is None:
+        session.add(event)
+        return event
+    # No read-before-write race or savepoint release outside the batch transaction.
+    session.flush()
+    session.execute(_dedupe_insert_statement(event, session.get_bind().dialect.name))
+    return session.exec(select(TraceEvent).where(TraceEvent.dedupe_key == event.dedupe_key)).one()
+
+
 @router.post(
     "",
     response_model=TraceEventRead,
@@ -105,8 +126,7 @@ def ingest_trace(
 ):
     """Ingest a single LLM trace event."""
     try:
-        event = process_single_trace_create(payload)
-        session.add(event)
+        event = _store_trace(payload, session)
         session.flush()
         session.refresh(event)
         response = TraceEventRead.model_validate(event)
@@ -133,8 +153,7 @@ def ingest_batch_traces(
 ):
     """Ingest multiple LLM trace events in a single transaction."""
     try:
-        events = [process_single_trace_create(item) for item in payload.traces]
-        session.add_all(events)
+        events = [_store_trace(item, session) for item in payload.traces]
         session.flush()
         for event in events:
             session.refresh(event)
