@@ -46,6 +46,7 @@
 - 모델 메타데이터와 실제 스키마를 비교해 **누락 컬럼은 `ALTER TABLE ADD COLUMN`, 누락 인덱스는 `CREATE INDEX`.** 삭제·타입 변경은 하지 않으며 멱등.
 - 모델 import를 명시적으로 수행(`_load_model_metadata`)해 import 순서에 의존하지 않는다.
 - SQLite는 `BEGIN IMMEDIATE`로 프로세스 간 쓰기 잠금을 얻은 뒤 같은 연결에서 스키마를 다시 조회하고 컬럼·인덱스를 추가한다. 첫 테이블 생성도 이 잠금 안에서 수행하며 실패 시 DDL과 데이터를 함께 롤백한다.
+- SQLite의 기존 ±Infinity는 같은 업그레이드 트랜잭션에서 정리한다: 비용은 `cost_usd=0, cost_source='unknown'`, 지연은 `latency_ms=0, latency_measured=false`. 기존 NOT NULL 스키마를 보존하고 nullable DB도 동일하게 처리한다. 유한 값·다른 필드는 보존하며 반복 실행해도 같다. PostgreSQL에는 이 데이터 정리를 적용하지 않는다(실행 검증은 SQLite만).
 - 데스크톱 필드 `cache_write_1h_tokens DEFAULT 0`, `latency_measured DEFAULT 1`과 복합 인덱스 `(latency_measured, timestamp, id)`도 같은 업그레이드 경로로 추가한다. 과거 지연 값은 보존한다.
 - 계정 필드 `account_id`는 nullable로 추가하며 기존 행은 `NULL`을 유지한다. 단일 인덱스와 복합 인덱스 `(account_id, timestamp)`를 함께 추가한다.
 - SQLite: WAL, `busy_timeout=15000`, `PRAGMA foreign_keys=ON`. 시각 컬럼은 SQLModel 버전과 관계없이 naive UTC로 저장하도록 `sa_type=DateTime`을 명시한다.

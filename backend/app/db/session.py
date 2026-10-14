@@ -116,6 +116,20 @@ def _ensure_schema_connection(conn: Connection) -> None:
             index.create(bind=conn)
             logger.info("Schema upgrade: created index %s", index.name)
 
+    if conn.dialect.name == "sqlite" and "trace_events" in existing_tables:
+        # Older input validation admitted IEEE infinities. Preserve NOT NULL
+        # schemas and the established unknown/unmeasured flag contracts; SQLite
+        # already stores NaN as NULL. Finite rows are left untouched.
+        infinities = {"positive": float("inf"), "negative": -float("inf")}
+        conn.execute(text(
+            "UPDATE trace_events SET cost_usd=0, cost_source='unknown' "
+            "WHERE cost_usd IN (:positive, :negative)"
+        ), infinities)
+        conn.execute(text(
+            "UPDATE trace_events SET latency_ms=0, latency_measured=0 "
+            "WHERE latency_ms IN (:positive, :negative)"
+        ), infinities)
+
 
 def ensure_schema(target_engine: Optional[Engine] = None) -> None:
     """Add missing columns and indexes in one serialized, non-destructive upgrade."""

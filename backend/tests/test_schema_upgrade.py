@@ -302,3 +302,43 @@ finally:
                 process.wait(timeout=5)
     with legacy_engine.connect() as conn:
         assert conn.execute(text("SELECT trace_id FROM trace_events")).scalar() == "legacy-1"
+
+
+@pytest.mark.parametrize("nullable", [False, True])
+def test_upgrade_repairs_infinite_values_without_changing_finite_rows(tmp_path, nullable):
+    engine = create_engine(f"sqlite:///{tmp_path / 'nonfinite.db'}")
+    ddl = LEGACY_TRACE_TABLE
+    if nullable:
+        ddl = ddl.replace("latency_ms FLOAT NOT NULL", "latency_ms FLOAT")
+        ddl = ddl.replace("cost_usd FLOAT NOT NULL", "cost_usd FLOAT")
+    insert = text(
+        "INSERT INTO trace_events (trace_id, provider, model_name, prompt_tokens, completion_tokens, "
+        "total_tokens, latency_ms, cost_usd, status, timestamp) VALUES "
+        "(:trace_id, 'openai', 'gpt-4o', 1, 2, 3, :latency, :cost, 'SUCCESS', '2026-01-01 00:00:00')"
+    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+            conn.execute(insert, [
+                {"trace_id": "finite", "latency": 200.0, "cost": 0.001},
+                {"trace_id": "cost-positive", "latency": 100.0, "cost": float("inf")},
+                {"trace_id": "both-negative", "latency": -float("inf"), "cost": -float("inf")},
+                {"trace_id": "latency-positive", "latency": float("inf"), "cost": 0.5},
+            ])
+        ensure_schema(engine)
+        indexes = inspect(engine).get_indexes("trace_events")
+        ensure_schema(engine)
+        assert inspect(engine).get_indexes("trace_events") == indexes
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT trace_id, latency_ms, cost_usd, latency_measured, cost_source, total_tokens "
+                "FROM trace_events ORDER BY id"
+            )).all()
+        assert [tuple(row) for row in rows] == [
+            ("finite", 200.0, 0.001, 1, "unknown", 3),
+            ("cost-positive", 100.0, 0.0, 1, "unknown", 3),
+            ("both-negative", 0.0, 0.0, 0, "unknown", 3),
+            ("latency-positive", 0.0, 0.5, 0, "unknown", 3),
+        ]
+    finally:
+        engine.dispose()
