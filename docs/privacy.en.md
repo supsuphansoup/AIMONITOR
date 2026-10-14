@@ -28,6 +28,8 @@ If the code behaves differently from this page, that is a bug — please [open a
 | Local Ollama API (`127.0.0.1:11434/api/tags`) | Installed model names and count, and whether it responds, for the connected-AI display |
 | Cursor, Windsurf, Ollama folders | Whether they are installed |
 | Environment variables | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, provider keys (`OPENAI_API_KEY` etc., see [keys spec](spec/keys.md), Korean), `AIMONITOR_API_KEY` |
+| Profile and AppData path environment variables | The home folder comes from `USERPROFILE` on Windows (falling back to `HOMEDRIVE` and `HOMEPATH`) or `HOME` on other operating systems. `APPDATA` and `LOCALAPPDATA` locate tool settings databases. The home folder is the base for tool logs and `~/.aimonitor/`. |
+| Server-setting environment variables and `.env` in the current working folder (`~/.aimonitor/.env` for the exe, `.env` in the repository folder for the source desktop app) | `API_KEY`, `DATABASE_URL`, Host, CORS, retention and size limits, etc. ([settings list](../.env.example)). Values in `.env` are plain text, separate from the DPAPI-encrypted server auth key stored in `desktop_config.json`. |
 
 ## Sent off this PC (complete list)
 
@@ -43,6 +45,7 @@ Webhook destinations must be public addresses by default. Private, loopback, lin
 For an intranet webhook, allow it explicitly with the server setting `ALERT_ALLOW_PRIVATE_WEBHOOKS=true`.
 
 Requests to the local API server on `127.0.0.1` and to Ollama (`127.0.0.1:11434`) never leave this PC.
+Desktop instances use `127.0.0.1:47821` to prevent duplicate launches, exchanging only fixed control messages (`AIMONITOR:show`, `AIMONITOR:ping`, `AIMONITOR:ack:v1`). No usage records or auth keys are sent.
 If you change the server address (`backend_url`) in the settings to another server, usage reads, ingestion requests and the server auth key go to that server, and no local server is started.
 
 When you log your own app's calls with the **Python SDK**, records go to the ingestion server set in `api_url` (localhost on this PC by default).
@@ -53,15 +56,18 @@ tags, redacted metadata and `error_message` you pass; if you set `api_key`, it i
 
 | Where | What |
 | :--- | :--- |
-| Database (`aimonitor.db` — in `~/.aimonitor/` for the exe, in the repository folder when run from source) | Per record: provider, model, token counts, time, latency, cost, status, account hash, trace/session IDs, tags, redacted metadata, error message, and a collector's de-duplication key (`dedupe_key`, a hash). Alert rules (**webhook URLs in plain text**) and their trigger and delivery history |
+| Database (default: `aimonitor.db` — in `~/.aimonitor/` for the exe, in the repository folder when run from source; actual storage is set by the server's `DATABASE_URL`) | Per record: provider, model, token counts, time, latency, cost, status, account hash, trace/session IDs, tags, redacted metadata, error message, and a collector's de-duplication key (`dedupe_key`, a hash). Alert rules (**webhook URLs in plain text**) and their trigger and delivery history |
 | `~/.aimonitor/api_keys.json` | Only the key secret is encrypted with DPAPI (`sealed`). Provider, key ID, label, verification status, last verification time and balance description are plain text. |
 | `~/.aimonitor/api_keys.json.lock` | A lock file that stops the desktop app and the server from editing the key file at the same time. No secrets. |
+| `~/.aimonitor/ai_watcher.lock` | A lock file that stops multiple collectors from ingesting the same logs at the same time. No secrets. |
 | `~/.aimonitor/desktop_config.json` | UI settings, server address, the server auth key (DPAPI-encrypted), and the USD/KRW rate with its source, reference date and last successful fetch time |
 | `~/.aimonitor/accounts.json`, `account_timeline.json` | Account hashes, labels, config folder paths, times seen (the timeline keeps the latest 5,000). `accounts.json` also keeps each account's authentication mode (`subscription/api/unknown`), when the current mode was first observed and when it last changed. No key or token values. |
 | `~/.aimonitor/quota/`, `claude_official_quota.json` | Limit lookup results (percent, reset time, subscription type). No tokens. |
 | `~/.aimonitor/*offsets*.json`, `folder_offsets/`, `ai_cursors.json`, `ai_seen_claude.json` | Read positions per log file and de-duplication keys, plus file ID, size, times and a hash of the file's beginning to notice replaced files. No text. Entries for files missing for 30 days are removed. |
 | `~/.aimonitor/logs/` (exe only) | Run logs per role (1 MiB per file, three backups). Corrupt log lines are counted, never copied. Request logs keep only the request ID, method, path, status and duration — no query strings or request bodies. Error logs keep only the exception type — no exception text or SQL parameters. |
 | Registry `HKCU\…\Run\AIMONITOR` | Only when autostart is on |
+
+The default database in `docker-compose.yml` is `/app/data/aimonitor.db` in the `aimonitor-data` data volume.
 
 API responses mask webhook URLs as `scheme://host/…`, but the original stays in the database in plain text. Treat the database file and its backups as secrets.
 
@@ -76,5 +82,15 @@ are deleted every hour using UTC; the manual purge API uses the same cutoff. Del
 
 ## Removing everything
 
-Turn off autostart in the app's settings, then delete the app folder and `%USERPROFILE%\.aimonitor`; that removes all data AIMONITOR created.
-If you ran from source, also delete `aimonitor.db*` in the repository folder. Other tools' logs and login files are never modified.
+For a default local installation with no database-location override, data is in the folders below. Turn off autostart in the app's settings,
+then stop the app and server and delete the app folder and `%USERPROFILE%\.aimonitor`. If you ran from source, also delete `aimonitor.db`
+and its SQLite sidecar files (`aimonitor.db-wal`, `aimonitor.db-shm`, `aimonitor.db-journal`) in the repository folder.
+
+If you changed the server's `DATABASE_URL`, separately delete the actual database it points to. For SQLite, delete that file and sidecar files
+with the same name followed by `-wal`, `-shm` or `-journal`. Deleting the default folders does not delete a database elsewhere.
+
+For Docker, separately delete the `aimonitor-data` data volume in `docker-compose.yml`. Deleting only the container or image leaves the database
+behind. The actual volume name may have a Compose project-name prefix, so check the volume used by that deployment.
+
+Data on a remote server selected by the server address (`backend_url`) and database backups must be deleted separately; deleting folders on this PC does not remove them.
+Other tools' logs and login files are never modified.
