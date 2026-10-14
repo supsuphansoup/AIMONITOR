@@ -571,14 +571,21 @@ def account_quotas(registry: Any = None, force: bool = False,
         registry = _account_registry
     result = []
     fetched = {}
-    for row in registry.refresh(now=now):
+    rows = registry.refresh(now=now)
+    identity_home = getattr(registry, "home", None)
+    claude_sources: Dict[str, List[Path]] = {}
+    for row in rows:
+        if row["tool"] == "claude_code":
+            directory = Path(row["config_dir"])
+            if account_id_for("claude_code", directory, identity_home) == row["account_id"]:
+                claude_sources.setdefault(row["account_id"], []).append(directory)
+    for row in rows:
         tool = row["tool"]
         directory = Path(row["config_dir"])
         windows = []
         if tool == "claude_code":
             # Read-only consumers may pass historical manifest rows. Current folder
             # credentials must never be used to claim another account's quota.
-            identity_home = getattr(registry, "home", None)
             if account_id_for(tool, directory, identity_home) != row["account_id"]:
                 result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
                 result[-1]["quota_windows"] = claude_windows(None, now)
@@ -592,7 +599,9 @@ def account_quotas(registry: Any = None, force: bool = False,
                     _account_syncers[key] = syncer
                 syncer._last_used_monotonic = tick
             if key not in fetched:
-                fetched[key] = syncer.get_quota(force=force)
+                fetched[key] = syncer.get_quota_for_account(
+                    row["account_id"], claude_sources.get(row["account_id"], []), identity_home, force=force,
+                )
             windows = claude_windows(fetched[key], now)
         elif tool == "codex":
             snapshot = latest_codex_rate_limits(
