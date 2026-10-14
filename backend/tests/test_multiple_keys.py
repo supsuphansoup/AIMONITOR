@@ -18,6 +18,7 @@ def manager(tmp_path, monkeypatch):
     # Production encryption is untouched; use real DPAPI where available.
     if secret_store.AVAILABLE_SCHEME != secret_store.SCHEME_DPAPI:
         secrets = {}
+        monkeypatch.setattr(secret_store, "AVAILABLE_SCHEME", "test-sealed")
 
         def seal(secret):
             token = str(len(secrets))
