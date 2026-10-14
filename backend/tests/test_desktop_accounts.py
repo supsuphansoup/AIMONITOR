@@ -184,6 +184,8 @@ def test_multiple_claude_folders_send_hashed_account_ids_using_http_mock(tmp_pat
     requests = []
 
     def handle(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         requests.append(json.loads(request.content))
         return httpx.Response(201, json=batch_results(requests[-1]["traces"]))
 

@@ -21,7 +21,8 @@ import httpx
 
 from desktop.ai_watcher import UnifiedAIWatcher
 from desktop.app_gui import DesktopMainWindow
-from desktop.config import attach_to_default_desktop, backend_headers, load_config
+from desktop.config import attach_to_default_desktop, identify_backend, load_config
+from desktop.config import backend_headers as backend_headers
 from desktop.single_instance import SingleInstance
 from desktop.tray import TrayManager
 from desktop.widget import FloatingWidget
@@ -38,18 +39,10 @@ PORT_CONFLICT_MESSAGE = (
 def backend_health(url: str, timeout: float = 1.5) -> str:
     """Distinguish an AIMONITOR health response, another HTTP service, and no response."""
     try:
-        with httpx.Client(timeout=timeout, headers=backend_headers()) as client:
-            response = client.get(f"{url}/health")
+        with httpx.Client(timeout=timeout) as client:
+            return "ready" if identify_backend(client, url, {}) else "conflict"
     except Exception:
         return "unavailable"
-    try:
-        payload = response.json()
-    except ValueError:
-        return "conflict"
-    if (response.status_code == 200 and isinstance(payload, dict)
-            and payload.get("app") == "AIMONITOR" and payload.get("status") == "ok"):
-        return "ready"
-    return "conflict"
 
 
 def backend_command(port: int = 8000, host: str = "127.0.0.1") -> List[str]:

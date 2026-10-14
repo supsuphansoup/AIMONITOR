@@ -46,7 +46,13 @@ if sys.platform == "win32":
 
 from backend.app.services.api_key_manager import api_key_manager
 from desktop.ai_detector import detect_connected_ais, scan_all_ai_status
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
+from desktop.config import (
+    attach_to_default_desktop,
+    backend_headers,
+    identify_backend,
+    load_config,
+    update_config,
+)
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     GREY,
@@ -1719,7 +1725,9 @@ class DesktopMainWindow(ctk.CTk):
         auth_required = False
 
         try:
-            with httpx.Client(timeout=3.0, headers=backend_headers(config)) as client:
+            with httpx.Client(timeout=3.0) as client:
+                if not identify_backend(client, self.backend_url, backend_headers(config)):
+                    raise ValueError("Backend identity unavailable")
                 try:
                     r_ov = client.get(url_ov, params=chart_params)
                     auth_required = auth_required or r_ov.status_code in (401, 403)

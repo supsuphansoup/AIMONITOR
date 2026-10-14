@@ -174,6 +174,25 @@ def backend_headers(config: Dict[str, Any] = None) -> Dict[str, str]:
     return {"X-API-Key": key} if key else {}
 
 
+def is_aimonitor_health(response: Any) -> bool:
+    """Recognize the public health contract without requiring a matching version."""
+    if response.status_code != 200:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("app") == "AIMONITOR" and payload.get("status") == "ok"
+
+
+def identify_backend(client: Any, url: str, headers: Dict[str, str]) -> bool:
+    """Probe with an unauthenticated client, attaching the server key only after identification."""
+    if not is_aimonitor_health(client.get(f"{url}/health")):
+        return False
+    client.headers.update(headers)
+    return True
+
+
 def attach_to_default_desktop() -> bool:
     """Attach current thread to the interactive user desktop WinSta0\\Default."""
     try:

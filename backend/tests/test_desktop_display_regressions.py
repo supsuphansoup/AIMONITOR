@@ -127,6 +127,8 @@ def test_active_context_failure_does_not_publish_zero_usage_as_fresh(monkeypatch
     received = []
     real_client = httpx.Client
     def respond(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         if request.url.path.endswith("active_contexts"):
             return httpx.Response(503)
         return httpx.Response(200, json=[] if request.url.path.endswith(("breakdown", "traces")) else {})

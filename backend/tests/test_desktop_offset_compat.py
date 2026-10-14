@@ -57,6 +57,8 @@ def _watcher(home, state, monkeypatch):
     sent = []
 
     def receive(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         traces = json.loads(request.content)["traces"]
         sent.extend(traces)
         return httpx.Response(201, json=batch_results(traces))

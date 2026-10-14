@@ -124,11 +124,15 @@ def test_config_fails_closed_if_sealing_fails(monkeypatch, caplog):
     assert "test-only-server-secret" not in caplog.text
 
 
-def transport_client(monkeypatch, responder):
+def transport_client(monkeypatch, responder, include_health=False):
     real_client = httpx.Client
     requests = []
 
     def handler(request):
+        if request.url.path == "/health":
+            if include_health:
+                requests.append(request)
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         requests.append(request)
         return responder(request)
 
@@ -145,12 +149,14 @@ def test_watcher_attaches_header_and_survives_auth_errors(monkeypatch, caplog, s
         body = batch_results(json.loads(request.content)["traces"]) if status == 201 else []
         return httpx.Response(status, json=body)
 
-    requests = transport_client(monkeypatch, respond)
+    requests = transport_client(monkeypatch, respond, include_health=True)
     watcher = UnifiedAIWatcher.__new__(UnifiedAIWatcher)
     watcher.backend_url = "http://testserver"
     result = watcher._send_traces([{"provider": "openai", "model_name": "gpt-4o"}])
-    assert requests[0].headers["X-API-Key"] == "test-only-server-secret"
-    assert requests[0].url.path == "/api/v1/traces/batch"
+    assert requests[0].url.path == "/health"
+    assert "X-API-Key" not in requests[0].headers
+    assert requests[1].headers["X-API-Key"] == "test-only-server-secret"
+    assert requests[1].url.path == "/api/v1/traces/batch"
     assert result is (status == 201)
     if status in (401, 403):
         assert "인증 필요" in caplog.text
@@ -158,11 +164,11 @@ def test_watcher_attaches_header_and_survives_auth_errors(monkeypatch, caplog, s
 
 
 @pytest.mark.parametrize("key", [None, "test-only-server-secret"])
-def test_health_probe_and_watchdog_attach_optional_header(monkeypatch, key):
+def test_health_probe_and_watchdog_never_send_server_key(monkeypatch, key):
     if key:
         monkeypatch.setenv("AIMONITOR_API_KEY", key)
     requests = transport_client(monkeypatch, lambda _request: httpx.Response(
-        200, json={"app": "AIMONITOR", "status": "ok"}))
+        200, json={"app": "AIMONITOR", "status": "ok"}), include_health=True)
     controller = main.DesktopApp.__new__(main.DesktopApp)
     import threading
 
@@ -174,7 +180,7 @@ def test_health_probe_and_watchdog_attach_optional_header(monkeypatch, key):
     controller.ensure_backend()
     controller._watch_backend()
     assert len(requests) == 2
-    assert all(request.headers.get("X-API-Key") == key for request in requests)
+    assert all("X-API-Key" not in request.headers for request in requests)
 
 
 def test_ollama_and_oauth_never_receive_backend_key(monkeypatch, tmp_path):

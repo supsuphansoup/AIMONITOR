@@ -117,6 +117,8 @@ def test_logs_and_charts_send_account_filter_to_backend(monkeypatch, selection, 
     real_client = httpx.Client
 
     def respond(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         requests.append(request)
         return httpx.Response(200, json={})
 
@@ -192,9 +194,12 @@ def test_account_card_theme_change_redraws_cached_groups(monkeypatch):
 
 def test_widget_fetch_attaches_account_groups(monkeypatch):
     real_client = httpx.Client
-    active = {"claude": {"accounts": [{"account_id": None, "windows": {}}]}}
+    windows = {name: {"requests": 0, "tokens": 0, "cost_usd": 0, "cost_unknown": 0}
+               for name in ("5h", "today", "7d", "month")}
+    active = {"claude": {"windows": windows, "accounts": [{"account_id": None, "windows": windows}]}}
     monkeypatch.setattr(widget.httpx, "Client", lambda **kw: real_client(
-        **kw, transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=active))))
+        **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=(
+            {"app": "AIMONITOR", "status": "ok"} if request.url.path == "/health" else active)))))
     monkeypatch.setattr(widget, "get_connected_ai_summary", lambda *_a, **_kw:
                         get_connected_ai_summary([AI], quota_overrides={"claude": []}))
     monkeypatch.setattr(widget, "list_accounts", lambda: deepcopy(ROWS))
@@ -269,7 +274,8 @@ def test_renamed_account_keeps_filter_id_and_stale_fetch_cannot_overwrite(monkey
 
     real_client = httpx.Client
     monkeypatch.setattr(app_gui.httpx, "Client", lambda **kw: real_client(
-        **kw, transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={}))))
+        **kw, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=(
+            {"app": "AIMONITOR", "status": "ok"} if request.url.path == "/health" else {})))))
     monkeypatch.setattr(app_gui, "get_connected_ai_summary", lambda *_a, **_kw: {"items": []})
     monkeypatch.setattr(app_gui.accounts, "list_accounts", lambda: [])
     monkeypatch.setattr(app_gui, "api_key_manager", Mock(list_keys=lambda: []))

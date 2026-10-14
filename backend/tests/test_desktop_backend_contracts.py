@@ -40,6 +40,8 @@ def fake_window(monkeypatch, payloads=None):
     requests = []
 
     def respond(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         endpoint = request.url.path.rsplit("/", 1)[-1]
         requests.append(endpoint)
         result = responses[endpoint]

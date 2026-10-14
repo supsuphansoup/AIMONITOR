@@ -156,7 +156,7 @@ def test_acc15_no_new_network_requests_after_stop(tmp_path, monkeypatch, stop_af
     def accept(request):
         calls.append(request)
         instance._stop_event.set()
-        return httpx.Response(200, json=[])
+        return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
 
     real_client = httpx.Client
     monkeypatch.setattr(ai_watcher.httpx, "Client", lambda **kw: real_client(
@@ -309,6 +309,8 @@ def test_acc01_batch_posts_keep_keys_after_partial_success(tmp_path, monkeypatch
     bodies = []
 
     def receive(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"app": "AIMONITOR", "status": "ok"})
         bodies.append(json.loads(request.content)["traces"])
         if len(bodies) == 2:
             return httpx.Response(503)

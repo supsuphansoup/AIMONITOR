@@ -26,7 +26,7 @@ import httpx
 
 from backend.app.models import trace as trace_models
 from desktop.accounts import AccountRegistry, canonical_path, config_dir_hash, discover_folders
-from desktop.config import backend_headers
+from desktop.config import backend_headers, identify_backend
 
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
 
@@ -1208,6 +1208,8 @@ class UnifiedAIWatcher:
         stop_event = getattr(self, "_stop_event", None)
         if stop_event is not None and stop_event.is_set():
             return False
+        if not traces:
+            return True
         url = f"{self.backend_url}/api/v1/traces/batch"
         chunk_size = 200
 
@@ -1226,7 +1228,16 @@ class UnifiedAIWatcher:
 
         try:
             stored = 0
-            with httpx.Client(timeout=8.0, headers=backend_headers()) as client:
+            with httpx.Client(timeout=8.0) as client:
+                if stop_event is not None and stop_event.is_set():
+                    return False
+                try:
+                    identified = identify_backend(client, self.backend_url, backend_headers())
+                except Exception:
+                    identified = False
+                if not identified:
+                    logger.warning("Backend identity unavailable; deferred %d traces", len(traces))
+                    return False
                 for i in range(0, len(traces), chunk_size):
                     if stop_event is not None and stop_event.is_set():
                         return False

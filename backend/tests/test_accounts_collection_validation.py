@@ -28,12 +28,16 @@ class Backend:
         self.override = override
         self.bodies = []
         self.statuses = []
+        self.headers = {}
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
+
+    def get(self, url):
+        return self.client.get(url)
 
     def post(self, url, json):
         self.bodies.append(copy.deepcopy(json))

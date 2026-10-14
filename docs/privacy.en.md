@@ -47,6 +47,8 @@ For an intranet webhook, allow it explicitly with the server setting `ALERT_ALLO
 Requests to the local API server on `127.0.0.1` and to Ollama (`127.0.0.1:11434`) never leave this PC.
 Desktop instances use `127.0.0.1:47821` to prevent duplicate launches, exchanging only fixed control messages (`AIMONITOR:show`, `AIMONITOR:ping`, `AIMONITOR:ack:v1`). No usage records or auth keys are sent.
 If you change the server address (`backend_url`) in the settings file (`desktop_config.json`) to another server, usage reads, ingestion requests and the server auth key go to that server, and no local server is started.
+Before each read or ingestion, the desktop app checks `/health` at that address without the server auth key and attaches the key only when the response is AIMONITOR's health response.
+If another program is using the port, neither the key nor usage records are sent; collected records are sent once the conflict is resolved. The check tells an accidental port clash apart; it does not stop a program that imitates AIMONITOR's response.
 
 When you log your own app's calls with the **Python SDK**, records go to the ingestion server set in `api_url` (localhost on this PC by default).
 Automatic extraction reads only the token counts of a response. The SDK sends provider, model, token counts, latency and status plus any identifiers,

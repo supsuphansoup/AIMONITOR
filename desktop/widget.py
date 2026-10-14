@@ -22,13 +22,20 @@ import httpx
 from desktop import theme
 from desktop.accounts import list_accounts
 from desktop.ai_detector import detect_connected_ais
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
+from desktop.config import (
+    attach_to_default_desktop,
+    backend_headers,
+    identify_backend,
+    load_config,
+    update_config,
+)
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     AccountQuotaView,
     account_tools,
     attach_accounts,
     select_entries,
+    valid_api_payload,
     widget_entries,
     widget_entry_note,
 )
@@ -473,7 +480,9 @@ class FloatingWidget:
         try:
             if self._connected_ais is None:
                 self._connected_ais = detect_connected_ais()
-            with httpx.Client(timeout=3.0, headers=backend_headers()) as client:
+            with httpx.Client(timeout=3.0) as client:
+                if not identify_backend(client, self.backend_url, backend_headers()):
+                    raise ValueError("Backend identity unavailable")
                 res = client.get(f"{self.backend_url}/api/v1/metrics/active_contexts")
                 auth_required = res.status_code in (401, 403)
                 spend: Dict[str, Any] = {}
@@ -481,13 +490,21 @@ class FloatingWidget:
                     r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
                     auth_required = auth_required or r_sp.status_code in (401, 403)
                     if r_sp.status_code == 200:
-                        spend = r_sp.json()
+                        try:
+                            payload = r_sp.json()
+                        except ValueError:
+                            payload = None
+                        if valid_api_payload("spend", payload):
+                            spend = payload
             if res.status_code == 200:
+                active = res.json()
+                if not valid_api_payload("active_contexts", active):
+                    raise ValueError("Invalid active contexts response")
                 account_rows = list_accounts()
                 self._connected_ais = account_tools(self._connected_ais, account_rows)
                 summary = get_connected_ai_summary(
                     self._connected_ais,
-                    usage_by_ai=res.json(),
+                    usage_by_ai=active,
                     krw_rate=self.rate_updater.rate,
                     config=self.config,
                     official_spend=spend,
@@ -499,7 +516,7 @@ class FloatingWidget:
                     ) else []
                 except Exception:
                     quotas = []
-                attach_accounts(summary, res.json(), account_rows, quotas, self.rate_updater.rate)
+                attach_accounts(summary, active, account_rows, quotas, self.rate_updater.rate)
                 ok = True
         except Exception:
             pass
