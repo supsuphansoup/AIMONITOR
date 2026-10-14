@@ -56,6 +56,18 @@ def append(path, rows):
             stream.write(json.dumps(row, ensure_ascii=False).encode("utf-8") + b"\n")
 
 
+def batch_results(traces):
+    from backend.app.models.trace import TraceEventCreate, TraceEventRead
+    from backend.app.routers.traces import process_single_trace_create
+
+    results = []
+    for index, trace in enumerate(traces, 1):
+        stored = process_single_trace_create(TraceEventCreate.model_validate(trace))
+        stored.id = index
+        results.append(TraceEventRead.model_validate(stored).model_dump(mode="json"))
+    return results
+
+
 def watcher(home, monkeypatch):
     instance = ai_watcher.UnifiedAIWatcher(
         backend_url="http://127.0.0.1:18772", state_file=home / ".aimonitor/ai_offsets.json",
@@ -298,7 +310,9 @@ def test_acc01_batch_posts_keep_keys_after_partial_success(tmp_path, monkeypatch
 
     def receive(request):
         bodies.append(json.loads(request.content)["traces"])
-        return httpx.Response(503 if len(bodies) == 2 else 201)
+        if len(bodies) == 2:
+            return httpx.Response(503)
+        return httpx.Response(201, json=batch_results(bodies[-1]))
 
     client = httpx.Client
     monkeypatch.setattr(ai_watcher.httpx, "Client", lambda **kwargs:

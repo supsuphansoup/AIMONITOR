@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from backend.tests.test_accounts_watcher_regressions import batch_results
 from desktop import ai_watcher, quota
 from desktop.accounts import AccountRegistry, account_id_for, canonical_path, discover_folders
 from desktop.claude_quota_syncer import ClaudeQuotaSyncer
@@ -184,7 +185,7 @@ def test_multiple_claude_folders_send_hashed_account_ids_using_http_mock(tmp_pat
 
     def handle(request):
         requests.append(json.loads(request.content))
-        return httpx.Response(201, json={"ok": True})
+        return httpx.Response(201, json=batch_results(requests[-1]["traces"]))
 
     client_type = httpx.Client
     monkeypatch.setattr(ai_watcher.httpx, "Client", lambda **kwargs:

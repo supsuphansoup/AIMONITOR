@@ -16,6 +16,7 @@ from matplotlib.colors import to_hex
 from matplotlib.figure import Figure
 
 from backend.app.services import secret_store
+from backend.tests.test_accounts_watcher_regressions import batch_results
 from desktop import app_gui, claude_quota_syncer, config, main, theme, widget
 from desktop.ai_detector import AIDetector
 from desktop.ai_watcher import UnifiedAIWatcher
@@ -139,7 +140,12 @@ def transport_client(monkeypatch, responder):
 @pytest.mark.parametrize("status", [201, 401, 403])
 def test_watcher_attaches_header_and_survives_auth_errors(monkeypatch, caplog, status):
     monkeypatch.setenv("AIMONITOR_API_KEY", "test-only-server-secret")
-    requests = transport_client(monkeypatch, lambda _request: httpx.Response(status, json=[]))
+
+    def respond(request):
+        body = batch_results(json.loads(request.content)["traces"]) if status == 201 else []
+        return httpx.Response(status, json=body)
+
+    requests = transport_client(monkeypatch, respond)
     watcher = UnifiedAIWatcher.__new__(UnifiedAIWatcher)
     watcher.backend_url = "http://testserver"
     result = watcher._send_traces([{"provider": "openai", "model_name": "gpt-4o"}])
