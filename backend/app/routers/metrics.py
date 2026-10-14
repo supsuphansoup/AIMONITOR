@@ -114,10 +114,15 @@ def get_connected_ais(session: Session = Depends(get_session)):
         usage_by_ai=active,
         krw_rate=rate,
         config=config,
-        official_spend=spend_service.spend_all([ai["key"] for ai in ais if ai["key"].endswith("_api")]),
+        quota_overrides={ai["key"]: [] for ai in ais if ai.get("detection_status") == "unavailable"},
+        official_spend=spend_service.spend_all([
+            ai["key"] for ai in ais
+            if ai["key"].endswith("_api") and ai.get("detection_status") != "unavailable"
+        ]),
     )
     for item in summary["items"]:
         ai = next(ai for ai in ais if ai["key"] == item["key"])
+        item["detection_status"] = ai.get("detection_status", "available")
         accounts = []
         for account in active.get(item["key"], {}).get("accounts", []):
             # A default credential's quota/bill cannot be attributed to another account.

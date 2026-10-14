@@ -48,6 +48,7 @@
 - 계정별 `quota_windows`는 데스크톱 소유 계정·타임라인의 읽기 전용 스냅샷을 통해 조회한다. 계정 파일 부재·읽기 실패 시 `null`이고 HTTP 200과 로컬 사용량은 유지한다. 공식 조회 불가 시 값이 없는 `unavailable` 창 또는 `null`이다. 백엔드는 `accounts.json`·`account_timeline.json`을 생성하거나 갱신하지 않는다.
 
 - 파라미터 없음. `{items, by_key, total, hidden}` 구조이며 `items`에는 `key`, `display_name`, `provider`, `plan_name`, `cost_meaning`, `quota_windows`, `context`, `usage`, `last_request_at`, `session_status`, `billing_note`, `official_spend`가 있다. 빈 연결 목록은 `items=[]`다.
+- 도구 감지 실패는 대상별로 격리한다. 실패 항목은 `detection_status='unavailable'`, `plan_name='감지 불가'`로 남기며 정상 항목은 `detection_status='available'`이다. 감지기의 연결·구독 상태는 실패 시 `null`이며 미설치(`false`)와 구별한다. 실패 대상의 공식 한도·청구를 추측하지 않는다.
 - `MetricAggregator.get_active_contexts`를 그대로 재사용한다. 사용 창은 5시간·오늘·7일·이번 달이며 오늘/월 경계는 백엔드 PC의 로컬 시각이다. SQL 합계에는 표본 상한이 없고 최신 컨텍스트만 `timestamp DESC, id DESC LIMIT 1`로 선택한다. 미래 행은 제외하며 정확한 도구 태그로 구분한다.
 - 연결 감지·한도·요약은 기존 `desktop.ai_detector`/`desktop.context_manager`를 재사용하며 데스크톱 파일을 변경하지 않는다. 데스크톱 설정의 숨김 목록도 반영한다. 공식 청구/잔액은 기존 `spend_service`의 15분 캐시를 사용한다.
 - `context`와 `official_spend`는 없으면 `null`, 공식 한도의 `remaining_pct`도 모르면 `null`이다. `usage`의 `cost_unknown`이 요청 수와 같고 0보다 크면 비용은 `cost_usd=null, cost_krw=null`이다. 일부 미상은 알려진 소계와 미상 건수를 반환한다. `total.billed_*`는 로컬 기록의 알려진 비용 소계로 공식 청구액이 아니며 `billed_unknown_month`를 함께 읽어야 한다.

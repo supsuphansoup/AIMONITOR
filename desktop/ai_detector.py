@@ -61,29 +61,29 @@ class AIDetector:
         """Check all known AI services and return detailed connection & subscription status."""
         results: Dict[str, Dict[str, Any]] = {}
 
-        # 1. Claude Code
-        results["claude"] = self._check_claude()
-
-        # 2. Antigravity (Gemini IDE)
-        results["antigravity"] = self._check_antigravity()
-
-        # 3. GitHub Copilot
-        results["copilot"] = self._check_copilot()
-
-        # 4. Cursor IDE
-        results["cursor"] = self._check_cursor()
-
-        # 5. Windsurf IDE (Codeium)
-        results["windsurf"] = self._check_windsurf()
-
-        # 6. Ollama Local LLM
-        results["ollama"] = self._check_ollama()
-
-        # 7. Codex CLI (ChatGPT plan)
-        results["codex"] = self._check_codex()
-
-        # 8. Direct OpenAI API Key
-        results["openai_api"] = self._check_openai_api()
+        checks = (
+            ("claude", self._check_claude, "Claude Code", "anthropic"),
+            ("antigravity", self._check_antigravity, "Antigravity", "google"),
+            ("copilot", self._check_copilot, "GitHub Copilot", "github"),
+            ("cursor", self._check_cursor, "Cursor IDE", "openai"),
+            ("windsurf", self._check_windsurf, "Windsurf IDE", "codeium"),
+            ("ollama", self._check_ollama, "Ollama", "ollama"),
+            ("codex", self._check_codex, "OpenAI Codex CLI", "openai"),
+            ("openai_api", self._check_openai_api, "OpenAI API", "openai"),
+        )
+        for key, check, name, provider in checks:
+            try:
+                results[key] = check()
+            except Exception:
+                # Exceptions can contain credential contents or private paths.
+                logger.warning("AI detection unavailable: %s", key)
+                results[key] = {
+                    "key": key, "name": name, "display_name": name, "provider": provider,
+                    "is_connected": None, "is_subscribed": None,
+                    "detection_status": "unavailable", "plan_name": "감지 불가",
+                    "detail": "도구 상태를 읽을 수 없습니다", "badge_color": "#64748b",
+                    "max_context_tokens": None, "path": "",
+                }
 
         return results
 
@@ -92,7 +92,7 @@ class AIDetector:
         candidates = self.scan_all_candidates()
         active = []
         for info in candidates.values():
-            if info["is_connected"]:
+            if info["is_connected"] or info.get("detection_status") == "unavailable":
                 active.append(info)
 
         # Include any registered or environment API keys
