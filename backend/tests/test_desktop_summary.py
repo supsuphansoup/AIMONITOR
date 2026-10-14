@@ -232,13 +232,55 @@ def test_widget_marks_unavailable_and_estimated_items():
 
 
 # ---------------------------------------------------------------- launchers / modules
-def test_ai_detector_reports_known_tools():
-    from desktop.ai_detector import scan_all_ai_status
+def test_ai_detector_reports_known_tools(tmp_path, monkeypatch):
+    import sqlite3
+
+    import httpx
+
+    from desktop.ai_detector import detector, scan_all_ai_status
+
+    for name in ("home", "appdata", "localappdata"):
+        folder = tmp_path / name
+        folder.mkdir()
+        monkeypatch.setattr(detector, name, folder)
+    for name, folder in (("USERPROFILE", "home"), ("HOME", "home"), ("APPDATA", "appdata"),
+                         ("LOCALAPPDATA", "localappdata"), ("CLAUDE_CONFIG_DIR", "home/.claude"),
+                         ("CODEX_HOME", "home/.codex")):
+        monkeypatch.setenv(name, str(tmp_path / folder))
+    fake_claude = tmp_path / "home/.claude"
+    fake_claude.mkdir()
+    (fake_claude / ".credentials.json").write_text("{}", encoding="utf-8")
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: real_client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"models": []})), **kwargs))
+
+    outside_reads = []
+    real_open = Path.open
+    def guarded_open(path, *args, **kwargs):
+        if not path.resolve().is_relative_to(tmp_path.resolve()):
+            outside_reads.append(str(path))
+            raise AssertionError("scan must read only synthetic fixtures")
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    real_connect = sqlite3.connect
+    def guarded_connect(path, *args, **kwargs):
+        if not Path(path).resolve().is_relative_to(tmp_path.resolve()):
+            outside_reads.append("SQLite outside fixture")
+            raise AssertionError("scan must open only synthetic databases")
+        return real_connect(path, *args, **kwargs)
+    monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+    real_transport = []
+    def no_network(*args, **kwargs):
+        real_transport.append(True)
+        raise AssertionError("scan must use MockTransport")
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", no_network)
 
     status = scan_all_ai_status()
     for key in ("claude", "antigravity", "copilot", "cursor", "codex"):
         assert key in status
         assert "plan_name" in status[key]
+    assert not outside_reads
+    assert not real_transport
 
 
 def test_desktop_launchers_exist():

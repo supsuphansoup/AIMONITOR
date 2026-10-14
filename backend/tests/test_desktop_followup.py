@@ -117,7 +117,8 @@ def test_config_roundtrip_seals_key_and_preserves_preferences(caplog):
 
 def test_config_fails_closed_if_sealing_fails(monkeypatch, caplog):
     monkeypatch.setattr(secret_store, "AVAILABLE_SCHEME", secret_store.SCHEME_UNAVAILABLE)
-    config.save_config({"api_key": "test-only-server-secret"})
+    with pytest.raises(ValueError):
+        config.save_config({"api_key": "test-only-server-secret"})
     assert not config.CONFIG_FILE.exists()
     assert "test-only-server-secret" not in caplog.text
 
@@ -156,8 +157,12 @@ def test_health_probe_and_watchdog_attach_optional_header(monkeypatch, key):
         monkeypatch.setenv("AIMONITOR_API_KEY", key)
     requests = transport_client(monkeypatch, lambda _request: httpx.Response(200, json={"status": "ok"}))
     controller = main.DesktopApp.__new__(main.DesktopApp)
-    controller.backend_url = "http://testserver"
+    import threading
+
+    controller._spawn_lock = threading.Lock()
+    controller.backend_url = "http://127.0.0.1:18771"
     controller._stop_event = Mock()
+    controller._stop_event.is_set.return_value = False
     controller._stop_event.wait.side_effect = [False, True]
     controller.ensure_backend()
     controller._watch_backend()
@@ -259,6 +264,10 @@ def test_widget_auth_error_shows_message_with_cached_data_and_recovers(monkeypat
         _resize=Mock(), _visible=lambda: [], root=Mock(), poll_ms=3000,
         entries=[{"group": "AI", "label": "cost", "value": "old"}], summary_data={}, schedule_update=Mock())
     ui._render = lambda: widget.FloatingWidget._render(ui)
+    ui._closed = False
+    ui._poll_job = None
+    ui._cancel_poll = lambda: widget.FloatingWidget._cancel_poll(ui)
+    ui._schedule_poll = lambda delay: widget.FloatingWidget._schedule_poll(ui, delay)
     widget.FloatingWidget._on_data(ui, {}, False, True)
     ui.mini_text.config.assert_called_with(text="인증 필요")
     ui.root.after.assert_called_once_with(3000, ui.schedule_update)

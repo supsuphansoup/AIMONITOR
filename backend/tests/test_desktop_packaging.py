@@ -48,7 +48,8 @@ def test_backend_runs_uvicorn_from_source_and_the_exe_when_packaged(desktop_main
     assert desktop_main.backend_command()[:4] == ["python.exe", "-m", "uvicorn", "backend.app.main:app"]
     monkeypatch.setattr(desktop_main.sys, "frozen", True, raising=False)
     monkeypatch.setattr(desktop_main.sys, "executable", "AIMONITOR.exe")
-    assert desktop_main.backend_command() == ["AIMONITOR.exe", "--serve-backend"]
+    assert desktop_main.backend_command() == ["AIMONITOR.exe", "--serve-backend", "--port", "8000",
+                                             "--host", "127.0.0.1"]
 
 
 @pytest.mark.parametrize("argv, port", [(["--serve-backend"], 8000), (["--serve-backend", "--port", "18765"], 18765)])
@@ -58,7 +59,7 @@ def test_serve_backend_binds_localhost_from_the_data_folder(entry, monkeypatch, 
     assert entry.main(argv) == 0
     from backend.app.main import app
 
-    run.assert_called_once_with(app, host="127.0.0.1", port=port)
+    run.assert_called_once_with(app, host="127.0.0.1", port=port, access_log=False)
     # .env and the default relative SQLite path resolve inside the data folder, not the install folder.
     assert Path.cwd() == entry.DATA_DIR
 
@@ -72,6 +73,56 @@ def test_windowed_exe_without_console_logs_to_a_file(entry, monkeypatch):
         assert sys.stdout is sys.stderr and sys.stdout.name == str(entry.DATA_DIR / "logs" / "backend.log")
     finally:
         sys.stdout.close()
+
+
+def test_windowed_log_rotates_and_bounds_large_writes(entry, monkeypatch):
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(entry, "LOG_MAX_BYTES", 1024, raising=False)
+    entry._log_to_file("bounded")
+    try:
+        for _ in range(8):
+            sys.stdout.write("한" * 1024)
+        sys.stdout.flush()
+        logs = list((entry.DATA_DIR / "logs").glob("bounded.log*"))
+        assert len(logs) <= 4
+        assert all(path.stat().st_size <= 1024 for path in logs)
+    finally:
+        sys.stdout.close()
+
+
+def test_stdio_survives_logging_reconfiguration(entry, monkeypatch):
+    import logging
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    entry._log_to_file("reconfigured")
+    try:
+        # dictConfig (used by uvicorn) closes every registered logging Handler.
+        for reference in list(logging._handlerList):
+            handler = reference()
+            if getattr(handler, "baseFilename", None) == sys.stdout.name:
+                handler.close()
+        sys.stdout.write("after logging configuration\n")
+        sys.stdout.flush()
+        assert Path(sys.stdout.name).read_text(encoding="utf-8") == "after logging configuration\n"
+    finally:
+        sys.stdout.close()
+
+
+def test_existing_oversized_logs_are_bounded_on_startup(entry, monkeypatch):
+    monkeypatch.setattr(entry, "LOG_MAX_BYTES", 1024)
+    directory = entry.DATA_DIR / "logs"
+    directory.mkdir(parents=True)
+    for suffix in ("", ".1", ".2", ".3"):
+        (directory / f"old.log{suffix}").write_text("한" * 1024, encoding="utf-8")
+    stream = entry.BoundedLogStream(directory / "old.log")
+    try:
+        assert all(path.stat().st_size <= 1024 for path in directory.glob("old.log*"))
+        stream.write("new log\n")
+        assert all(path.stat().st_size <= 1024 for path in directory.glob("old.log*"))
+    finally:
+        stream.close()
 
 
 def test_self_test_fails_with_exit_code_instead_of_raising(entry, monkeypatch):
@@ -92,3 +143,22 @@ def test_default_mode_runs_the_desktop_app(entry, monkeypatch, automatic):
     attach.assert_called_once_with()
     run.assert_called_once_with(autostart=automatic)
     assert Path.cwd() == entry.DATA_DIR
+def test_source_backend_suppresses_access_log(monkeypatch):
+    from desktop import main
+
+    monkeypatch.setattr(main.sys, "frozen", False, raising=False)
+    command = main.backend_command(port=18771)
+    assert "--no-access-log" in command
+
+
+def test_desktop_http_client_info_logs_do_not_record_request_urls(caplog):
+    import logging
+
+    from desktop import main  # noqa: F401
+
+    caplog.set_level(logging.INFO)
+    for name in ("httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        assert logger.getEffectiveLevel() >= logging.WARNING
+        logger.info("GET https://review.invalid/?token=synthetic-test-secret")
+    assert "synthetic-test-secret" not in caplog.text

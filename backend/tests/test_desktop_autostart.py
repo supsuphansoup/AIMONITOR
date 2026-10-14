@@ -3,6 +3,7 @@
 import builtins
 import runpy
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -199,7 +200,7 @@ def test_duplicate_launch_never_starts_services_and_autostart_stays_silent(gui_m
     app.ensure_backend = Mock()
     app.run(autostart=automatic)
     app.ensure_backend.assert_not_called()
-    assert app.instance.notify_running.call_count == (0 if automatic else 1)
+    app.instance.notify_running.assert_called_once_with(show=not automatic)
 
 
 @pytest.mark.parametrize("automatic", [False, True])
@@ -219,6 +220,11 @@ def test_autostart_controller_keeps_widget_tray_and_hides_main(gui_modules, monk
     app.instance = Mock()
     app.instance.acquire.return_value = True
     app.config = {"claude_watch_enabled": False}
+    app.backend_url = "http://127.0.0.1:18771"
+    app._backend_lock = threading.RLock()
+    app._stop_event = threading.Event()
+    app._backend_proc = None
+    app.ai_watcher = None
     app.ensure_backend = Mock()
     app.run(autostart=automatic)
     assert constructor.call_args.kwargs["start_hidden"] is automatic
@@ -226,6 +232,9 @@ def test_autostart_controller_keeps_widget_tray_and_hides_main(gui_modules, monk
     tray.start.assert_called_once_with(window)
     window.mainloop.assert_called_once_with()
     watcher.assert_not_called()
+    window.destroy.assert_called_once_with()
+    widget.close.assert_called_once_with()
+    tray.stop.assert_called_once_with(notify=False)
 
 
 def startup_ui(gui):

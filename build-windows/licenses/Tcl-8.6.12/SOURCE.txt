@@ -1,0 +1,3 @@
+Original Tcl 8.6.12 license.terms (unmodified)
+https://raw.githubusercontent.com/tcltk/tcl/core-8-6-12/license.terms
+Source: https://github.com/tcltk/tcl/tree/core-8-6-12

@@ -7,6 +7,7 @@ Unified Desktop App:
 - System Tray icon for background access
 """
 
+import ipaddress
 import logging
 import os
 import subprocess
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -25,14 +27,48 @@ from desktop.tray import TrayManager
 from desktop.widget import FloatingWidget
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+for _http_logger in ("httpx", "httpcore"):
+    logging.getLogger(_http_logger).setLevel(logging.WARNING)
 logger = logging.getLogger("aimonitor.desktop")
 
 
-def backend_command() -> List[str]:
+def backend_command(port: int = 8000, host: str = "127.0.0.1") -> List[str]:
     """Command that serves the local API. A packaged build serves it from its own exe."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--serve-backend"]  # handled by build-windows/entry.py
-    return [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+        return [sys.executable, "--serve-backend", "--port", str(port), "--host", host]
+    return [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--host", host, "--port", str(port),
+            "--no-access-log"]
+
+
+def local_backend_address(url: str):
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        loopback = host == "localhost" or (host is not None and ipaddress.ip_address(host).is_loopback)
+        if parts.scheme == "http" and loopback and not parts.username and parts.path in ("", "/"):
+            return host, parts.port or 80
+    except ValueError:
+        pass
+    return None
+
+
+def startup_error(message: str) -> None:
+    logger.error(message)
+    if sys.platform == "win32":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, "AIMONITOR", 0x10)
+
+
+def stop_backend(proc: subprocess.Popen) -> None:
+    """Reap only the child this controller created, including a stuck shutdown."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    except OSError:
+        logger.warning("Could not stop the owned backend")
 
 
 class DesktopApp:
@@ -48,10 +84,22 @@ class DesktopApp:
         self.main_window: Optional[DesktopMainWindow] = None
         self.widget: Optional[FloatingWidget] = None
         self._stop_event = threading.Event()
+        self._backend_lock = threading.RLock()
+        self._spawn_lock = threading.Lock()
+        self._shutdown_started = False
         self.instance = SingleInstance()
 
     def ensure_backend(self) -> None:
         """Ensure backend server is running."""
+        with self._spawn_lock:
+            if not self._stop_event.is_set():
+                self._ensure_backend()
+
+    def _ensure_backend(self) -> None:
+        address = local_backend_address(self.backend_url)
+        if address is None:
+            logger.warning("Configured backend is not a local HTTP URL; automatic server start is disabled")
+            return
         try:
             with httpx.Client(timeout=1.5, headers=backend_headers()) as client:
                 res = client.get(f"{self.backend_url}/health")
@@ -62,27 +110,38 @@ class DesktopApp:
             pass
 
         logger.info("Starting local AIMONITOR backend server...")
-        if self._backend_proc and self._backend_proc.poll() is None:
-            # Our previous backend is alive but not answering: replace it so the port frees up.
-            try:
-                self._backend_proc.terminate()
-                self._backend_proc.wait(timeout=5)
-            except Exception:
-                pass
+        with self._backend_lock:
+            if self._stop_event.is_set():
+                return
+            previous, self._backend_proc = self._backend_proc, None
+        if previous is not None:
+            stop_backend(previous)
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        cmd = backend_command()
+        host, port = address
+        cmd = backend_command(port, host)
         creationflags = 0
         if sys.platform == "win32":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-        self._backend_proc = subprocess.Popen(
+        if self._stop_event.is_set():
+            return
+        proc = subprocess.Popen(
             cmd,
             cwd=root_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
+        with self._backend_lock:
+            stopped = self._stop_event.is_set()
+            if not stopped:
+                self._backend_proc = proc
+        if stopped:
+            stop_backend(proc)
+            return
 
         for _ in range(12):
+            if self._stop_event.is_set():
+                return
             time.sleep(0.5)
             try:
                 with httpx.Client(timeout=1.0, headers=backend_headers()) as client:
@@ -113,56 +172,64 @@ class DesktopApp:
         if not self.instance.acquire():
             # 이미 실행 중: 창을 하나 더 띄우지 않고 기존 창을 앞으로 가져온다.
             logger.info("AIMONITOR is already running; asking it to show its window")
-            if not autostart:
-                self.instance.notify_running()
+            if not self.instance.notify_running(show=not autostart):
+                startup_error("인스턴스 확인 포트가 다른 프로그램에 점유되어 AIMONITOR를 시작할 수 없습니다.")
             return
-        self.ensure_backend()
-        threading.Thread(target=self._watch_backend, daemon=True, name="BackendWatchdog").start()
+        try:
+            self.ensure_backend()
+            threading.Thread(target=self._watch_backend, daemon=True, name="BackendWatchdog").start()
 
-        # 1. Start Unified AI watcher (Antigravity, Claude, GPT) in background
-        if self.config.get("claude_watch_enabled", True):
-            self.ai_watcher = UnifiedAIWatcher(backend_url=self.backend_url)
-            self.ai_watcher.start()
+            # 1. Start Unified AI watcher (Antigravity, Claude, GPT) in background
+            if self.config.get("claude_watch_enabled", True):
+                self.ai_watcher = UnifiedAIWatcher(backend_url=self.backend_url)
+                self.ai_watcher.start()
 
-        # 2. Initialize Main Native PC Window
-        self.main_window = DesktopMainWindow(
-            on_switch_to_widget=self.switch_to_widget,
-            on_visibility_changed=self._on_visibility_changed,
-            start_hidden=autostart,
-        )
-        main_window = self.main_window
-        self.instance.on_show = lambda: main_window.after(0, self.show_main_window)
+            # 2. Initialize Main Native PC Window
+            self.main_window = DesktopMainWindow(
+                on_switch_to_widget=self.switch_to_widget,
+                on_visibility_changed=self._on_visibility_changed,
+                start_hidden=autostart,
+            )
+            if local_backend_address(self.backend_url) is None:
+                self.main_window.lbl_status_msg.configure(
+                    text="외부/HTTPS 서버 설정 · 로컬 서버 자동 실행 생략"
+                )
+            main_window = self.main_window
+            self.instance.on_show = lambda: main_window.after(0, self.show_main_window)
 
-        # 3. Initialize Floating Widget (Always-on-top HUD)
-        self.widget = FloatingWidget(
-            master=self.main_window,
-            on_exit=self.shutdown,
-            on_open_main_app=self.show_main_window,
-        )
-        # Show floating widget so it is always on top as requested
-        self.widget.show()
+            # 3. Initialize Floating Widget (Always-on-top HUD)
+            self.widget = FloatingWidget(
+                master=self.main_window,
+                on_exit=self.shutdown,
+                on_open_main_app=self.show_main_window,
+                on_topmost_changed=self._sync_topmost,
+            )
+            # Show floating widget so it is always on top as requested
+            self.widget.show()
 
-        # 4. Start System Tray
-        self.tray_manager = TrayManager(
-            on_open_dashboard=self.show_main_window,
-            on_toggle_widget=self._toggle_widget_tray,
-            on_toggle_topmost=self._toggle_topmost,
-            on_exit=self.shutdown,
-            initial_topmost=self.config.get("always_on_top", True),
-        )
-        self.tray_manager.start(self.main_window)
+            # 4. Start System Tray
+            self.tray_manager = TrayManager(
+                on_open_dashboard=self.show_main_window,
+                on_toggle_widget=self._toggle_widget_tray,
+                on_toggle_topmost=self._toggle_topmost,
+                on_exit=self.shutdown,
+                initial_topmost=self.widget.config.get("always_on_top", True),
+            )
+            self.tray_manager.start(self.main_window)
 
-        # Center main window on screen
-        sw = self.main_window.winfo_screenwidth()
-        sh = self.main_window.winfo_screenheight()
-        w, h = 1100, 780
-        x = max(0, (sw - w) // 2)
-        y = max(0, (sh - h) // 2)
-        self.main_window.geometry(f"{w}x{h}+{x}+{y}")
+            # Center main window on screen
+            sw = self.main_window.winfo_screenwidth()
+            sh = self.main_window.winfo_screenheight()
+            w, h = 1100, 780
+            x = max(0, (sw - w) // 2)
+            y = max(0, (sh - h) // 2)
+            self.main_window.geometry(f"{w}x{h}+{x}+{y}")
 
-        logger.info("AIMONITOR Native Desktop Application running with Main Window & Always-on-top Widget!")
-        # Start GUI mainloop
-        self.main_window.mainloop()
+            logger.info("AIMONITOR desktop application running")
+            # Start GUI mainloop
+            self.main_window.mainloop()
+        finally:
+            self.shutdown()
 
     def switch_to_widget(self) -> None:
         """Minimize/hide main window, leaving only floating HUD widget on screen."""
@@ -194,25 +261,37 @@ class DesktopApp:
 
     def _toggle_topmost(self, is_top: bool) -> None:
         if self.widget:
-            self.widget.toggle_always_on_top()
+            self.widget.set_always_on_top(is_top)
+
+    def _sync_topmost(self, value: bool) -> None:
+        if self.tray_manager:
+            self.tray_manager.set_topmost(value)
 
     def shutdown(self) -> None:
         """Clean shutdown."""
         logger.info("Shutting down AIMONITOR...")
-        self._stop_event.set()
-        self.instance.release()
+        with self._backend_lock:
+            if getattr(self, "_shutdown_started", False):
+                return
+            self._shutdown_started = True
+            self._stop_event.set()
+            proc, self._backend_proc = self._backend_proc, None
+        actions = [self.instance.release]
         if self.ai_watcher:
-            self.ai_watcher.stop()
-        if self._backend_proc:
-            try:
-                self._backend_proc.terminate()
-            except Exception:
-                pass
+            actions.append(self.ai_watcher.stop)
+        if proc is not None:
+            actions.append(lambda: stop_backend(proc))
+        if getattr(self, "tray_manager", None):
+            actions.append(lambda: self.tray_manager.stop(notify=False))
+        if getattr(self, "widget", None):
+            actions.append(self.widget.close)
         if self.main_window:
+            actions.append(self.main_window.destroy)
+        for action in actions:
             try:
-                self.main_window.destroy()
-            except Exception:
-                pass
+                action()
+            except Exception as exc:
+                logger.warning("Shutdown step failed: %s", type(exc).__name__)
 
 
 def main(autostart: bool = False):

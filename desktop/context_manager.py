@@ -140,6 +140,7 @@ def get_connected_ai_summary(
     quota_overrides: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     official_spend: Optional[Dict[str, Dict[str, Any]]] = None,
     now: Optional[datetime] = None,
+    usage_available: bool = True,
 ) -> Dict[str, Any]:
     """Build one card per detected AI.
 
@@ -170,7 +171,7 @@ def get_connected_ai_summary(
         meaning = cost_meaning(ai)
         quota = quota_overrides.get(key)
         if quota is None:
-            quota = windows_for(key, config=config, now=now)
+            quota = windows_for(key, config=config, now=now) if ai.get("use_default_quota", True) else []
 
         item = {
             "key": key,
@@ -212,4 +213,11 @@ def get_connected_ai_summary(
         "requests_today": int(sum(it["usage"]["today"]["requests"] for it in items)),
         "tokens_today": int(sum(it["usage"]["today"]["tokens"] for it in items)),
     }
-    return {"items": items, "by_key": {it["key"]: it for it in items}, "total": total, "hidden": hidden}
+    if not usage_available:
+        for item in items:
+            item.update(usage={}, context=None, session_status="사용량 확인 불가")
+        for field in total:
+            if field not in ("krw_rate", "connected_count", "hidden_count"):
+                total[field] = None
+    return {"items": items, "by_key": {it["key"]: it for it in items}, "total": total, "hidden": hidden,
+            "usage_available": usage_available}

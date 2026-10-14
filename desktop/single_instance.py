@@ -16,6 +16,8 @@ logger = logging.getLogger("aimonitor.desktop.single_instance")
 HOST = "127.0.0.1"
 PORT = 47821
 SHOW_MESSAGE = b"AIMONITOR:show\n"
+PING_MESSAGE = b"AIMONITOR:ping\n"
+ACK_MESSAGE = b"AIMONITOR:ack:v1\n"
 
 
 class SingleInstance:
@@ -41,12 +43,18 @@ class SingleInstance:
         threading.Thread(target=self._serve, daemon=True, name="SingleInstance").start()
         return True
 
-    def notify_running(self) -> bool:
+    def notify_running(self, show: bool = True) -> bool:
         """Ask the running instance to show its window. False if it did not answer."""
         try:
             with socket.create_connection((self.host, self.port), timeout=2.0) as conn:
-                conn.sendall(SHOW_MESSAGE)
-            return True
+                conn.sendall(SHOW_MESSAGE if show else PING_MESSAGE)
+                reply = b""
+                while len(reply) < len(ACK_MESSAGE):
+                    chunk = conn.recv(len(ACK_MESSAGE) - len(reply))
+                    if not chunk:
+                        break
+                    reply += chunk
+            return reply == ACK_MESSAGE
         except OSError as e:
             logger.warning("Running AIMONITOR did not answer: %s", type(e).__name__)
             return False
@@ -60,7 +68,14 @@ class SingleInstance:
                 return  # socket closed on shutdown
             try:
                 conn.settimeout(2.0)
-                data = conn.recv(64)
+                data = b""
+                while len(data) < 64 and not data.endswith(b"\n"):
+                    chunk = conn.recv(64 - len(data))
+                    if not chunk:
+                        break
+                    data += chunk
+                if data in (SHOW_MESSAGE, PING_MESSAGE):
+                    conn.sendall(ACK_MESSAGE)
             except OSError:
                 data = b""
             finally:

@@ -6,12 +6,69 @@ One exe plays three roles:
 - ``--self-test``: import the whole GUI and API stack and exit 0, so a build can be checked headless
 """
 
+import ipaddress
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".aimonitor"
+LOG_MAX_BYTES = 1024 * 1024
+
+
+class BoundedLogStream:
+    """UTF-8 stdout/stderr with three backups and bounded individual writes."""
+
+    encoding = "utf-8"
+
+    def __init__(self, path: Path):
+        self.name = str(path)
+        self._path = path
+        for index in range(4):
+            previous = path if index == 0 else Path(f"{path}.{index}")
+            if previous.is_file() and previous.stat().st_size > LOG_MAX_BYTES:
+                with open(previous, "rb") as stream:
+                    stream.seek(-LOG_MAX_BYTES, os.SEEK_END)
+                    tail = stream.read().decode("utf-8", errors="ignore")
+                with open(previous, "w", encoding="utf-8", newline="") as stream:
+                    stream.write(tail)
+        self._stream = open(path, "a", encoding="utf-8", newline="")
+        self._lock = threading.Lock()
+
+    def _rotate(self) -> None:
+        self._stream.close()
+        for index in range(3, 0, -1):
+            previous = self._path if index == 1 else Path(f"{self._path}.{index - 1}")
+            if previous.exists():
+                os.replace(previous, Path(f"{self._path}.{index}"))
+        self._stream = open(self._path, "w", encoding="utf-8", newline="")
+
+    def write(self, text: str) -> int:
+        data = text.encode("utf-8", errors="replace")
+        # Keep even an exceptionally long single traceback/write below one file's limit.
+        limit = min(16384, LOG_MAX_BYTES - 1)
+        if len(data) > limit:
+            data = data[:max(0, limit - 24)] + b"\n[log write truncated]\n"
+        text_out = data.decode("utf-8", errors="ignore")
+        with self._lock:
+            if self._stream.tell() + len(data) > LOG_MAX_BYTES:
+                self._rotate()
+            self._stream.write(text_out)
+            self._stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            if not self._stream.closed:
+                self._stream.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            self._stream.close()
+
+    def isatty(self) -> bool:
+        return False
 
 
 def _log_to_file(name: str) -> None:
@@ -20,7 +77,7 @@ def _log_to_file(name: str) -> None:
         return
     log_dir = DATA_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    stream = open(log_dir / f"{name}.log", "w", encoding="utf-8", buffering=1)
+    stream = BoundedLogStream(log_dir / f"{name}.log")
     sys.stdout = sys.stdout or stream
     sys.stderr = sys.stderr or stream
 
@@ -42,7 +99,10 @@ def main(argv: list) -> int:
 
         from backend.app.main import app
 
-        uvicorn.run(app, host="127.0.0.1", port=_port(argv))
+        host = argv[argv.index("--host") + 1] if "--host" in argv else "127.0.0.1"
+        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
+            raise ValueError("Backend host must be loopback")
+        uvicorn.run(app, host=host, port=_port(argv), access_log=False)
         return 0
 
     if "--self-test" in argv:

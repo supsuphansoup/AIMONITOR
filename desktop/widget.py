@@ -10,6 +10,8 @@ no official value reads "확인 불가".
 - Double-click opens the native dashboard
 """
 
+import logging
+import sys
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -20,13 +22,57 @@ import httpx
 from desktop import theme
 from desktop.accounts import list_accounts
 from desktop.ai_detector import detect_connected_ais
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
-from desktop.display import AccountQuotaView, account_tools, attach_accounts, select_entries, widget_entries
+from desktop.display import (
+    AccountQuotaView,
+    account_tools,
+    attach_accounts,
+    select_entries,
+    widget_entries,
+    widget_entry_note,
+)
 from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
 ROW_HEIGHT = theme.ROW_HEIGHT
+logger = logging.getLogger(__name__)
+
+
+def monitor_work_areas(root: tk.Misc) -> list:
+    """Logical work rectangles, including monitors left/above the primary display."""
+    areas = []
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [("size", wintypes.DWORD), ("monitor", wintypes.RECT),
+                        ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.HDC,
+                                          ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+        user32 = ctypes.windll.user32
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MonitorInfo)]
+        user32.GetMonitorInfoW.restype = wintypes.BOOL
+        def collect(monitor, _dc, _rect, _data):
+            info = MonitorInfo()
+            info.size = ctypes.sizeof(info)
+            if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                r = info.work
+                areas.append((r.left, r.top, r.right, r.bottom))
+            return True
+        user32.EnumDisplayMonitors(None, None, callback_type(collect), 0)
+    return areas or [(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())]
+
+
+def fit_work_area(x: int, y: int, width: int, height: int, areas: list) -> tuple:
+    candidates = []
+    for left, top, right, bottom in areas:
+        w, h = min(width, right - left), min(height, bottom - top)
+        cx, cy = max(left, min(x, right - w)), max(top, min(y, bottom - h))
+        candidates.append(((x - cx) ** 2 + (y - cy) ** 2, cx, cy, w, h))
+    return min(candidates)[1:]
 
 
 class FloatingWidget:
@@ -37,12 +83,14 @@ class FloatingWidget:
         master: Optional[tk.Misc] = None,
         on_exit: Optional[Callable[[], None]] = None,
         on_open_main_app: Optional[Callable[[], None]] = None,
+        on_topmost_changed: Optional[Callable[[bool], None]] = None,
     ):
         attach_to_default_desktop()
         self.config = load_config()
         self._theme_mode = theme.appearance_mode()
         self.on_exit = on_exit
         self.on_open_main_app = on_open_main_app
+        self.on_topmost_changed = on_topmost_changed
 
         self.root = tk.Toplevel(master) if master is not None else tk.Tk()
         self.root.title("AIMONITOR 위젯")
@@ -64,6 +112,8 @@ class FloatingWidget:
         self.is_connected = False
         self._connected_ais: Optional[List[Dict[str, Any]]] = None
         self._fetching = False
+        self._closed = False
+        self._poll_job = None
         self._auth_required = False
         self._rows_sig: Any = None
 
@@ -86,7 +136,7 @@ class FloatingWidget:
         self._bind_events()
         self._place()
         theme.observe(self.root, lambda _mode: self._render())
-        self.root.after(200, self.schedule_update)
+        self._schedule_poll(200)
 
     # ------------------------------------------------------------------ layout
     def _selected_ids(self) -> Optional[List[str]]:
@@ -108,7 +158,7 @@ class FloatingWidget:
             (
                 self.font_normal.measure(f"{e['group']} · {e['label']}")
                 + self.font_bold.measure(e["value"])
-                + self.font_small.measure(e["reset"] or e["hint"])
+                + self.font_small.measure(widget_entry_note(e))
                 + theme.SPACE_8
                 + theme.SPACE_6
                 for e in visible
@@ -119,19 +169,19 @@ class FloatingWidget:
 
     def _place(self) -> None:
         self.root.update_idletasks()
-        sw = self.root.winfo_screenwidth()
         w, h = self._size()
         x, y = self.config.get("widget_x"), self.config.get("widget_y")
-        if x is None or y is None or x < 0 or x > sw:
-            x, y = sw - w - 24, 42
-        self.root.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+        areas = monitor_work_areas(self.root)
+        if x is None or y is None:
+            left, top, right, _bottom = areas[0]
+            x, y = max(left, right - w - 24), top + 42
+        x, y, w, h = fit_work_area(x, y, w, h, areas)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _resize(self) -> None:
         w, h = self._size()
         x, y = self.root.winfo_x(), self.root.winfo_y()
-        sw = self.root.winfo_screenwidth()
-        if x + w > sw:  # grow leftwards instead of running off the right edge
-            x = max(0, sw - w - 8)
+        x, y, w, h = fit_work_area(x, y, w, h, monitor_work_areas(self.root))
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _build_ui(self) -> None:
@@ -235,12 +285,14 @@ class FloatingWidget:
     def _on_drag_release(self, event) -> None:
         self._save(widget_x=self.root.winfo_x(), widget_y=self.root.winfo_y())
 
-    def _save(self, **changes: Any) -> None:
-        # Re-read first: the main window and the rate updater write the same file.
-        cfg = load_config()
-        cfg.update(changes)
-        save_config(cfg)
-        self.config = cfg
+    def _save(self, **changes: Any) -> bool:
+        try:
+            self.config = update_config(changes)
+            return True
+        except Exception:
+            self.root.bell()
+            logger.warning("Could not save widget settings")
+            return False
 
     def _show_context_menu(self, event) -> None:
         menu = tk.Menu(
@@ -345,9 +397,15 @@ class FloatingWidget:
         self._render()
 
     def toggle_always_on_top(self) -> None:
-        new_val = not self.config.get("always_on_top", True)
-        self.root.attributes("-topmost", new_val)
-        self._save(always_on_top=new_val)
+        self.set_always_on_top(not self.config.get("always_on_top", True))
+
+    def set_always_on_top(self, value: bool) -> None:
+        if self._save(always_on_top=value) is False:
+            return
+        self.root.attributes("-topmost", value)
+        callback = getattr(self, "on_topmost_changed", None)
+        if callback:
+            callback(value)
 
     def set_opacity(self, opacity: float) -> None:
         self.root.attributes("-alpha", opacity)
@@ -373,8 +431,27 @@ class FloatingWidget:
             self.on_exit()
         self.root.quit()
 
+    def close(self) -> None:
+        self._closed = True
+        self._cancel_poll()
+        self.root.destroy()
+
+    def _cancel_poll(self) -> None:
+        job = getattr(self, "_poll_job", None)
+        if job is not None:
+            self.root.after_cancel(job)
+            self._poll_job = None
+
+    def _schedule_poll(self, delay: int) -> None:
+        self._cancel_poll()
+        if not self._closed:
+            self._poll_job = self.root.after(delay, self.schedule_update)
+
     # ------------------------------------------------------------------ data
     def schedule_update(self) -> None:
+        self._cancel_poll()
+        if self._closed:
+            return
         if self._fetching:
             return
         self._fetching = True
@@ -425,13 +502,16 @@ class FloatingWidget:
             pass  # window already destroyed
 
     def _on_data(self, summary: Dict[str, Any], ok: bool, auth_required: bool = False) -> None:
+        if self._closed:
+            return
         self.is_connected = ok
         self._auth_required = auth_required
         if ok:
             self.summary_data = summary
             self.entries = widget_entries(summary)
         self._render()
-        self.root.after(self.poll_ms, self.schedule_update)
+        self._resize()
+        self._schedule_poll(self.poll_ms)
 
     # ------------------------------------------------------------------ render
     def _render(self) -> None:
@@ -462,15 +542,17 @@ class FloatingWidget:
                 return
             self.lbl_footer.config(text="인증 필요", fg=theme.color(theme.ERROR))
         elif hasattr(self, "lbl_footer"):
-            self.lbl_footer.config(text=self.rate_updater.describe(), fg=theme.color(theme.FAINT))
+            status = "연결 실패 · 이전 값 · " if not self.is_connected and self.entries else ""
+            self.lbl_footer.config(text=status + self.rate_updater.describe(), fg=theme.color(theme.FAINT))
 
         if self.mode == "mini":
             if not self.entries:
                 self.mini_text.config(text="연결 대기 중…" if not self.is_connected else "표시할 항목 없음")
                 self._resize()
                 return
-            parts = [f"{e['group']} {e['label']} {e['value']}" for e in visible]
-            text = "  │  ".join(parts) or "우클릭 > 표시 항목 선택"
+            parts = [f"{e['group']} {e['label']} {e['value']} {widget_entry_note(e)}" for e in visible]
+            status = "연결 실패 · 이전 값 │ " if not self.is_connected else ""
+            text = status + ("  │  ".join(parts) or "우클릭 > 표시 항목 선택")
             if text != self.mini_text.cget("text"):
                 self.mini_text.config(text=text)
                 self._resize()
@@ -480,7 +562,7 @@ class FloatingWidget:
         sig = (
             bool(self.entries),
             self.rate_updater.describe(),
-            tuple((e["group"], e["label"], e["value"], e["color"], e["reset"] or e["hint"]) for e in visible),
+            tuple((e["group"], e["label"], e["value"], e["color"], widget_entry_note(e)) for e in visible),
         )
         if sig == self._rows_sig:
             return
@@ -511,7 +593,7 @@ class FloatingWidget:
             tk.Label(
                 row, text=e["value"], fg=e["color"], bg=theme.color(theme.CARD), font=self.font_bold
             ).pack(side="left")
-            tail = e["reset"] or e["hint"]
+            tail = widget_entry_note(e)
             if tail:
                 tk.Label(
                     row,

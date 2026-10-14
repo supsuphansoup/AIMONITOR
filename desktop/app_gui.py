@@ -19,6 +19,7 @@ Pure Desktop Program Interface built with CustomTkinter & Matplotlib:
 """
 
 import logging
+import math
 import sys
 import threading
 from datetime import datetime
@@ -45,7 +46,7 @@ if sys.platform == "win32":
 
 from backend.app.services.api_key_manager import api_key_manager
 from desktop.ai_detector import detect_connected_ais, scan_all_ai_status
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     GREY,
@@ -81,6 +82,12 @@ BYOK_PROVIDERS = {
     "DeepSeek": "deepseek",
     "OpenRouter": "openrouter",
     "Groq": "groq",
+}
+
+KEY_STATUS_TEXT = {
+    "valid": "유효", "invalid": "인증 실패", "verification_unavailable": "확인 불가",
+    "storage_error": "저장소 확인 불가", "unreadable": "복호화 불가",
+    "connected": "미검증", "unconfigured": "미등록",
 }
 
 
@@ -614,9 +621,12 @@ class DesktopMainWindow(ctk.CTk):
         labels = [item.get("model_name", "unknown")[:14] for item in top_bd]
         costs_krw = [int(item.get("total_cost_usd", 0.0) * self.krw_rate) for item in top_bd]
         tokens = [item.get("total_tokens", 0) for item in top_bd]
+        unknown = [item.get("cost_unknown_count", 0) for item in top_bd]
+        counts = [item.get("count", 0) for item in top_bd]
 
         # Skip expensive matplotlib redraws when nothing moved.
-        sig = (theme.appearance_mode(), tuple(labels), tuple(costs_krw), tuple(tokens))
+        sig = (theme.appearance_mode(), tuple(labels), tuple(costs_krw), tuple(tokens),
+               tuple(unknown), tuple(counts))
         if sig == self._chart_sig:
             return
         self._chart_sig = sig
@@ -641,7 +651,13 @@ class DesktopMainWindow(ctk.CTk):
         colors_tok = theme.color(theme.SECONDARY)
 
         y_pos = range(len(labels))
-        self.ax_cost.barh(y_pos, costs_krw, color=colors_cost, height=0.55)
+        known_rows = [i for i in y_pos if not unknown[i] or unknown[i] < counts[i]]
+        self.ax_cost.barh(known_rows, [costs_krw[i] for i in known_rows], color=colors_cost, height=0.55)
+        for i in y_pos:
+            if unknown[i]:
+                note = "계산 불가" if unknown[i] >= counts[i] else f" + {unknown[i]}건 계산 불가"
+                self.ax_cost.text(costs_krw[i], i, note, color=theme.color(theme.WARNING),
+                                  va="center", fontsize=theme.CHART_TICK)
         self.ax_cost.set_yticks(y_pos)
         self.ax_cost.set_yticklabels(labels, color=theme.color(theme.MUTED), fontsize=theme.CHART_TICK)
         self.ax_cost.invert_yaxis()
@@ -971,7 +987,7 @@ class DesktopMainWindow(ctk.CTk):
             self.byok_entry_key.delete(0, "end")
             msg = f"✓ {prov.upper()} API 키가 등록되었습니다."
             if ver.get("valid"):
-                msg += f" (검증 완료: {ver.get('balance', '정상')})"
+                msg += " (검증 완료)"
             self.lbl_status_msg.configure(text=msg, text_color=theme.SUCCESS)
             self._refresh_keys_list()
             self._refresh_diagnostic_table()
@@ -982,6 +998,8 @@ class DesktopMainWindow(ctk.CTk):
 
     def _refresh_keys_list(self) -> None:
         """Only masked metadata reaches widgets; bills are joined by provider and key ID."""
+        if getattr(self, "_key_verifying", None):
+            return  # Polling must not replace an in-flight row with an enabled button.
         for child in self.byok_keys_scroll.winfo_children():
             child.destroy()
         spend = {(s["provider"], s["key_id"]): s
@@ -1005,8 +1023,14 @@ class DesktopMainWindow(ctk.CTk):
                 ctk.CTkLabel(row, text=key.get("masked") or key.get("masked_key") or "마스킹 없음",
                              font=theme.font(theme.FONT_SM, family=theme.FONT_MONO),
                              text_color=theme.ACCENT, width=170).pack(side="left")
-                ctk.CTkLabel(row, text=key.get("status") or "미검증", text_color=theme.MUTED,
-                             width=100).pack(side="left")
+                status = ctk.CTkLabel(row, text=KEY_STATUS_TEXT.get(key.get("status"), "알 수 없음"),
+                                      text_color=theme.MUTED, width=100)
+                status.pack(side="left")
+                verify = ctk.CTkButton(row, text="검증", width=60)
+                verify.configure(command=lambda p=prov, k=kid, b=verify, s=status:
+                                 self._verify_key_action(p, k, b, s),
+                                 state="normal" if key.get("has_key") else "disabled")
+                verify.pack(side="right", padx=theme.SPACE_1)
                 bill = spend.get((prov, kid))
                 bill_text = (spend_text(bill, self.krw_rate) if bill and bill.get("amount") is not None
                              else "청구액 확인 불가")
@@ -1027,6 +1051,41 @@ class DesktopMainWindow(ctk.CTk):
         if not self.byok_keys_scroll.winfo_children():
             ctk.CTkLabel(self.byok_keys_scroll, text="등록된 API 키가 없습니다.",
                          text_color=theme.FAINT).pack(pady=theme.SPACE_4)
+
+    def _verify_key_action(self, provider: str, key_id: str, button: Any, status: Any) -> None:
+        busy = getattr(self, "_key_verifying", None)
+        if busy is None:
+            self._key_verifying = busy = set()
+        identity = (provider, key_id)
+        if identity in busy:
+            return
+        busy.add(identity)
+        button.configure(state="disabled")
+        status.configure(text="검증 중…")
+
+        def worker():
+            state = "verification_unavailable"
+            try:
+                result = api_key_manager.verify_key(provider, key_id)
+                if result.get("valid") is True:
+                    state = "valid"
+                elif str(result.get("error", "")).startswith(("HTTP 401", "HTTP 403", "인증 실패")):
+                    state = "invalid"
+            except Exception:
+                pass
+
+            def finish():
+                busy.discard(identity)
+                try:
+                    status.configure(text=KEY_STATUS_TEXT[state])
+                    button.configure(state="normal")
+                except Exception:
+                    pass  # The row/window may have been destroyed while verifying.
+            try:
+                self.after(0, finish)
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True, name="KeyVerification").start()
 
     def _rename_key_action(self, provider: str, key_id: str, label: str) -> None:
         try:
@@ -1209,7 +1268,7 @@ class DesktopMainWindow(ctk.CTk):
         )
         self.lbl_rate_live.pack(side="left", padx=theme.SPACE_3)
 
-        btn_rate_refresh = ctk.CTkButton(
+        self.btn_rate_refresh = ctk.CTkButton(
             r1_inner,
             text="환율 즉시 갱신",
             width=120,
@@ -1219,7 +1278,7 @@ class DesktopMainWindow(ctk.CTk):
             command=self._manual_refresh_rate,
             text_color=theme.TEXT,
         )
-        btn_rate_refresh.pack(side="right")
+        self.btn_rate_refresh.pack(side="right")
 
         # 2. Where each remaining-usage number comes from
         r2 = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
@@ -1388,13 +1447,17 @@ class DesktopMainWindow(ctk.CTk):
                 var.set(key not in hidden)
 
     def _toggle_ai_visibility(self, key: str) -> None:
-        cfg = load_config()  # re-read so settings the widget saved are kept
-        hidden = [k for k in hidden_ai_keys(cfg) if k != key]
-        if not self._visibility_vars[key].get():
-            hidden.append(key)
-        cfg["hidden_ais"] = hidden
-        save_config(cfg)
-        self.config = cfg
+        def change(cfg: Dict[str, Any]) -> None:
+            hidden = [k for k in hidden_ai_keys(cfg) if k != key]
+            if not self._visibility_vars[key].get():
+                hidden.append(key)
+            cfg["hidden_ais"] = hidden
+        try:
+            self.config = update_config(change)
+        except Exception:
+            self.lbl_status_msg.configure(text="설정을 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
+        hidden = hidden_ai_keys(self.config)
         name = next((a.get("display_name", key) for a in self.connected_ais if a["key"] == key), key)
         state = "표시" if key not in hidden else "숨김"
         self.lbl_status_msg.configure(text=f"{name}: {state}", text_color=theme.SUCCESS)
@@ -1407,15 +1470,17 @@ class DesktopMainWindow(ctk.CTk):
         raw = self.entry_copilot_limit.get().strip()
         try:
             value = float(raw) if raw else None
-            if value is not None and value <= 0:
+            if value is not None and (not math.isfinite(value) or not 0 < value <= 1000000000):
                 raise ValueError
         except ValueError:
-            self.lbl_status_msg.configure(text="한도는 양수로 입력하세요.", text_color=theme.ERROR)
+            self.lbl_status_msg.configure(text="한도는 0 초과 10억 이하의 유한한 수로 입력하세요.",
+                                          text_color=theme.ERROR)
             return
-        cfg = load_config()  # re-read so settings the widget saved are kept
-        cfg["copilot_monthly_premium_limit"] = value
-        save_config(cfg)
-        self.config = cfg
+        try:
+            self.config = update_config({"copilot_monthly_premium_limit": value})
+        except Exception:
+            self.lbl_status_msg.configure(text="설정을 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
         self.lbl_status_msg.configure(text="Copilot 한도를 저장했습니다.", text_color=theme.SUCCESS)
         self.refresh_data()
 
@@ -1430,8 +1495,11 @@ class DesktopMainWindow(ctk.CTk):
             rx.pack(fill="x", pady=theme.SPACE_1)
 
             is_on = info["is_connected"]
-            color = theme.SUCCESS if is_on else theme.FAINT
-            status_text = "🟢 연결됨 (모니터링 중)" if is_on else "⚪ 미연동 (로그인/결제 없음)"
+            if is_on is None or info.get("detection_status") == "unavailable":
+                color, status_text = theme.WARNING, "감지 불가 (다음 갱신에서 재시도)"
+            else:
+                color = theme.SUCCESS if is_on else theme.FAINT
+                status_text = "🟢 연결됨 (모니터링 중)" if is_on else "⚪ 미연동 (로그인/결제 없음)"
 
             ctk.CTkLabel(
                 rx,
@@ -1497,16 +1565,34 @@ class DesktopMainWindow(ctk.CTk):
 
     def _manual_refresh_rate(self) -> None:
         """Trigger immediate internet exchange rate refresh."""
-        ok = self.rate_updater.update_now()
-        if ok:
-            self.lbl_status_msg.configure(
-                text=f"환율 갱신: {self.rate_updater.describe()}", text_color=theme.SUCCESS
-            )
-        else:
-            self.lbl_status_msg.configure(
-                text="환율 서버에 연결하지 못해 이전 환율을 유지합니다.", text_color=theme.WARNING
-            )
-        self.refresh_data()
+        if getattr(self, "_rate_refreshing", False):
+            return
+        self._rate_refreshing = True
+        self.btn_rate_refresh.configure(state="disabled")
+        self.lbl_status_msg.configure(text="환율 갱신 중…", text_color=theme.MUTED)
+        def worker() -> None:
+            try:
+                ok = self.rate_updater.update_now()
+            except Exception:
+                ok = None
+            persistence_failed = getattr(self.rate_updater, "persistence_failed", False)
+            def finish() -> None:
+                self._rate_refreshing = False
+                self.btn_rate_refresh.configure(state="normal")
+                self.lbl_status_msg.configure(
+                    text="환율 임시 적용 · 설정 저장 실패" if persistence_failed else (
+                        f"환율 갱신: {self.rate_updater.describe()}" if ok
+                        else "환율 서버에 연결하지 못해 이전 환율을 유지합니다."
+                    ),
+                    text_color=theme.SUCCESS if ok and not persistence_failed else theme.WARNING,
+                )
+                self.refresh_data()
+            try:
+                self.after(0, finish)
+            except RuntimeError:
+                pass
+        self._rate_refresh_thread = threading.Thread(target=worker, daemon=True, name="ManualRateRefresh")
+        self._rate_refresh_thread.start()
 
     # =========================================================================
     # Data Fetching & UI Update
@@ -1554,10 +1640,11 @@ class DesktopMainWindow(ctk.CTk):
         chart_params = account_query(selections[1], choices)
 
         overview = {}
-        breakdown = []
-        traces = []
+        breakdown = getattr(self, "breakdown_data", [])
+        traces = getattr(self, "traces_data", [])
         act_contexts = {}
         ok = False
+        endpoint_status = dict.fromkeys(("overview", "breakdown", "traces", "active_contexts"), False)
         auth_required = False
 
         try:
@@ -1567,7 +1654,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
                         overview = r_ov.json()
-                        ok = True
+                        endpoint_status["overview"] = True
                 except Exception as e:
                     logger.debug("overview fetch err: %s", type(e).__name__)
 
@@ -1576,7 +1663,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
                         breakdown = r_bd.json()
-                        ok = True
+                        endpoint_status["breakdown"] = True
                 except Exception as e:
                     logger.debug("breakdown fetch err: %s", type(e).__name__)
 
@@ -1586,6 +1673,7 @@ class DesktopMainWindow(ctk.CTk):
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
                         traces = tr_data if isinstance(tr_data, list) else tr_data.get("items", [])
+                        endpoint_status["traces"] = True
                 except Exception as e:
                     logger.debug("traces fetch err: %s", type(e).__name__)
 
@@ -1594,6 +1682,7 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_act.status_code in (401, 403)
                     if r_act.status_code == 200:
                         act_contexts = r_act.json()
+                        endpoint_status["active_contexts"] = isinstance(act_contexts, dict)
                 except Exception as e:
                     logger.debug("active_contexts fetch err: %s", type(e).__name__)
 
@@ -1611,6 +1700,7 @@ class DesktopMainWindow(ctk.CTk):
 
         summary: Optional[Dict[str, Any]] = None
         try:
+            ok = endpoint_status["active_contexts"]
             if ok:
                 # 여기서 만든다: 공식 사용량 조회(네트워크)와 로그 읽기가 들어 있어
                 # UI 스레드에서 돌리면 창 전체가 멈춘다.
@@ -1623,7 +1713,9 @@ class DesktopMainWindow(ctk.CTk):
                     krw_rate=krw_rate,
                     config=config,
                     official_spend=self.official_spend,
+                    usage_available=endpoint_status["active_contexts"],
                 )
+                summary["endpoint_status"] = endpoint_status
                 try:
                     quotas = account_quotas(registry=AccountQuotaView(self.account_rows)) if any(
                         i["key"] in ("claude", "codex", "antigravity", "copilot", "cursor")
@@ -1663,7 +1755,10 @@ class DesktopMainWindow(ctk.CTk):
         self.is_connected = ok
         if not ok or summary is None:
             self.lbl_status_msg.configure(
-                text="인증 필요" if auth_required else "연결 대기 중...", text_color=theme.ERROR
+                text="인증 필요" if auth_required else (
+                    "갱신 실패 · 이전 값 표시 중" if getattr(self, "cached_summary", None)
+                    else "연결 대기 중..."
+                ), text_color=theme.ERROR
             )
             self._schedule_refresh()
             return
@@ -1755,9 +1850,13 @@ class DesktopMainWindow(ctk.CTk):
         self._render_filtered_logs()
 
         # Update statusbar
+        partial = not all(summary.get("endpoint_status", {"all": True}).values())
         self.lbl_status_msg.configure(
-            text="인증 필요" if auth_required else f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)",
-            text_color=theme.ERROR if auth_required else theme.SUCCESS,
+            text="인증 필요" if auth_required else (
+                "일부 갱신 실패 · 실패한 항목은 이전 값" if partial
+                else f"● 동기화 완료 (연결 AI {len(self.connected_ais)}개)"
+            ),
+            text_color=theme.ERROR if auth_required else (theme.WARNING if partial else theme.SUCCESS),
         )
         self.lbl_last_time.configure(text=f"마지막 갱신: {datetime.now().strftime('%H:%M:%S')}")
 
@@ -1809,6 +1908,7 @@ class DesktopMainWindow(ctk.CTk):
                     it.get("total_cost_usd"),
                     it.get("count"),
                     it.get("total_tokens"),
+                    it.get("cost_unknown_count"),
                 )
                 for it in bd
             ),
@@ -1835,6 +1935,10 @@ class DesktopMainWindow(ctk.CTk):
             m_krw = int(m_cost * self.krw_rate)
             m_reqs = item.get("count", 0)
             m_tkns = item.get("total_tokens", 0)
+            unknown = item.get("cost_unknown_count", 0)
+            cost_text = "계산 불가" if unknown and unknown >= m_reqs else f"￦ {m_krw:,} 원 (${m_cost:.4f})"
+            if unknown and unknown < m_reqs:
+                cost_text += f" · {unknown}건 계산 불가"
 
             row = ctk.CTkFrame(self.frame_breakdown, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_SM)
             row.pack(fill="x", pady=theme.SPACE_1, padx=theme.SPACE_HALF)
@@ -1849,7 +1953,7 @@ class DesktopMainWindow(ctk.CTk):
                 text_color=theme.FAINT,
             ).pack(side="left", padx=theme.SPACE_2)
             ctk.CTkLabel(
-                row, text=f"￦ {m_krw:,} 원 (${m_cost:.4f})", font=font_name, text_color=theme.ACCENT
+                row, text=cost_text, font=font_name, text_color=theme.ACCENT
             ).pack(side="right", padx=theme.SPACE_3)
 
     def _create_log_row(self) -> Dict[str, Any]:
