@@ -63,6 +63,23 @@ def test_rate_persistence_sends_only_rate_patch(monkeypatch):
     patch.assert_called_once_with({"krw_per_usd": 1400, "krw_rate_source": "test", "krw_rate_as_of": None})
 
 
+def test_rate_update_reports_persistence_failure(monkeypatch):
+    monkeypatch.setattr(config, "update_config", Mock(side_effect=OSError("synthetic disk error")))
+    monkeypatch.setattr(rate_fetcher, "fetch_usd_krw_rate", lambda: (1400, "test", None))
+    updater = rate_fetcher.AutoRateUpdater(current_rate=1300)
+    assert updater.update_now() == 1400
+    assert updater.persistence_failed is True
+
+
+def test_large_invalid_setting_repairs_only_bad_field(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    config.CONFIG_FILE.write_text(json.dumps({"copilot_monthly_premium_limit": 2 ** 2048,
+                                            "widget_y": 999}), encoding="utf-8")
+    result = config.load_config()
+    assert result["copilot_monthly_premium_limit"] is None
+    assert result["widget_y"] == 999
+
+
 @pytest.mark.parametrize("key,value", [
     ("widget_x", "bad"), ("widget_y", []), ("poll_interval_ms", None), ("poll_interval_ms", -1),
     ("widget_opacity", 2), ("krw_per_usd", float("nan")), ("always_on_top", "false"),

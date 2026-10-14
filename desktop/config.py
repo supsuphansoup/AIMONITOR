@@ -45,7 +45,8 @@ def _validated(data: Dict[str, Any]) -> Dict[str, Any]:
         if key not in DEFAULT_CONFIG:
             continue
         valid = True
-        number = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        number = (isinstance(value, (int, float)) and not isinstance(value, bool)
+                  and (isinstance(value, int) or math.isfinite(value)))
         if key in ("widget_x", "widget_y"):
             valid = value is None or (isinstance(value, int) and not isinstance(value, bool))
         elif key == "poll_interval_ms":
@@ -55,7 +56,7 @@ def _validated(data: Dict[str, Any]) -> Dict[str, Any]:
         elif key == "krw_per_usd":
             valid = number and 100 < value < 10000
         elif key == "copilot_monthly_premium_limit":
-            valid = value is None or (number and value > 0)
+            valid = value is None or (number and 0 < value <= 1000000000)
         elif key in ("always_on_top", "claude_watch_enabled"):
             valid = isinstance(value, bool)
         elif key == "widget_mode":

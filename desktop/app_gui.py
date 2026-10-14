@@ -19,6 +19,7 @@ Pure Desktop Program Interface built with CustomTkinter & Matplotlib:
 """
 
 import logging
+import math
 import sys
 import threading
 from datetime import datetime
@@ -1420,10 +1421,11 @@ class DesktopMainWindow(ctk.CTk):
         raw = self.entry_copilot_limit.get().strip()
         try:
             value = float(raw) if raw else None
-            if value is not None and value <= 0:
+            if value is not None and (not math.isfinite(value) or not 0 < value <= 1000000000):
                 raise ValueError
         except ValueError:
-            self.lbl_status_msg.configure(text="한도는 양수로 입력하세요.", text_color=theme.ERROR)
+            self.lbl_status_msg.configure(text="한도는 0 초과 10억 이하의 유한한 수로 입력하세요.",
+                                          text_color=theme.ERROR)
             return
         try:
             self.config = update_config({"copilot_monthly_premium_limit": value})
@@ -1521,13 +1523,16 @@ class DesktopMainWindow(ctk.CTk):
                 ok = self.rate_updater.update_now()
             except Exception:
                 ok = None
+            persistence_failed = getattr(self.rate_updater, "persistence_failed", False)
             def finish() -> None:
                 self._rate_refreshing = False
                 self.btn_rate_refresh.configure(state="normal")
                 self.lbl_status_msg.configure(
-                    text=f"환율 갱신: {self.rate_updater.describe()}" if ok
-                    else "환율 서버에 연결하지 못해 이전 환율을 유지합니다.",
-                    text_color=theme.SUCCESS if ok else theme.WARNING,
+                    text="환율 임시 적용 · 설정 저장 실패" if persistence_failed else (
+                        f"환율 갱신: {self.rate_updater.describe()}" if ok
+                        else "환율 서버에 연결하지 못해 이전 환율을 유지합니다."
+                    ),
+                    text_color=theme.SUCCESS if ok and not persistence_failed else theme.WARNING,
                 )
                 self.refresh_data()
             try:

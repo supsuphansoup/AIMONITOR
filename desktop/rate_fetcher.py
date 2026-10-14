@@ -72,6 +72,7 @@ class AutoRateUpdater:
         self.interval_sec = interval_sec
         self.source = source
         self.as_of = as_of  # when the provider published the rate
+        self.persistence_failed = False
         self._listeners: List[Callable[[float, str], None]] = []
         if on_rate_updated:
             self._listeners.append(on_rate_updated)
@@ -106,6 +107,7 @@ class AutoRateUpdater:
         return f"1 USD = ￦{self.rate:,.1f} ({self.source}{when})"
 
     def update_now(self) -> Optional[float]:
+        self.persistence_failed = False
         rate, src, as_of = fetch_usd_krw_rate()
         if not rate:
             return None
@@ -113,7 +115,7 @@ class AutoRateUpdater:
         self.source = src or "온라인"
         self.as_of = as_of
         logger.info("Updated USD/KRW rate: %.1f from %s", self.rate, self.source)
-        _persist(self)
+        self.persistence_failed = not _persist(self)
         for fn in list(self._listeners):
             try:
                 fn(self.rate, self.source)
@@ -122,14 +124,16 @@ class AutoRateUpdater:
         return self.rate
 
 
-def _persist(updater: AutoRateUpdater) -> None:
+def _persist(updater: AutoRateUpdater) -> bool:
     try:
         from desktop.config import update_config
 
         update_config({"krw_per_usd": updater.rate, "krw_rate_source": updater.source,
                        "krw_rate_as_of": updater.as_of.isoformat() if updater.as_of else None})
+        return True
     except Exception as e:
-        logger.debug("could not persist rate: %s", type(e).__name__)
+        logger.warning("could not persist rate: %s", type(e).__name__)
+        return False
 
 
 _shared: Optional[AutoRateUpdater] = None
