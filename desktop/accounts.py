@@ -7,6 +7,7 @@ cannot prove which account was used while the collector was offline.
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -14,9 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
+
 TOOLS = {"claude_code", "codex", "antigravity", "copilot", "cursor", "api"}
 NAMES = {"claude_code": "Claude", "codex": "Codex"}
 _LOCK = threading.RLock()
+logger = logging.getLogger("aimonitor.desktop.accounts")
+TIMELINE_MAX = 5000
 
 
 def canonical_path(path: Path) -> Path:
@@ -99,7 +104,9 @@ def discover_folders(
         paths.extend(sorted(home.glob(folder + "-*")))
         candidates.extend((tool, p, "auto", structure) for p in paths)
     for row in manual or []:
-        if row.get("source") == "manual" and row.get("tool") in TOOLS and row.get("config_dir"):
+        if (isinstance(row, dict) and row.get("source") == "manual"
+                and isinstance(row.get("tool"), str) and row["tool"] in TOOLS
+                and isinstance(row.get("config_dir"), str) and row["config_dir"]):
             tool = row["tool"]
             structure = {"claude_code": "projects", "codex": "sessions"}.get(tool, "")
             candidates.insert(0, (tool, Path(row["config_dir"]), "manual", structure))
@@ -136,6 +143,68 @@ def _label(value: str) -> str:
     return value
 
 
+def _valid_identity(value: Any, tool: Optional[str] = None) -> bool:
+    return (isinstance(value, str) and len(value) <= ACCOUNT_ID_MAX_LENGTH
+            and re.fullmatch(ACCOUNT_ID_PATTERN, value) is not None
+            and (tool is None or value.startswith(tool + ":")))
+
+
+def _account_rows(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        tool, directory = row.get("tool"), row.get("config_dir")
+        if (not isinstance(tool, str) or tool not in TOOLS or not _valid_identity(row.get("account_id"), tool)
+                or not isinstance(directory, str) or not directory or "\x00" in directory
+                or row.get("source", "auto") not in ("auto", "manual")):
+            continue
+        if any(row.get(field) is not None and _timestamp(row[field]) is None
+               for field in ("first_seen", "last_seen")):
+            continue
+        try:
+            if row.get("label") is not None:
+                _label(row["label"])
+        except (AttributeError, ValueError, TypeError):
+            continue
+        rows.append({key: row[key] for key in (
+            "account_id", "tool", "config_dir", "label", "source", "first_seen", "last_seen",
+        ) if key in row})
+    return rows
+
+
+def _timeline_rows(value: Any) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        folder_hash, identity = row.get("config_dir_hash"), row.get("account_id")
+        when = _timestamp(row.get("since"))
+        if (not isinstance(folder_hash, str) or re.fullmatch(r"[a-f0-9]{12}", folder_hash) is None
+                or when is None):
+            continue
+        # An invalid identity with a known timestamp is an unknown interval.
+        rows.append({"config_dir_hash": folder_hash,
+                     "account_id": identity if _valid_identity(identity) else None,
+                     "since": when.isoformat()})
+    return rows
+
+
+def _compact_timeline(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    previous = {}
+    compacted = []
+    for row in sorted(rows, key=lambda entry: _timestamp(entry["since"])):
+        key = row["config_dir_hash"]
+        if key not in previous or previous[key] != row["account_id"]:
+            compacted.append(row)
+            previous[key] = row["account_id"]
+    return compacted[-TIMELINE_MAX:]
+
+
 class AccountRegistry:
     def __init__(self, state_dir: Optional[Path] = None, home: Optional[Path] = None,
                  environ: Optional[Dict[str, str]] = None):
@@ -148,20 +217,28 @@ class AccountRegistry:
 
     def list_accounts(self) -> List[Dict[str, Any]]:
         rows = _read(self.accounts_file, [])
-        return rows if isinstance(rows, list) else []
+        return _account_rows(rows)
+
+    def read_timeline(self) -> List[Dict[str, Any]]:
+        return _timeline_rows(_read(self.timeline_file, []))
 
     def refresh(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
         now = now or datetime.now(timezone.utc)
         since = now.astimezone(timezone.utc).isoformat()
         with _LOCK:
             rows = self.list_accounts()
-            timeline = _read(self.timeline_file, [])
+            raw_timeline = _read(self.timeline_file, None if self.timeline_file.exists() else [])
+            writable_timeline = isinstance(raw_timeline, list)
+            timeline = _timeline_rows(raw_timeline)
+            if not writable_timeline or len(timeline) != len(raw_timeline):
+                logger.warning("Invalid account timeline state; valid rows retained: %s", len(timeline))
             active = []
             for folder in discover_folders(self.home, self.environ, rows):
                 path = Path(folder["config_dir"])
                 account_id = account_id_for(folder["tool"], path, self.home)
-                last_seen = max((r.get("last_seen") or since for r in rows
-                                 if r.get("config_dir") == str(path)), default=since)
+                last_seen = max((_timestamp(r.get("last_seen")) for r in rows
+                                 if r.get("config_dir") == str(path) and _timestamp(r.get("last_seen"))),
+                                default=None)
                 row = next((r for r in rows if r.get("account_id") == account_id
                             and r.get("config_dir") == str(path)), None)
                 if row is None:
@@ -184,26 +261,30 @@ class AccountRegistry:
                     # On restart or a changed login, the unobserved interval is unknown.
                     prior = [e for e in timeline if e.get("config_dir_hash") == folder_hash]
                     if prior:
-                        last = previous[1] if previous else last_seen
+                        last = previous[1] if previous else (
+                            last_seen.isoformat() if last_seen else max(e["since"] for e in prior)
+                        )
                         timeline.append(dict(config_dir_hash=folder_hash, account_id=None, since=last))
                     timeline.append(dict(config_dir_hash=folder_hash, account_id=account_id, since=since))
                 self._observed[folder_hash] = (account_id, since)
                 row["last_seen"] = since
                 active.append(dict(row))
             _write(self.accounts_file, rows)
-            _write(self.timeline_file, timeline)
+            if writable_timeline:
+                _write(self.timeline_file, _compact_timeline(timeline))
             active_hashes = {config_dir_hash(Path(r["config_dir"])) for r in active}
             self._observed = {k: v for k, v in self._observed.items() if k in active_hashes}
             return active
 
-    def account_at(self, config_dir: Path, timestamp: Any) -> Optional[str]:
+    def account_at(self, config_dir: Path, timestamp: Any,
+                   timeline: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
         ts = _timestamp(timestamp)
         if ts is None:
             return None
         folder_hash = config_dir_hash(config_dir)
         selected = None
         selected_time = None
-        for entry in _read(self.timeline_file, []):
+        for entry in self.read_timeline() if timeline is None else timeline:
             when = _timestamp(entry.get("since"))
             if entry.get("config_dir_hash") == folder_hash and when and when <= ts:
                 if selected_time is None or when >= selected_time:
