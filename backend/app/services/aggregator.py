@@ -14,7 +14,7 @@ from sqlalchemy import Select, case, func
 from sqlmodel import Session, col, select
 
 from backend.app.core.config import settings
-from backend.app.core.timeutil import to_aware_utc, to_naive_utc, utc_now
+from backend.app.core.timeutil import local_period_start_utc, to_aware_utc, to_naive_utc, utc_now
 from backend.app.models.trace import TraceEvent
 from backend.app.services.cost import SOURCE_UNKNOWN
 
@@ -356,14 +356,11 @@ class MetricAggregator:
         the rest so a caller can say "계산 불가" instead of showing a low total.
         """
         now_utc = to_aware_utc(now) if now else to_aware_utc(utc_now())
-        local_now = now_utc.astimezone()
-        local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        local_month = local_midnight.replace(day=1)
         windows = {
             "5h": now_utc - timedelta(hours=5),
-            "today": local_midnight,
+            "today": local_period_start_utc(now_utc),
             "7d": now_utc - timedelta(days=7),
-            "month": local_month,
+            "month": local_period_start_utc(now_utc, month_start=True),
         }
 
         tags = "," + func.coalesce(col(TraceEvent.tags), "") + ","

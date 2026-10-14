@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
@@ -16,6 +16,16 @@ router = APIRouter(
     tags=["Metrics & Analytics"],
     dependencies=[Depends(require_read_auth)],
 )
+
+
+def _query_time(value: Optional[datetime], field: str) -> Optional[datetime]:
+    try:
+        return to_naive_utc(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=[{
+            "type": "datetime_parsing", "loc": ["query", field],
+            "msg": "Timestamp is outside the UTC range",
+        }]) from None
 
 
 @router.get("/overview", response_model=Dict[str, Any])
@@ -36,14 +46,14 @@ def get_metrics_overview(
     `hours_back` is a shorthand for `start_time`; an explicit `start_time` wins.
     """
     validate_account_filter(account_id, account_unknown)
-    resolved_start = to_naive_utc(start_time)
+    resolved_start = _query_time(start_time, "start_time")
     if resolved_start is None and hours_back is not None:
         resolved_start = utc_now() - timedelta(hours=hours_back)
 
     return MetricAggregator.get_overview_metrics(
         session=session,
         start_time=resolved_start,
-        end_time=to_naive_utc(end_time),
+        end_time=_query_time(end_time, "end_time"),
         provider=provider,
         account_id=account_id,
         account_unknown=account_unknown,

@@ -25,6 +25,8 @@
 
 `overview`·`timeseries`·`breakdown`은 `account_unknown=true`로 계정 미상(`account_id IS NULL`) 기록만 집계한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`의 동시 지정은 기존 `detail` 배열 형식의 HTTP 422이며 입력 원문은 반환하지 않는다.
 
+`overview`의 날짜 입력은 UTC로 정규화한다. 오프셋 변환 결과가 datetime 범위를 벗어나면 HTTP 422의 `detail` 배열로 응답하며 입력 원문·예외 문자열을 포함하지 않는다.
+
 ### 계산 방식
 
 - 건수·합계·평균: SQL `COUNT`/`SUM`/`AVG`, 모델별은 `GROUP BY` — 행을 ORM 객체로 올리지 않는다.
@@ -39,6 +41,7 @@
 
 - 정확한 쉼표 구분 태그 `claude-code`·`codex`·`copilot`·`antigravity`·`cursor`로 도구를 구분하며, 나머지는 `<provider>_api`로 묶는다.
 - 오늘·이번 달 경계는 백엔드 PC의 로컬 시각, 응답 시각은 UTC 오프셋 ISO-8601이다. SQL 합계에서 미상 비용을 제외하고 `cost_unknown`을 반환한다.
+- 로컬 자정·월초는 해당 현지 naive 시각에 적용되는 시스템 시간대 규칙으로 UTC 변환한다. DST 전환 후의 현재 오프셋을 과거 경계에 재사용하지 않는다. 변환은 공통 timeutil에서 수행한다.
 - 최신 요청은 `timestamp DESC, id DESC`로 선택하며 미래 시각 행을 제외한다. Copilot 세션 합계와 Antigravity 추정 토큰은 컨텍스트 크기로 쓰지 않는다.
 - 도구별 합계·기존 필드를 유지하고 `accounts` 배열에 계정별로 같은 창/컨텍스트 구조를 둔다. `null` 계정은 별도 항목이다.
 
