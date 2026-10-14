@@ -17,7 +17,7 @@ from backend.app.core.metrics_catalog import (
     unit_for,
 )
 from backend.app.core.timeutil import to_aware_utc, utc_now
-from backend.app.models.alert import AlertHistory, AlertRule, _validate_webhook_url
+from backend.app.models.alert import DELIVERY_PENDING_PREFIX, AlertHistory, AlertRule, _validate_webhook_url
 from backend.app.services.aggregator import MetricAggregator
 
 logger = logging.getLogger(__name__)
@@ -170,11 +170,14 @@ class AlertEvaluator:
         the cooldown in Python and writing later leaves a window as wide as the
         webhook call, during which every worker in a multi-process deployment
         reads "not in cooldown" and sends its own copy of the same alert.
+
+        The caller must commit the winning UPDATE with its pending history;
+        this method intentionally never commits on its own.
         """
         if rule.id is None:
             return False
 
-        condition = col(AlertRule.id) == rule.id
+        condition = (col(AlertRule.id) == rule.id) & col(AlertRule.is_active).is_(True)
         if rule.cooldown_minutes > 0:
             cutoff = now - timedelta(minutes=rule.cooldown_minutes)
             condition = condition & (
@@ -185,7 +188,6 @@ class AlertEvaluator:
         result = session.exec(
             update(AlertRule).where(condition).values(last_triggered_at=now)
         )
-        session.commit()
         if result.rowcount == 1:
             rule.last_triggered_at = now
             return True
@@ -257,27 +259,40 @@ class AlertEvaluator:
             if not compare_operator(metric_val, rule.operator, rule.threshold_value):
                 continue
 
-            if not ignore_cooldown and not cls.claim_rule(session, rule, now):
-                # Another evaluator got there first within the cooldown window.
-                logger.debug("Rule '%s' already claimed by a concurrent evaluation", rule.name)
-                continue
-
             message = cls.build_message(rule, metric_val, note)
-            sent_ok = cls.dispatch_webhook(rule, metric_val, now, message)
-            history = AlertHistory(
-                rule_id=rule.id if rule.id is not None else 0,
-                rule_name=rule.name,
-                triggered_value=round(metric_val, 4),
-                message=message,
-                sent_successfully=sent_ok,
-                created_at=now,
-            )
-            session.add(history)
+            try:
+                if not ignore_cooldown and not cls.claim_rule(session, rule, now):
+                    # A concurrent claim or pause won before this UPDATE.
+                    session.rollback()
+                    continue
+                history = AlertHistory(
+                    rule_id=rule.id if rule.id is not None else 0,
+                    rule_name=rule.name,
+                    triggered_value=round(metric_val, 4),
+                    message=DELIVERY_PENDING_PREFIX + message,
+                    sent_successfully=False,
+                    created_at=now,
+                )
+                session.add(history)
+                # The claim and pending record are one transaction. Never send
+                # until both are durable, even for ignore_cooldown evaluations.
+                session.commit()
+                session.refresh(history)
+            except Exception:
+                session.rollback()
+                raise
             triggered_histories.append(history)
 
-        if triggered_histories:
-            session.commit()
-            for history in triggered_histories:
+            sent_ok = cls.dispatch_webhook(rule, metric_val, now, message)
+            try:
+                history.message = message
+                history.sent_successfully = sent_ok
+                session.add(history)
+                session.commit()
                 session.refresh(history)
+            except Exception:
+                # A pending record survives even if the result cannot be saved.
+                session.rollback()
+                raise
 
         return triggered_histories

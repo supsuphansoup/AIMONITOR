@@ -64,13 +64,22 @@ Discord는 소문자로 정규화한 `discord.com`·`discordapp.com` 호스트�
    - 창의 `total_requests == 0`이고 지표가 에러율·평균/P50/P95/P99 지연이면 건너뜀 (`UNDEFINED_WITHOUT_TRAFFIC`). 요청 수·비용·토큰은 0이 실제 값이므로 평가 — `total_requests < 1` 무트래픽 감시는 동작.
    - 비용 지표이고 창에 `cost_unknown_count > 0`이면 알려진 비용은 하한값이다. `>`·`>=`만 평가하고 메시지 끝에 `- excludes N call(s) with unknown pricing; the actual cost may be higher`를 붙인다. `<`·`<=`·`==`·`!=`는 건너뜀.
 4. 조건을 평가한다 — 조건이 거짓인 규칙은 쿨다운을 소모하지 않는다.
-5. 발동 권한을 조건부 UPDATE로 선점한다. `rowcount == 1`인 평가자만 진행한다.
+5. 규칙별 트랜잭션에서 발동 권한을 조건부 UPDATE로 선점한다. `rowcount == 1`인 평가자만 진행한다.
    ```sql
    UPDATE alert_rules SET last_triggered_at = :now
-   WHERE id = :id AND (last_triggered_at IS NULL OR last_triggered_at <= :cutoff)
+   WHERE id = :id AND is_active = true
+     AND (last_triggered_at IS NULL OR last_triggered_at <= :cutoff)
    ```
    수동 평가는 이 단계를 건너뛰고 `last_triggered_at`도 쓰지 않는다.
-6. 이력 기록 + Webhook 발송 (타임아웃 5초). Discord URL이면 `{"content"}`, 그 외 Slack 형식 `{"text"}`.
+6. 같은 트랜잭션에서 `sent_successfully=false`, `message` 접두어 `[delivery pending] `인 발송 대기
+   이력을 저장하고 선점과 함께 커밋한다. 실패하면 둘 다 롤백하며 발송하지 않는다.
+7. Webhook 발송 후 해당 이력의 접두어를 제거하고 성공 여부를 별도 트랜잭션으로 갱신한다.
+
+이력 응답의 `delivery_status`는 `pending`·`succeeded`·`failed`다(기존 컬럼에서 계산, 스키마 변경 없음).
+`pending`은 발송 결과가 확정 저장되지 않았다는 뜻이며, 미발송·발송 중·발송 후 결과 저장 실패를
+모두 포함한다. 프로세스 종료·DB 오류로 미완료 이력이 남아도 자동 재발송하지 않는다.
+외부 발송과 DB의 exactly-once를 보장하지 않는다. Webhook 미설정의 성공은 기록 전용 성공이다.
+일시 중지가 선점 전에 커밋되면 발동하지 않는다. 선점 이후 일시 중지는 이미 선점된 발송을 취소하지 않는다.
 
 스케줄러: `SCHEDULER_ENABLED`(기본 true), 주기 `ALERT_INTERVAL_SECONDS`(기본 60).
 

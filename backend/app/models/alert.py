@@ -17,6 +17,7 @@ VALID_OPERATORS: FrozenSet[str] = frozenset({">", ">=", "<", "<=", "==", "!="})
 
 MAX_WINDOW_MINUTES = 1440
 MAX_COOLDOWN_MINUTES = 10_080  # one week
+DELIVERY_PENDING_PREFIX = "[delivery pending] "
 
 
 class AlertRuleBase(SQLModel):
@@ -275,6 +276,13 @@ class AlertHistory(AlertHistoryBase, table=True):
 class AlertHistoryRead(AlertHistoryBase):
     id: int
     created_at: datetime
+
+    @computed_field
+    @property
+    def delivery_status(self) -> str:
+        if self.message.startswith(DELIVERY_PENDING_PREFIX):
+            return "pending"
+        return "succeeded" if self.sent_successfully else "failed"
 
     @field_serializer("created_at")
     def serialize_created_at(self, value: datetime, _info: Any) -> str:
