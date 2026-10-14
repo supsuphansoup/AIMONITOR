@@ -300,6 +300,12 @@ def export_traces_csv(
     if end_time:
         filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
 
+    # sqlite3 legacy mode does not BEGIN for SELECT. Keep the count and streamed
+    # rows in one read snapshot, owned by the request Session until streaming ends.
+    connection = session.connection()
+    if connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN")
+
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one() or 0
     query = (
         select(TraceEvent)
