@@ -52,7 +52,9 @@ rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·�
 ### 연결 AI (`/metrics/connected_ais`)
 
 - `connected_ais`는 도구별 합계·기존 필드를 유지하며 각 항목의 `accounts`에 계정별 `usage`, `context`, `last_request_at` 등을 추가한다. 전체 합계에 하위 계정을 다시 더하지 않는다. 도구 기본 자격증명의 공식 한도·청구액을 다른 계정에 복사하지 않는다.
-- `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 홈의 `.claude-*`·`.codex-*`, 기존 계정 파일에 수동 등록한 폴더도 읽기 전용으로 발견한다. 기본 폴더 없이 사용자 지정 폴더만 있으면 도구를 표시하되 기본 자격증명의 플랜·공식 한도를 대신 붙이지 않는다. 계정별 Claude·Codex 플랜은 확인된 계정별 정보가 없으면 `플랜 확인 불가`다.
+- Claude·Codex의 계정별 `auth_mode`는 각 설정 폴더의 근거만으로 `subscription/api/unknown`을 반환한다([accounts.md](accounts.md)). `usage`의 각 창은 `since`와 `cost_meaning(billed/api_equivalent/unknown)`을 포함하며 창 안에서 방식이 바뀌면 `unknown`이다. 도구의 창·`cost_meaning`은 계정들의 구분이 섞이면 `mixed`이고 `billing_note`로 혼합을 안내한다.
+- `total.billed_*`는 API 계정과 기존 종량제 도구, `api_equivalent_month_*`는 구독 계정의 알려진 소계다. `unclassified_today_usd/krw`·`unclassified_month_usd/krw`는 구분 미상 금액을 따로 합산한다. `unclassified_month_requests`와 `unclassified_unknown_month`(이 중 단가 미상 건수)를 함께 반환해 0 소계가 확인된 0 청구로 보이지 않게 한다. 계정 하위 합계는 해당 도구 합계를 대체하며 다른 도구의 합계는 유지한다.
+- `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 홈의 `.claude-*`·`.codex-*`, 기존 계정 파일에 수동 등록한 폴더도 읽기 전용으로 발견한다. 기본 폴더 없이 사용자 지정 폴더만 있으면 도구를 표시하되 기본 자격증명의 플랜·공식 한도를 대신 붙이지 않는다. Claude·Codex 플랜은 그 계정 폴더에서 확인하며 근거가 없으면 `플랜 확인 불가`다. 로그인 근거·저장된 모드 이력의 조회는 읽기 전용으로 계정 파일·타임라인을 생성하거나 갱신하지 않는다.
 - 계정별 `quota_windows`는 데스크톱 소유 계정·타임라인의 읽기 전용 스냅샷을 통해 조회한다. 계정 파일 부재·읽기 실패 시 `null`이고 HTTP 200과 로컬 사용량은 유지한다. 공식 조회 불가 시 값이 없는 `unavailable` 창 또는 `null`이다. 백엔드는 `accounts.json`·`account_timeline.json`을 생성하거나 갱신하지 않는다.
 
 - 파라미터 없음. `{items, by_key, total, hidden}` 구조이며 `items`에는 `key`, `display_name`, `provider`, `plan_name`, `cost_meaning`, `quota_windows`, `context`, `usage`, `last_request_at`, `session_status`, `billing_note`, `official_spend`가 있다. 빈 연결 목록은 `items=[]`다.

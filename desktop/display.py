@@ -97,6 +97,7 @@ def krw(amount_krw: int) -> str:
 
 def usage_cost_text(block: Dict[str, Any], meaning: str) -> str:
     """'￦28,428 (API 환산)' / '￦1,200' / '￦0 (로컬)' plus a 계산 불가 note."""
+    meaning = block.get("cost_meaning", meaning)
     if meaning == "free":
         return "￦0 (로컬)"
     if not block or block.get("cost_krw") is None:
@@ -106,9 +107,24 @@ def usage_cost_text(block: Dict[str, Any], meaning: str) -> str:
     text = krw(block.get("cost_krw", 0))
     if meaning == "api_equivalent":
         text += " (API 환산)"
+    elif meaning == "unknown":
+        text += " (구분 미상)"
+    elif meaning == "mixed":
+        text += " (계정별 구분 혼합)"
     if block.get("cost_unknown"):
         text += f" · {block['cost_unknown']}건 계산 불가"
     return text
+
+
+def unclassified_total_text(total: Dict[str, Any]) -> Optional[str]:
+    if not (total.get("unclassified_month_requests") or total.get("unclassified_month_usd")
+            or total.get("unclassified_unknown_month")):
+        return None
+    unknown = total.get("unclassified_unknown_month") or 0
+    if unknown == total.get("unclassified_month_requests") and unknown:
+        return "계산 불가"
+    text = krw(total.get("unclassified_month_krw") or 0)
+    return f"{text} · {unknown}건 계산 불가" if unknown else text
 
 
 def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float,
@@ -197,7 +213,8 @@ def account_tools(ais: list, rows: list) -> list:
 
 def attach_accounts(summary: dict, active: dict, rows: list, quotas: list, rate: float) -> dict:
     """Join opaque usage groups to desktop labels and independently queried quotas."""
-    from desktop.context_manager import get_connected_ai_summary
+    from desktop.accounts import account_billing_info
+    from desktop.context_manager import apply_account_billing, get_connected_ai_summary, utc_now
 
     for item in summary.get("items", []):
         key = item["key"]
@@ -231,10 +248,12 @@ def attach_accounts(summary: dict, active: dict, rows: list, quotas: list, rate:
                 item["quota_windows"] = accounts[0]["quota_windows"]
             if not accounts[0]["usage"]:
                 item["usage"] = {}
-    return summary
+    now = utc_now()
+    return apply_account_billing(summary, account_billing_info(rows, now=now), now=now)
 
 
 def account_usage_lines(account: dict, meaning: str) -> List[str]:
+    meaning = account.get("cost_meaning", meaning)
     lines = []
     for key, label in (("5h", "5시간"), ("today", "오늘"), ("7d", "7일"), ("month", "월")):
         block = (account.get("usage") or {}).get(key)
@@ -340,10 +359,11 @@ def widget_entries(summary: Dict[str, Any]) -> list:
                     "label": label,
                     "value": usage_cost_text(block, meaning),
                     "color": theme.color(theme.TEXT),
-                    "hint": "API 환산" if meaning == "api_equivalent" else "",
+                    "hint": {"api_equivalent": "API 환산", "unknown": "구분 미상", "mixed": "혼합"}.get(
+                        block.get("cost_meaning", meaning), ""),
                     "reset": "",
                     "detail": f"{block.get('requests', 0):,}회 요청",
-                    "default": meaning == "billed" and window == "month",
+                    "default": block.get("cost_meaning", meaning) == "billed" and window == "month",
                 }
             )
     tot = summary.get("total") or {}
@@ -375,6 +395,11 @@ def widget_entries(summary: Dict[str, Any]) -> list:
                 "default": False,
             }
         )
+        unclassified = unclassified_total_text(tot)
+        if unclassified is not None:
+            out.append({"id": "total:unclassified_month", "group": "합계", "label": "이번 달 구분 미상",
+                        "value": unclassified, "color": theme.color(theme.WARNING),
+                        "hint": "청구·구독 환산과 별도", "reset": "", "detail": "", "default": True})
     return out
 
 

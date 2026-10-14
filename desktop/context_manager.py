@@ -8,11 +8,14 @@ Money is split by what it means:
 * ``api_equivalent``  - subscription traffic priced at API rates. Not charged;
                         shown as "API 환산" so it is never added to the bill.
 * ``free``            - local models.
+* ``unknown``         - billing mode is unproven or changed inside the window.
+* ``mixed``           - a tool total contains several account billing meanings.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from backend.app.core.timeutil import local_period_start_utc, to_aware_utc, utc_now
 from desktop.quota import windows_for
 
 
@@ -68,6 +71,8 @@ def cost_meaning(ai: Dict[str, Any]) -> str:
     key = ai.get("key", "")
     if key in LOCAL_KEYS:
         return "free"
+    if key in ("claude", "codex") and "auth_mode" in ai:
+        return {"subscription": "api_equivalent", "api": "billed"}.get(ai["auth_mode"], "unknown")
     if key == "claude" and "종량제" in (ai.get("plan_name") or ""):
         return "billed"  # Claude Code signed in with an API key, not a subscription
     if key in SUBSCRIPTION_KEYS:
@@ -84,6 +89,8 @@ def _usage_block(raw: Optional[Dict[str, Any]], krw_rate: float) -> Dict[str, An
         "cost_unknown": int(raw.get("cost_unknown") or 0),
     }
     out["cost_krw"] = int(round(out["cost_usd"] * krw_rate))
+    if raw.get("since"):
+        out["since"] = raw["since"]
     return out
 
 
@@ -122,6 +129,10 @@ def _session_status(act: Optional[Dict[str, Any]]) -> str:
 def _billing_note(meaning: str, ai: Dict[str, Any], month: Dict[str, Any]) -> str:
     if meaning == "free":
         return "로컬 실행 · 요금 없음"
+    if meaning == "unknown":
+        return "구분 미상 · 로그인 근거 없음 또는 기간 중 방식 변경 · 청구·구독 환산 합계와 별도"
+    if meaning == "mixed":
+        return "계정별 청구 구분 혼합 · API 종량제·구독 환산·구분 미상은 따로 합산"
     if meaning == "api_equivalent":
         note = f"{ai.get('plan_name') or '구독'}에 포함 · 금액은 API 단가 환산 (실제 청구 아님)"
         if ai.get("key") == "antigravity":
@@ -130,6 +141,82 @@ def _billing_note(meaning: str, ai: Dict[str, Any], month: Dict[str, Any]) -> st
     if month["cost_unknown"]:
         return f"API 종량제 · 단가 없는 요청 {month['cost_unknown']}건은 계산 불가"
     return "API 종량제 · 이 PC에서 기록된 요청 기준"
+
+
+def _cost_totals(items: List[Dict[str, Any]], rate: float) -> Dict[str, Any]:
+    # Account rows replace their tool's subtotal; they are never added on top of it.
+    sources = [account for item in items for account in (
+        item.get("accounts") or [item] if item["key"] in ("claude", "codex") else [item]
+    )]
+
+    def _sum(meaning: str, window: str, field: str) -> float:
+        return sum((block.get(field) or 0) for item in sources
+                   if (block := (item.get("usage") or {}).get(window, {})).get(
+                       "cost_meaning", item.get("cost_meaning", cost_meaning(item))) == meaning)
+
+    total = {}
+    for meaning, prefix, windows in (("billed", "billed", ("today", "month")),
+                                     ("api_equivalent", "api_equivalent", ("month",)),
+                                     ("unknown", "unclassified", ("today", "month"))):
+        for window in windows:
+            amount = _sum(meaning, window, "cost_usd")
+            total[f"{prefix}_{window}_usd"] = round(amount, 6)
+            total[f"{prefix}_{window}_krw"] = int(round(amount * rate))
+    total["billed_unknown_month"] = int(_sum("billed", "month", "cost_unknown"))
+    total["unclassified_unknown_month"] = int(_sum("unknown", "month", "cost_unknown"))
+    total["unclassified_month_requests"] = int(_sum("unknown", "month", "requests"))
+    return total
+
+
+def apply_account_billing(summary: Dict[str, Any], billing: Dict[tuple, Dict[str, Any]],
+                          now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Classify account windows from folder evidence and recalculate cost totals once."""
+    from desktop.accounts import _timestamp
+
+    now = to_aware_utc(now or utc_now())
+    starts = {"5h": now - timedelta(hours=5), "today": to_aware_utc(local_period_start_utc(now)),
+              "7d": now - timedelta(days=7), "month": to_aware_utc(local_period_start_utc(now, True))}
+    for item in summary.get("items", []):
+        key = item["key"]
+        if key not in ("claude", "codex"):
+            continue
+        accounts = item.get("accounts") or [item]
+        for account in accounts:
+            info = billing.get((key, account.get("account_id")), {})
+            if account is item:
+                info = {"auth_mode": item.get("auth_mode", "unknown"), "plan_name": item["plan_name"]}
+            mode = info.get("auth_mode", "unknown")
+            account["auth_mode"] = mode
+            account["plan_name"] = info.get("plan_name", "플랜 확인 불가")
+            meaning = {"subscription": "api_equivalent", "api": "billed"}.get(mode, "unknown")
+            changed = _timestamp(info.get("auth_mode_changed_at"))
+            for window, block in (account.get("usage") or {}).items():
+                start = _timestamp(block.get("since")) or starts[window]
+                block["cost_meaning"] = "unknown" if changed and start <= changed <= now else meaning
+            account["cost_meaning"] = (account.get("usage") or {}).get("month", {}).get(
+                "cost_meaning", meaning)
+            account["billing_note"] = _billing_note(account["cost_meaning"], account, {
+                "cost_unknown": (account.get("usage") or {}).get("month", {}).get("cost_unknown", 0)})
+        if accounts[0] is not item:
+            for window, block in (item.get("usage") or {}).items():
+                meanings = {(account.get("usage") or {}).get(window, {}).get(
+                    "cost_meaning", account["cost_meaning"]) for account in accounts}
+                block["cost_meaning"] = next(iter(meanings)) if len(meanings) == 1 else "mixed"
+            meanings = {account["cost_meaning"] for account in accounts}
+            item["cost_meaning"] = next(iter(meanings)) if len(meanings) == 1 else "mixed"
+            modes = {account["auth_mode"] for account in accounts}
+            item["auth_mode"] = next(iter(modes)) if len(modes) == 1 else "unknown"
+            plans = {account["plan_name"] for account in accounts}
+            if len(plans) == 1 and "플랜 확인 불가" not in plans:
+                item["plan_name"] = next(iter(plans))
+            elif item["cost_meaning"] == "mixed":
+                item["plan_name"] = "계정별 청구 구분 혼합"
+            item["billing_note"] = _billing_note(item["cost_meaning"], item, {
+                "cost_unknown": (item.get("usage") or {}).get("month", {}).get("cost_unknown", 0)})
+    if summary.get("usage_available", True):
+        rate = summary.get("total", {}).get("krw_rate", 1380.0)
+        summary.setdefault("total", {}).update(_cost_totals(summary.get("items", []), rate))
+    return summary
 
 
 def get_connected_ai_summary(
@@ -169,6 +256,8 @@ def get_connected_ai_summary(
         windows = act.get("windows") or {}
         usage = {w: _usage_block(windows.get(w), krw_rate) for w in USAGE_WINDOWS}
         meaning = cost_meaning(ai)
+        for block in usage.values():
+            block["cost_meaning"] = meaning
         quota = quota_overrides.get(key)
         if quota is None:
             quota = windows_for(key, config=config, now=now) if ai.get("use_default_quota", True) else []
@@ -191,25 +280,15 @@ def get_connected_ai_summary(
             "billing_note": _billing_note(meaning, ai, usage["month"]),
             "official_spend": official_spend.get(key),
         }
+        if "auth_mode" in ai:
+            item["auth_mode"] = ai["auth_mode"]
         items.append(item)
 
-    def _sum(meaning: str, window: str, field: str) -> float:
-        return sum(it["usage"][window][field] for it in items if it["cost_meaning"] == meaning)
-
-    billed_today = _sum("billed", "today", "cost_usd")
-    billed_month = _sum("billed", "month", "cost_usd")
-    equiv_month = _sum("api_equivalent", "month", "cost_usd")
     total = {
         "krw_rate": krw_rate,
         "connected_count": len(items),
         "hidden_count": len(hidden),
-        "billed_today_usd": round(billed_today, 6),
-        "billed_today_krw": int(round(billed_today * krw_rate)),
-        "billed_month_usd": round(billed_month, 6),
-        "billed_month_krw": int(round(billed_month * krw_rate)),
-        "billed_unknown_month": int(_sum("billed", "month", "cost_unknown")),
-        "api_equivalent_month_usd": round(equiv_month, 6),
-        "api_equivalent_month_krw": int(round(equiv_month * krw_rate)),
+        **_cost_totals(items, krw_rate),
         "requests_today": int(sum(it["usage"]["today"]["requests"] for it in items)),
         "tokens_today": int(sum(it["usage"]["today"]["tokens"] for it in items)),
     }

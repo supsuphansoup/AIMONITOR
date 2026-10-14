@@ -16,12 +16,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN
+from backend.app.core.timeutil import to_aware_utc
 
 TOOLS = {"claude_code", "codex", "antigravity", "copilot", "cursor", "api"}
 NAMES = {"claude_code": "Claude", "codex": "Codex"}
 _LOCK = threading.RLock()
 logger = logging.getLogger("aimonitor.desktop.accounts")
 TIMELINE_MAX = 5000
+AUTH_MODES = {"subscription", "api", "unknown"}
+AUTH_FIELDS = ("auth_mode", "auth_mode_since", "auth_mode_changed_at")
 
 
 def canonical_path(path: Path) -> Path:
@@ -136,6 +139,108 @@ def _timestamp(value: Any) -> Optional[datetime]:
         return None
 
 
+def auth_info_for(tool: str, config_dir: Path, home: Optional[Path] = None,
+                  environ: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Return only mode/plan evidence from this folder; never return credential values."""
+    unknown = {"auth_mode": "unknown", "plan_name": "플랜 확인 불가"}
+    if tool not in ("claude_code", "codex"):
+        return unknown
+    home = home or Path.home()
+    environ = os.environ if environ is None else environ
+    filename = ".credentials.json" if tool == "claude_code" else "auth.json"
+    try:
+        data = json.loads((config_dir / filename).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):
+        return unknown
+    if not isinstance(data, dict):
+        return unknown
+    field = "anthropicApiKey" if tool == "claude_code" else "OPENAI_API_KEY"
+    value = data.pop(field, None)
+    has_key = isinstance(value, str) and bool(value.strip())
+    invalid_key = value is not None and not isinstance(value, str)
+    del value
+    if invalid_key:
+        return unknown
+    if tool == "claude_code":
+        oauth = data.get("claudeAiOauth")
+        if "claudeAiOauth" in data and not isinstance(oauth, dict):
+            return unknown
+        has_oauth = isinstance(oauth, dict)
+        sub = oauth.get("subscriptionType") if has_oauth else None
+        data.clear()
+        if has_oauth:
+            oauth.clear()
+        plans = {"free": "Claude Free", "pro": "Claude Pro", "max": "Claude Max",
+                 "team": "Claude Team", "enterprise": "Claude Enterprise"}
+        plan = plans.get(sub.lower() if isinstance(sub, str) else "", "Claude 구독 (플랜 확인 불가)")
+    else:
+        tokens = data.get("tokens")
+        if tokens is not None and not isinstance(tokens, dict):
+            return unknown
+        tokens = tokens or {}
+        has_oauth = False
+        for name in ("id_token", "access_token", "refresh_token"):
+            token = tokens.get(name)
+            if token is not None and not isinstance(token, (str, dict) if name == "id_token" else str):
+                return unknown
+            has_oauth = has_oauth or bool(token.strip() if isinstance(token, str) else token)
+        del token
+        from desktop.ai_detector import _codex_plan_type
+
+        sub = _codex_plan_type(config_dir / filename, data=data) if has_oauth else None
+        data.clear()
+        tokens.clear()
+        known_plans = {"free", "go", "plus", "pro", "team", "business", "enterprise", "edu"}
+        plan = f"ChatGPT {sub.capitalize()}" if sub in known_plans else "ChatGPT 플랜 (확인 불가)"
+    if has_oauth:
+        return unknown if has_key else {"auth_mode": "subscription", "plan_name": plan}
+    default = home / (".claude" if tool == "claude_code" else ".codex")
+    environment = "ANTHROPIC_API_KEY" if tool == "claude_code" else "OPENAI_API_KEY"
+    if canonical_path(config_dir) == canonical_path(default):
+        has_key = has_key or bool(environ.get(environment, "").strip())
+    if has_key:
+        plan = "Anthropic API 종량제" if tool == "claude_code" else "OpenAI API 종량제"
+        return {"auth_mode": "api", "plan_name": plan}
+    return unknown
+
+
+def account_billing_info(rows: List[Dict[str, Any]], home: Optional[Path] = None,
+                         environ: Optional[Dict[str, str]] = None,
+                         now: Optional[datetime] = None) -> Dict[tuple, Dict[str, Any]]:
+    """Read-only current evidence joined to saved mode history by opaque account ID."""
+    home = home or Path.home()
+    now = to_aware_utc(now or datetime.now(timezone.utc))
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for folder in discover_folders(home, environ, rows):
+        tool, path = folder["tool"], Path(folder["config_dir"])
+        if tool not in ("claude_code", "codex"):
+            continue
+        identity = account_id_for(tool, path, home)
+        key = ("claude" if tool == "claude_code" else "codex", identity)
+        groups.setdefault(key, []).append(auth_info_for(tool, path, home, environ))
+    results = {}
+    for key, infos in groups.items():
+        modes = {info["auth_mode"] for info in infos}
+        mode = next(iter(modes)) if len(modes) == 1 else "unknown"
+        plans = {info["plan_name"] for info in infos}
+        plan = next(iter(plans)) if len(plans) == 1 and mode != "unknown" else "플랜 확인 불가"
+        saved = [row for row in rows if row.get("account_id") == key[1]
+                 and row.get("auth_mode") in AUTH_MODES]
+        previous = max(saved, key=lambda row: _timestamp(row.get("auth_mode_since"))
+                       or datetime.min.replace(tzinfo=timezone.utc), default={})
+        since = _timestamp(previous.get("auth_mode_since"))
+        changed = max((_timestamp(row.get("auth_mode_changed_at")) for row in saved
+                       if _timestamp(row.get("auth_mode_changed_at"))), default=None)
+        if previous and previous["auth_mode"] != mode:
+            since = changed = now
+        results[key] = {"auth_mode": mode, "plan_name": plan,
+                        "auth_mode_since": (since or now).isoformat(),
+                        "auth_mode_changed_at": changed.isoformat() if changed else None}
+    return results
+
+
 def _label(value: str) -> str:
     value = value.strip()
     if not value or len(value) > 40 or "@" in value or re.search(r"sk-|eyJ|Bearer", value):
@@ -169,9 +274,20 @@ def _account_rows(value: Any) -> List[Dict[str, Any]]:
                 _label(row["label"])
         except (AttributeError, ValueError, TypeError):
             continue
-        rows.append({key: row[key] for key in (
+        clean = {key: row[key] for key in (
             "account_id", "tool", "config_dir", "label", "source", "first_seen", "last_seen",
-        ) if key in row})
+        ) if key in row}
+        if "auth_mode" in row:
+            mode = row["auth_mode"]
+            valid = isinstance(mode, str) and mode in AUTH_MODES
+            for field in AUTH_FIELDS[1:]:
+                if row.get(field) is not None:
+                    when = _timestamp(row[field])
+                    valid = valid and when is not None
+                    if when:
+                        clean[field] = when.isoformat()
+            clean["auth_mode"] = mode if valid else "unknown"
+        rows.append(clean)
     return rows
 
 
@@ -223,8 +339,8 @@ class AccountRegistry:
         return _timeline_rows(_read(self.timeline_file, []))
 
     def refresh(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-        now = now or datetime.now(timezone.utc)
-        since = now.astimezone(timezone.utc).isoformat()
+        now = to_aware_utc(now or datetime.now(timezone.utc))
+        since = now.isoformat()
         with _LOCK:
             rows = self.list_accounts()
             raw_timeline = _read(self.timeline_file, None if self.timeline_file.exists() else [])
@@ -269,6 +385,11 @@ class AccountRegistry:
                 self._observed[folder_hash] = (account_id, since)
                 row["last_seen"] = since
                 active.append(dict(row))
+            billing = account_billing_info(rows, self.home, self.environ, now)
+            for row in rows + active:
+                key = ("claude" if row["tool"] == "claude_code" else row["tool"], row["account_id"])
+                if key in billing:
+                    row.update({field: billing[key][field] for field in AUTH_FIELDS})
             _write(self.accounts_file, rows)
             if writable_timeline:
                 _write(self.timeline_file, _compact_timeline(timeline))
