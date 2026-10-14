@@ -35,8 +35,7 @@ class Settings(BaseSettings):
 
     # --- Ingestion limits ----------------------------------------------
     MAX_BATCH_SIZE: int = 500
-    # Applied to Content-Length before the body is read, unlike MAX_BATCH_SIZE
-    # which can only reject a payload after it has been parsed.
+    # Applied to Content-Length and received chunks before buffering the body.
     MAX_REQUEST_BYTES: int = 8_388_608  # 8 MiB
     MAX_ERROR_MESSAGE_CHARS: int = 2000
     MAX_METADATA_BYTES: int = 8192

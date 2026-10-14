@@ -28,9 +28,10 @@
 
 ### HTTP 계층 (`main.py`)
 
-- 미들웨어 순서: **CORS가 최외곽** — 오류 응답에도 CORS 헤더가 붙는다.
+- 미들웨어 순서: **오류 응답을 만드는 계층의 최외곽은 CORS** — 오류 응답에도 CORS 헤더가 붙는다. 그 바깥의 요청 ID 계층은 응답 헤더만 추가하며 오류 응답을 만들지 않는다.
 - `CORS_ORIGINS`에 `*`가 있으면 credentials 자동 비활성화. 노출 헤더: `X-Request-ID`, `X-Total-Count`.
-- 모든 요청에 `X-Request-ID` (전달값 또는 16자 hex 발급).
+- 모든 요청에 `X-Request-ID` (전달값 또는 16자 hex 발급). Host·Origin 거부, 413·400, CORS 프리플라이트에도 적용한다. 프리플라이트도 Host 허용 검사를 한다.
+- 본문은 `Content-Length` 사전 검사와 ASGI 수신 바이트 누적 검사를 함께 사용한다. chunked·길이 누락·축소 선언에도 `MAX_REQUEST_BYTES`(기본 8 MiB) 초과 청크를 JSON 버퍼에 넘기기 전에 413으로 중단하고 `Connection: close`로 남은 스트림을 정리한다. 음수·잘못된 길이는 400이다.
 - 브라우저 공격 차단(`reject_browser_attacks`, CORS 안쪽): `Origin`이 `CORS_ORIGINS` 밖인 쓰기 요청(GET·HEAD·OPTIONS 제외)은 403. `*`이면 검사하지 않는다. API 키 유무와 관계없이 Host가 `localhost`·`127.0.0.1`·`[::1]`·`ALLOWED_HOSTS`가 아닌 요청을 403으로 거부한다(DNS rebinding). 데스크톱 앱·SDK는 `Origin`을 보내지 않는다.
 - CORS 기본 출처는 로컬 API 포트 8000이며 웹 개발 서버 출처는 없다. 정적 파일·SPA fallback은 없고 `GET /`는 JSON 404다. Swagger·ReDoc API 문서는 유지한다.
 
@@ -54,7 +55,7 @@
 | `API_KEY` | *(없음)* | 미설정 = 개방 모드. 모든 엔드포인트가 열리고 `localhost` 이름으로 온 요청에만 응답한다 |
 | `REQUIRE_AUTH_FOR_READS` | `false` | `true`면 조회에도 키 필요 |
 | `CORS_ORIGINS` | `http://localhost:8000`, `http://127.0.0.1:8000` | 이 밖의 브라우저 출처에서 온 쓰기는 403. `*`이면 credentials 비활성화 |
-| `ALLOWED_HOSTS` | *(없음)* | 개방 모드에서 추가로 허용할 Host 이름 (신뢰하는 네트워크) |
+| `ALLOWED_HOSTS` | *(없음)* | API 키 유무와 무관하게 추가 허용할 Host 이름 (신뢰하는 네트워크) |
 | `RETENTION_DAYS` | `0` (무제한) | 설정 시 오래된 기록을 주기적으로 삭제 |
 
 전체 목록과 설명은 `.env.example`이 정본이다.
