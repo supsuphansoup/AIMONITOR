@@ -91,6 +91,32 @@ def test_diagnostic_unavailable_is_distinct_from_disconnected(monkeypatch):
     assert not any("미연동" in text for text in labels)
 
 
+def test_key_list_refresh_keeps_inflight_verification_button_disabled(monkeypatch):
+    manager = Mock()
+    monkeypatch.setattr(app_gui, "api_key_manager", manager)
+    child = Mock()
+    ui = SimpleNamespace(byok_keys_scroll=Mock(), _key_verifying={("openai", "synthetic-id")},
+                         official_spend={}, krw_rate=1400)
+    ui.byok_keys_scroll.winfo_children.return_value = [child]
+    app_gui.DesktopMainWindow._refresh_keys_list(ui)
+    child.destroy.assert_not_called()
+    manager.list_keys.assert_not_called()
+
+
+def test_duplicate_verification_is_ignored_until_worker_finishes(monkeypatch):
+    targets, pending = [], []
+    monkeypatch.setattr(app_gui, "api_key_manager", Mock())
+    monkeypatch.setattr(app_gui.threading, "Thread", lambda **kw: targets.append(kw["target"]) or Mock())
+    ui = SimpleNamespace(after=lambda _delay, callback: pending.append(callback))
+    button, status = Mock(), Mock()
+    for _ in range(2):
+        app_gui.DesktopMainWindow._verify_key_action(ui, "openai", "synthetic-id", button, status)
+    assert len(targets) == 1
+    targets[0]()
+    pending[0]()
+    assert not ui._key_verifying
+
+
 def test_custom_folder_only_tool_does_not_read_default_login_quota(monkeypatch):
     windows = Mock(return_value=[])
     monkeypatch.setattr(context_manager, "windows_for", windows)

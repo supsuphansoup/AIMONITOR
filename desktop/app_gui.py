@@ -998,6 +998,8 @@ class DesktopMainWindow(ctk.CTk):
 
     def _refresh_keys_list(self) -> None:
         """Only masked metadata reaches widgets; bills are joined by provider and key ID."""
+        if getattr(self, "_key_verifying", None):
+            return  # Polling must not replace an in-flight row with an enabled button.
         for child in self.byok_keys_scroll.winfo_children():
             child.destroy()
         spend = {(s["provider"], s["key_id"]): s
@@ -1051,6 +1053,13 @@ class DesktopMainWindow(ctk.CTk):
                          text_color=theme.FAINT).pack(pady=theme.SPACE_4)
 
     def _verify_key_action(self, provider: str, key_id: str, button: Any, status: Any) -> None:
+        busy = getattr(self, "_key_verifying", None)
+        if busy is None:
+            self._key_verifying = busy = set()
+        identity = (provider, key_id)
+        if identity in busy:
+            return
+        busy.add(identity)
         button.configure(state="disabled")
         status.configure(text="검증 중…")
 
@@ -1066,6 +1075,7 @@ class DesktopMainWindow(ctk.CTk):
                 pass
 
             def finish():
+                busy.discard(identity)
                 try:
                     status.configure(text=KEY_STATUS_TEXT[state])
                     button.configure(state="normal")
