@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from desktop.accounts import AccountRegistry, canonical_path, config_dir_hash
+from desktop.accounts import AccountRegistry, canonical_path, config_dir_hash, discover_folders
 from desktop.config import backend_headers
 
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
@@ -137,7 +137,14 @@ class UnifiedAIWatcher:
         self._seen_claude: "OrderedDict[str, None]" = self._load_seen()
         # Path.resolve() is a filesystem call on Windows; offset keys only need it once per file.
         self._resolved: Dict[str, str] = {}
-        self.accounts = AccountRegistry(state_dir=self.state_file.parent)
+        try:
+            self.accounts = AccountRegistry(state_dir=self.state_file.parent)
+        except Exception:
+            self.accounts = None
+            logger.warning("Account registry unavailable; collecting with unknown attribution")
+        self._account_timeline = None
+        self._accounts_available = self.accounts is not None
+        self._last_folders: List[Dict[str, Any]] = []
         self._collection_dirs: List[tuple] = []
         self._session_files: Dict[tuple, List[tuple]] = {}
         self._session_aliases: Dict[str, set] = {}
@@ -565,32 +572,81 @@ class UnifiedAIWatcher:
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._thread:
+        if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=2.0)
-        self._release_lock()
+        if self._thread is None:
+            self._release_lock()
 
     def _run_loop(self) -> None:
-        while not self._stop_event.is_set():
-            if not self.is_active:
-                if not self._acquire_lock():
-                    self._stop_event.wait(max(self.poll_interval, 5.0))
-                    continue
-                self._offsets = self._load_offsets()
-                self._cursors = self._load_cursors()
-                self._seen_claude = self._load_seen()
-                logger.info("UnifiedAIWatcher took over AI log watching")
+        try:
+            while not self._stop_event.is_set():
+                if not self.is_active:
+                    if not self._acquire_lock():
+                        self._stop_event.wait(max(self.poll_interval, 5.0))
+                        continue
+                    self._offsets = self._load_offsets()
+                    self._cursors = self._load_cursors()
+                    self._seen_claude = self._load_seen()
+                    logger.info("UnifiedAIWatcher took over AI log watching")
+                if self._stop_event.is_set():
+                    break
+                try:
+                    self.scan_all()
+                except Exception as e:
+                    logger.debug("Error during AI log scan: %s", type(e).__name__)
+                self._stop_event.wait(self.poll_interval)
+        finally:
+            self._release_lock()
+
+    def _refresh_accounts(self) -> List[Dict[str, Any]]:
+        self._account_timeline = None
+        try:
+            if self.accounts is None:
+                raise ValueError("Registry unavailable")
+            folders = self.accounts.refresh()
+            self._last_folders = folders
+            self._accounts_available = True
+            reader = getattr(self.accounts, "read_timeline", None)
+            if reader is not None:
+                self._account_timeline = reader()
+            return folders
+        except Exception:
+            self._accounts_available = False
+            logger.warning("Account registry unavailable; collecting with unknown attribution")
+            folders = [dict(row, account_id=None) for row in self._last_folders]
             try:
-                self.scan_all()
-            except Exception as e:
-                logger.debug("Error during AI log scan: %s", type(e).__name__)
-            self._stop_event.wait(self.poll_interval)
+                for row in discover_folders():
+                    if not any((r["tool"], r["config_dir"]) == (row["tool"], row["config_dir"])
+                               for r in folders):
+                        folders.append(dict(row, account_id=None))
+            except (OSError, ValueError):
+                pass
+            return folders
+
+    def _account_at(self, directory: Path, timestamp: Any) -> Optional[str]:
+        if not self._accounts_available:
+            return None
+        try:
+            if self._account_timeline is not None:
+                return self.accounts.account_at(directory, timestamp, timeline=self._account_timeline)
+            return self.accounts.account_at(directory, timestamp)
+        except Exception:
+            return None
 
     def scan_all(self) -> int:
         """Scan all AI providers and stream traces."""
         self._present.clear()
         self._present_paths.clear()
         overridden = self.claude_dir != Path.home() / ".claude"
-        folders = [] if overridden else self.accounts.refresh()
+        if overridden:
+            folders = []
+            try:
+                reader = getattr(self.accounts, "read_timeline", None)
+                self._account_timeline = reader() if reader is not None else None
+            except Exception:
+                self._account_timeline = []
+        else:
+            folders = self._refresh_accounts()
         if overridden:
             self._prepare_folder("claude_code", self.claude_dir)
         else:
@@ -676,7 +732,7 @@ class UnifiedAIWatcher:
                             line, obj = _decode_line(raw)
                             tr = self._parse_claude_line(line, fpath, key, start)
                             if tr:
-                                tr["account_id"] = self.accounts.account_at(directory, obj.get("timestamp"))
+                                tr["account_id"] = self._account_at(directory, obj.get("timestamp"))
                                 traces.append(tr)
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
@@ -818,7 +874,7 @@ class UnifiedAIWatcher:
                                 continue
                             trace_id = self._event_key("cx", key, start, line)
                             traces.append({
-                                "account_id": self.accounts.account_at(directory, obj.get("timestamp")),
+                                "account_id": self._account_at(directory, obj.get("timestamp")),
                                 "timestamp": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                                 "trace_id": trace_id, "dedupe_key": trace_id,
                                 "session_id": fpath.stem, "provider": "openai", "model_name": model,
@@ -887,7 +943,7 @@ class UnifiedAIWatcher:
                                 line, fpath, prev_offset=line_start, curr_offset=line_end, identity_key=key
                             )
                             if tr:
-                                tr["account_id"] = self.accounts.account_at(directory, obj.get("created_at"))
+                                tr["account_id"] = self._account_at(directory, obj.get("created_at"))
                                 traces.append(tr)
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
@@ -980,7 +1036,7 @@ class UnifiedAIWatcher:
                             line, obj = _decode_line(raw)
                             parsed = self._parse_copilot_line(line, fpath, key, start)
                             for trace in parsed:
-                                trace["account_id"] = self.accounts.account_at(
+                                trace["account_id"] = self._account_at(
                                     directory, obj.get("timestamp")
                                 )
                             traces.extend(parsed)
@@ -1069,11 +1125,16 @@ class UnifiedAIWatcher:
 
     def _send_traces(self, traces: List[Dict[str, Any]]) -> bool:
         """Send all traces in chunks. Returns False if any chunk was not accepted."""
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None and stop_event.is_set():
+            return False
         url = f"{self.backend_url}/api/v1/traces/batch"
         chunk_size = 200
         try:
             with httpx.Client(timeout=8.0, headers=backend_headers()) as client:
                 for i in range(0, len(traces), chunk_size):
+                    if stop_event is not None and stop_event.is_set():
+                        return False
                     chunk = traces[i : i + chunk_size]
                     res = client.post(url, json={"traces": chunk})
                     if res.status_code >= 300:

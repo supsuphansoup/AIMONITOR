@@ -2,6 +2,7 @@
 import copy
 import json
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,96 @@ def watcher(home, monkeypatch):
     sent = []
     monkeypatch.setattr(instance, "_send_traces", lambda traces: sent.extend(copy.deepcopy(traces)) or True)
     return instance, sent
+
+
+def test_acc05_registry_creation_failure_preserves_collection(tmp_path, monkeypatch):
+    append(log_path(tmp_path, "claude"), [event("claude")])
+
+    def denied(*args, **kwargs):
+        raise PermissionError("synthetic registry failure")
+
+    monkeypatch.setattr(ai_watcher, "AccountRegistry", denied)
+    instance = ai_watcher.UnifiedAIWatcher(state_file=tmp_path / ".aimonitor/ai_offsets.json")
+    sent = []
+    monkeypatch.setattr(instance, "_send_traces", lambda traces: sent.extend(traces) or True)
+    assert instance.scan_all() == 1
+    assert sent[0]["account_id"] is None
+
+
+def test_acc05_registry_refresh_failure_preserves_collection(tmp_path, monkeypatch):
+    append(log_path(tmp_path, "claude"), [event("claude")])
+    instance, sent = watcher(tmp_path, monkeypatch)
+
+    def denied():
+        raise PermissionError("synthetic registry failure")
+
+    monkeypatch.setattr(instance.accounts, "refresh", denied)
+    assert instance.scan_all() == 1
+    assert sent[0]["account_id"] is None
+
+
+def test_acc18_timeline_is_read_once_per_scan(tmp_path, monkeypatch):
+    append(log_path(tmp_path, "claude"), [event("claude", str(i)) for i in range(20)])
+    instance, _ = watcher(tmp_path, monkeypatch)
+    reads = []
+    original = instance.accounts.read_timeline
+
+    def counted():
+        reads.append(1)
+        return original()
+
+    monkeypatch.setattr(instance.accounts, "read_timeline", counted)
+    assert instance.scan_all() == 20
+    assert len(reads) == 1
+
+
+def test_acc15_machine_lock_survives_stop_join_timeout(tmp_path, monkeypatch):
+    instance, _ = watcher(tmp_path, monkeypatch)
+    successor, _ = watcher(tmp_path, monkeypatch)
+    entered, finish = threading.Event(), threading.Event()
+
+    def blocked_scan():
+        entered.set()
+        finish.wait(5)
+
+    monkeypatch.setattr(instance, "scan_all", blocked_scan)
+    try:
+        assert instance.start()
+        assert entered.wait(2)
+        instance.stop()
+        assert instance._thread.is_alive()
+        assert instance.is_active
+        assert not successor._acquire_lock()
+        finish.set()
+        instance._thread.join(2)
+        assert not instance.is_active
+        assert successor._acquire_lock()
+    finally:
+        finish.set()
+        instance.stop()
+        successor.stop()
+
+
+@pytest.mark.parametrize("stop_after_first", [False, True])
+def test_acc15_no_new_network_requests_after_stop(tmp_path, monkeypatch, stop_after_first):
+    import httpx
+
+    instance, _ = watcher(tmp_path, monkeypatch)
+    calls = []
+
+    def accept(request):
+        calls.append(request)
+        instance._stop_event.set()
+        return httpx.Response(200, json=[])
+
+    real_client = httpx.Client
+    monkeypatch.setattr(ai_watcher.httpx, "Client", lambda **kw: real_client(
+        transport=httpx.MockTransport(accept), **kw,
+    ))
+    if not stop_after_first:
+        instance._stop_event.set()
+    assert ai_watcher.UnifiedAIWatcher._send_traces(instance, [{"dedupe_key": "cc-synthetic"}] * 201) is False
+    assert len(calls) == (1 if stop_after_first else 0)
 
 
 def test_acc02_antigravity_waits_for_newline_with_multibyte_text(tmp_path, monkeypatch):
