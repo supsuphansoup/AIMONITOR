@@ -38,7 +38,7 @@ def _verify(x_api_key: Optional[str], authorization: Optional[str]) -> None:
         # Open mode: startup already warned about it.
         return
     provided = _extract_key(x_api_key, authorization)
-    if provided is None or not hmac.compare_digest(provided, expected):
+    if provided is None or not provided.isascii() or not hmac.compare_digest(provided, expected):
         raise _UNAUTHORIZED
 
 

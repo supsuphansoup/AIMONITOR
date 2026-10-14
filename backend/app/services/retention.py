@@ -11,6 +11,7 @@ from typing import Dict
 from sqlalchemy import delete
 from sqlmodel import Session
 
+from backend.app.core.config import validate_retention_days
 from backend.app.core.timeutil import utc_now
 from backend.app.models.alert import AlertHistory
 from backend.app.models.trace import TraceEvent
@@ -26,7 +27,7 @@ def purge_older_than(session: Session, days: int) -> Dict[str, int]:
     if days <= 0:
         return {"trace_events": 0, "alert_histories": 0}
 
-    cutoff = utc_now() - timedelta(days=days)
+    cutoff = utc_now() - timedelta(days=validate_retention_days(days))
 
     trace_result = session.exec(
         delete(TraceEvent).where(TraceEvent.timestamp < cutoff)

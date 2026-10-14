@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from backend.app.core.config import settings
+from backend.app.db.session import engine as runtime_engine
 from backend.app.db.session import get_session
 from backend.app.main import app
 
@@ -20,6 +21,7 @@ def session_fixture():
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+        hide_parameters=runtime_engine.hide_parameters,
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
@@ -31,7 +33,7 @@ def session_fixture():
 @pytest.fixture(name="client")
 def client_fixture(session: Session):
     # Constructed without the context manager on purpose: entering it would run
-    # the lifespan, which touches the real database and starts the scheduler.
+    # the lifespan, which initializes the process-level DB and starts the scheduler.
     app.dependency_overrides[get_session] = lambda: session
     yield TestClient(app)
     app.dependency_overrides.clear()

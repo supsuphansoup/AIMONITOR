@@ -3,6 +3,15 @@ from typing import List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.app.core.timeutil import utc_now
+
+
+def validate_retention_days(days: int) -> int:
+    """Keep the cutoff within datetime's supported calendar (year 1 onward)."""
+    if days < 0 or days > utc_now().toordinal() - 1:
+        raise ValueError("Retention days are outside the supported date range.")
+    return days
+
 
 class Settings(BaseSettings):
     # --- Identity -------------------------------------------------------
@@ -23,9 +32,8 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
-    # Without API_KEY the server only answers requests addressed to localhost, so a web page cannot
-    # reach it by pointing its own domain at 127.0.0.1 (DNS rebinding). Add host names here only for
-    # a trusted network; setting API_KEY is the usual way to serve other names.
+    # Always restrict Host to localhost or this allowlist to prevent DNS rebinding,
+    # including when a write API_KEY is set but reads remain unauthenticated.
     ALLOWED_HOSTS: Union[List[str], str] = []
 
     # --- Authentication -------------------------------------------------
@@ -36,8 +44,7 @@ class Settings(BaseSettings):
 
     # --- Ingestion limits ----------------------------------------------
     MAX_BATCH_SIZE: int = 500
-    # Applied to Content-Length before the body is read, unlike MAX_BATCH_SIZE
-    # which can only reject a payload after it has been parsed.
+    # Applied to Content-Length and received chunks before buffering the body.
     MAX_REQUEST_BYTES: int = 8_388_608  # 8 MiB
     MAX_ERROR_MESSAGE_CHARS: int = 2000
     MAX_METADATA_BYTES: int = 8192
@@ -55,6 +62,11 @@ class Settings(BaseSettings):
     RETENTION_INTERVAL_SECONDS: int = 3600
     # 0 disables automatic purging; otherwise traces older than N days are removed.
     RETENTION_DAYS: int = 0
+
+    @field_validator("RETENTION_DAYS")
+    @classmethod
+    def validate_retention_setting(cls, value: int) -> int:
+        return validate_retention_days(value)
 
     @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
     @classmethod
@@ -76,6 +88,8 @@ class Settings(BaseSettings):
         if v is None:
             return None
         stripped = str(v).strip()
+        if stripped and any(ord(char) < 33 or ord(char) > 126 for char in stripped):
+            raise ValueError("API_KEY must contain only printable ASCII without whitespace.")
         return stripped or None
 
     @property
@@ -109,6 +123,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
 

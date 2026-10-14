@@ -105,7 +105,10 @@ def test_patch_missing_rule_is_404(client: TestClient):
 def test_unknown_metric_type_is_rejected(client: TestClient):
     res = client.post("/api/v1/alerts/rules", json={**ANY_ERROR_RULE, "metric_type": "vibes"})
     assert res.status_code == 422
-    assert "Unknown metric_type" in res.text
+    assert res.json()["detail"] == [
+        {"loc": ["body", "metric_type"], "type": "value_error", "msg": "Invalid field value"},
+    ]
+    assert "vibes" not in res.text
 
 
 def test_invalid_webhook_scheme_is_rejected(client: TestClient):

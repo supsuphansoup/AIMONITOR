@@ -1,9 +1,12 @@
 """System endpoints: readiness, info, pricing, retention."""
 from datetime import timedelta
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlmodel import Session, select
 
+from backend.app.core.config import Settings
 from backend.app.core.timeutil import utc_now
 from backend.app.models.alert import AlertHistory
 from backend.app.models.trace import TraceEvent
@@ -78,3 +81,23 @@ def test_purge_also_trims_alert_history(session: Session):
     session.commit()
     assert purge_older_than(session, 5)["alert_histories"] == 1
     assert session.exec(select(AlertHistory)).all() == []
+
+
+@pytest.mark.parametrize("days", [utc_now().toordinal(), 999999999, 10**30])
+def test_purge_rejects_out_of_range_days_without_deleting(client, session, days):
+    session.add(TraceEvent(trace_id="keep", provider="p", model_name="m"))
+    session.commit()
+    assert client.post(f"/api/v1/system/purge?days={days}").status_code == 422
+    assert len(session.exec(select(TraceEvent)).all()) == 1
+
+
+@pytest.mark.parametrize("days", [-1, utc_now().toordinal(), 999999999, 10**30])
+def test_retention_configuration_rejects_invalid_days(days):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, RETENTION_DAYS=days)
+
+
+def test_largest_representable_retention_period_is_accepted(client):
+    days = utc_now().toordinal() - 1
+    assert Settings(_env_file=None, RETENTION_DAYS=days).RETENTION_DAYS == days
+    assert client.post(f"/api/v1/system/purge?days={days}").status_code == 200

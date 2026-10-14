@@ -25,11 +25,17 @@ aimonitor.db
 *.sqlite
 *.sqlite3
 *.db
+*-wal
+*-shm
+*-journal
 data/
+.review/
 
 # Environment and IDE
 .env
 .env.local
+.env.*
+!.env.example
 .vscode/
 .idea/
 .DS_Store

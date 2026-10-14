@@ -4,10 +4,17 @@ Columns added after v0.1.0 must appear in a database created by the older
 version, otherwise upgrading in place means losing every stored trace.
 """
 import os
+import subprocess
+import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
+from sqlalchemy.engine import Engine
 from sqlmodel import create_engine
 
 from backend.app.db.session import ensure_schema
@@ -194,3 +201,144 @@ def test_upgrade_existing_database_copy_preserves_source(legacy_engine, tmp_path
         assert "account_id" not in {c["name"] for c in inspect(legacy_engine).get_columns("trace_events")}
     finally:
         copy_engine.dispose()
+
+
+def test_concurrent_upgrades_recheck_schema_after_writer_lock(legacy_engine, monkeypatch):
+    import backend.app.db.session as db_module
+
+    barrier = threading.Barrier(2)
+
+    def slow_unlocked_inspector(bind):
+        inspector = inspect(bind)
+        if isinstance(bind, Engine):
+            get_columns = inspector.get_columns
+
+            def paused_columns(name):
+                columns = get_columns(name)
+                if name == "alert_rules":
+                    barrier.wait(timeout=5)
+                return columns
+
+            inspector.get_columns = paused_columns
+        return inspector
+
+    monkeypatch.setattr(db_module, "inspect", slow_unlocked_inspector)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(ensure_schema, legacy_engine) for _ in range(2)]
+        errors = [type(future.exception()).__name__ for future in futures if future.exception()]
+    assert errors == []
+    expected = {index.name for table in db_module.SQLModel.metadata.sorted_tables
+                if table.name in {"trace_events", "alert_rules"} for index in table.indexes}
+    actual = {index["name"] for table in ("trace_events", "alert_rules")
+              for index in inspect(legacy_engine).get_indexes(table)}
+    assert expected <= actual
+
+
+def test_failed_upgrade_rolls_back_ddl_and_preserves_rows(legacy_engine):
+    count = 0
+    before = {column["name"] for column in inspect(legacy_engine).get_columns("trace_events")}
+
+    def fail_second_alter(conn, cursor, statement, parameters, context, executemany):
+        nonlocal count
+        if statement.startswith('ALTER TABLE "trace_events"'):
+            count += 1
+            if count == 2:
+                raise RuntimeError("synthetic DDL failure")
+
+    event.listen(legacy_engine, "before_cursor_execute", fail_second_alter)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic DDL failure"):
+            ensure_schema(legacy_engine)
+    finally:
+        event.remove(legacy_engine, "before_cursor_execute", fail_second_alter)
+    assert {column["name"] for column in inspect(legacy_engine).get_columns("trace_events")} == before
+    with legacy_engine.connect() as conn:
+        assert conn.execute(text("SELECT trace_id, total_tokens FROM trace_events")).one() == ("legacy-1", 150)
+    ensure_schema(legacy_engine)
+    ensure_schema(legacy_engine)
+
+
+@pytest.mark.parametrize("operation", ["ensure_schema", "init_db"])
+def test_two_processes_can_upgrade_the_same_database(legacy_engine, tmp_path, operation):
+    script = """
+import sys, time
+from pathlib import Path
+from sqlmodel import create_engine
+import backend.app.db.session as db
+database, gate, ready, operation = sys.argv[1:]
+db.engine.dispose()
+db.engine = create_engine('sqlite:///' + database, connect_args={'timeout': 10})
+Path(ready).touch()
+deadline = time.monotonic() + 10
+while not Path(gate).exists():
+    if time.monotonic() > deadline:
+        raise RuntimeError('synthetic startup gate timeout')
+    time.sleep(0.01)
+try:
+    getattr(db, operation)()
+finally:
+    db.engine.dispose()
+"""
+    gate = tmp_path / "start"
+    ready = [tmp_path / f"worker-{index}.ready" for index in range(2)]
+    processes = [subprocess.Popen(
+        [sys.executable, "-c", script, legacy_engine.url.database, str(gate), str(path), operation],
+        cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ) for path in ready]
+    try:
+        deadline = time.monotonic() + 10
+        while not all(path.exists() for path in ready):
+            assert time.monotonic() < deadline, "Workers did not reach the startup gate"
+            time.sleep(0.01)
+        gate.touch()
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == 0, stdout + stderr
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+    with legacy_engine.connect() as conn:
+        assert conn.execute(text("SELECT trace_id FROM trace_events")).scalar() == "legacy-1"
+
+
+@pytest.mark.parametrize("nullable", [False, True])
+def test_upgrade_repairs_infinite_values_without_changing_finite_rows(tmp_path, nullable):
+    engine = create_engine(f"sqlite:///{tmp_path / 'nonfinite.db'}")
+    ddl = LEGACY_TRACE_TABLE
+    if nullable:
+        ddl = ddl.replace("latency_ms FLOAT NOT NULL", "latency_ms FLOAT")
+        ddl = ddl.replace("cost_usd FLOAT NOT NULL", "cost_usd FLOAT")
+    insert = text(
+        "INSERT INTO trace_events (trace_id, provider, model_name, prompt_tokens, completion_tokens, "
+        "total_tokens, latency_ms, cost_usd, status, timestamp) VALUES "
+        "(:trace_id, 'openai', 'gpt-4o', 1, 2, 3, :latency, :cost, 'SUCCESS', '2026-01-01 00:00:00')"
+    )
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(ddl))
+            conn.execute(insert, [
+                {"trace_id": "finite", "latency": 200.0, "cost": 0.001},
+                {"trace_id": "cost-positive", "latency": 100.0, "cost": float("inf")},
+                {"trace_id": "both-negative", "latency": -float("inf"), "cost": -float("inf")},
+                {"trace_id": "latency-positive", "latency": float("inf"), "cost": 0.5},
+            ])
+        ensure_schema(engine)
+        indexes = inspect(engine).get_indexes("trace_events")
+        ensure_schema(engine)
+        assert inspect(engine).get_indexes("trace_events") == indexes
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT trace_id, latency_ms, cost_usd, latency_measured, cost_source, total_tokens "
+                "FROM trace_events ORDER BY id"
+            )).all()
+        assert [tuple(row) for row in rows] == [
+            ("finite", 200.0, 0.001, 1, "unknown", 3),
+            ("cost-positive", 100.0, 0.0, 1, "unknown", 3),
+            ("both-negative", 0.0, 0.0, 0, "unknown", 3),
+            ("latency-positive", 0.0, 0.5, 0, "unknown", 3),
+        ]
+    finally:
+        engine.dispose()

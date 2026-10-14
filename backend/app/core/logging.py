@@ -29,5 +29,11 @@ def configure_logging() -> None:
     root.addHandler(handler)
 
     # uvicorn installs its own access log; ours carries the request id instead.
-    logging.getLogger("uvicorn.access").propagate = False
+    access_logger = logging.getLogger("uvicorn.access")
+    access_logger.disabled = True
+    access_logger.handlers.clear()
+    access_logger.propagate = False
+    # INFO request lines contain full webhook URLs, including their secrets.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     _configured = True
