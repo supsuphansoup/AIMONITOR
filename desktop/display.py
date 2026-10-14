@@ -70,6 +70,8 @@ def window_text(w: Dict[str, Any]) -> Tuple[str, str, str]:
     else:
         headline = f"{rem:.0f}% 남음"
     parts = [w.get("source_label") or ""]
+    if w.get("partial"):
+        parts.append("일부 데이터")
     as_of = format_as_of(w.get("as_of"))
     if as_of and w.get("source") != "unavailable":
         parts.append(as_of + (" (오래됨)" if w.get("stale") else ""))
@@ -109,7 +111,8 @@ def usage_cost_text(block: Dict[str, Any], meaning: str) -> str:
     return text
 
 
-def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float) -> Optional[str]:
+def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float,
+               now: Optional[datetime] = None) -> Optional[str]:
     """Provider-reported spend/balance line, or None when there is nothing to say."""
     if not spend:
         return None
@@ -122,7 +125,17 @@ def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float) -> Optional[str
     else:
         money = f"{amount:,.2f} {cur}"
     label = "잔액" if spend.get("kind") == "balance" else "사용"
-    return f"{spend.get('source_label', '')}: {label} {money}"
+    source = spend.get("source_label", "")
+    if spend.get("kind") == "spend":
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        period = _local(spend.get("period_start"))
+        if period != month_start:
+            period_label = period.astimezone(timezone.utc).strftime("%Y-%m") if period else "기간 확인 불가"
+            source = source.replace("이번 달", period_label)
+            if period_label not in source:
+                source += f" ({period_label})"
+    return f"{source}: {label} {money}"
 
 
 # --------------------------------------------------------------------------- widget
@@ -214,7 +227,8 @@ def attach_accounts(summary: dict, active: dict, rows: list, quotas: list, rate:
         item["accounts"] = accounts
         if len(accounts) == 1:
             # Keep the one-account card shape without borrowing another login's quota.
-            item["quota_windows"] = accounts[0]["quota_windows"]
+            if accounts[0]["quota_windows"] or key != "copilot":
+                item["quota_windows"] = accounts[0]["quota_windows"]
             if not accounts[0]["usage"]:
                 item["usage"] = {}
     return summary

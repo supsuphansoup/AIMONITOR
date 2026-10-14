@@ -171,7 +171,7 @@ def get_connected_ai_summary(
         meaning = cost_meaning(ai)
         quota = quota_overrides.get(key)
         if quota is None:
-            quota = windows_for(key, config=config, now=now)
+            quota = windows_for(key, config=config, now=now) if ai.get("use_default_quota", True) else []
 
         item = {
             "key": key,

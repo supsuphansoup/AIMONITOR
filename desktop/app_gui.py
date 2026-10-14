@@ -84,6 +84,12 @@ BYOK_PROVIDERS = {
     "Groq": "groq",
 }
 
+KEY_STATUS_TEXT = {
+    "valid": "유효", "invalid": "인증 실패", "verification_unavailable": "확인 불가",
+    "storage_error": "저장소 확인 불가", "unreadable": "복호화 불가",
+    "connected": "미검증", "unconfigured": "미등록",
+}
+
 
 class DesktopMainWindow(ctk.CTk):
     """100% Native Windows GUI Desktop Application."""
@@ -981,7 +987,7 @@ class DesktopMainWindow(ctk.CTk):
             self.byok_entry_key.delete(0, "end")
             msg = f"✓ {prov.upper()} API 키가 등록되었습니다."
             if ver.get("valid"):
-                msg += f" (검증 완료: {ver.get('balance', '정상')})"
+                msg += " (검증 완료)"
             self.lbl_status_msg.configure(text=msg, text_color=theme.SUCCESS)
             self._refresh_keys_list()
             self._refresh_diagnostic_table()
@@ -1015,8 +1021,14 @@ class DesktopMainWindow(ctk.CTk):
                 ctk.CTkLabel(row, text=key.get("masked") or key.get("masked_key") or "마스킹 없음",
                              font=theme.font(theme.FONT_SM, family=theme.FONT_MONO),
                              text_color=theme.ACCENT, width=170).pack(side="left")
-                ctk.CTkLabel(row, text=key.get("status") or "미검증", text_color=theme.MUTED,
-                             width=100).pack(side="left")
+                status = ctk.CTkLabel(row, text=KEY_STATUS_TEXT.get(key.get("status"), "알 수 없음"),
+                                      text_color=theme.MUTED, width=100)
+                status.pack(side="left")
+                verify = ctk.CTkButton(row, text="검증", width=60)
+                verify.configure(command=lambda p=prov, k=kid, b=verify, s=status:
+                                 self._verify_key_action(p, k, b, s),
+                                 state="normal" if key.get("has_key") else "disabled")
+                verify.pack(side="right", padx=theme.SPACE_1)
                 bill = spend.get((prov, kid))
                 bill_text = (spend_text(bill, self.krw_rate) if bill and bill.get("amount") is not None
                              else "청구액 확인 불가")
@@ -1037,6 +1049,33 @@ class DesktopMainWindow(ctk.CTk):
         if not self.byok_keys_scroll.winfo_children():
             ctk.CTkLabel(self.byok_keys_scroll, text="등록된 API 키가 없습니다.",
                          text_color=theme.FAINT).pack(pady=theme.SPACE_4)
+
+    def _verify_key_action(self, provider: str, key_id: str, button: Any, status: Any) -> None:
+        button.configure(state="disabled")
+        status.configure(text="검증 중…")
+
+        def worker():
+            state = "verification_unavailable"
+            try:
+                result = api_key_manager.verify_key(provider, key_id)
+                if result.get("valid") is True:
+                    state = "valid"
+                elif str(result.get("error", "")).startswith(("HTTP 401", "HTTP 403", "인증 실패")):
+                    state = "invalid"
+            except Exception:
+                pass
+
+            def finish():
+                try:
+                    status.configure(text=KEY_STATUS_TEXT[state])
+                    button.configure(state="normal")
+                except Exception:
+                    pass  # The row/window may have been destroyed while verifying.
+            try:
+                self.after(0, finish)
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True, name="KeyVerification").start()
 
     def _rename_key_action(self, provider: str, key_id: str, label: str) -> None:
         try:
@@ -1446,8 +1485,11 @@ class DesktopMainWindow(ctk.CTk):
             rx.pack(fill="x", pady=theme.SPACE_1)
 
             is_on = info["is_connected"]
-            color = theme.SUCCESS if is_on else theme.FAINT
-            status_text = "🟢 연결됨 (모니터링 중)" if is_on else "⚪ 미연동 (로그인/결제 없음)"
+            if is_on is None or info.get("detection_status") == "unavailable":
+                color, status_text = theme.WARNING, "감지 불가 (다음 갱신에서 재시도)"
+            else:
+                color = theme.SUCCESS if is_on else theme.FAINT
+                status_text = "🟢 연결됨 (모니터링 중)" if is_on else "⚪ 미연동 (로그인/결제 없음)"
 
             ctk.CTkLabel(
                 rx,
