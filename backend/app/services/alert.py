@@ -280,6 +280,9 @@ class AlertEvaluator:
                 break
 
             message = cls.build_message(rule, metric_val, note)
+            # The aggregation may still hold a SQLite read snapshot. Writing from a stale
+            # snapshot fails with "database is locked" once the collector has committed.
+            session.commit()
             try:
                 if not ignore_cooldown and not cls.claim_rule(session, rule, now):
                     # A concurrent claim or pause won before this UPDATE.

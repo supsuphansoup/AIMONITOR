@@ -5,6 +5,7 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select, update
 
 from backend.app.models.alert import AlertHistory, AlertRule
+from backend.app.models.trace import TraceEvent
 from backend.app.services.aggregator import MetricAggregator
 from backend.app.services.alert import AlertEvaluator
 
@@ -80,7 +81,7 @@ def test_result_commit_failure_preserves_pending_history(file_session, monkeypat
 
     def fail_result():
         commits.append(True)
-        if len(commits) == 2:
+        if attempts:  # only the commit that records the webhook result fails
             raise OperationalError("UPDATE alert_histories", {}, RuntimeError("fake disk failure"))
         return commit()
 
@@ -112,6 +113,27 @@ def test_pause_committed_before_claim_prevents_firing(file_session, monkeypatch)
     with Session(engine) as reader:
         assert reader.exec(select(AlertHistory)).all() == []
         assert reader.exec(select(AlertRule)).one().last_triggered_at is None
+
+
+@pytest.mark.parametrize("ignore_cooldown", [False, True])
+def test_collector_commit_after_aggregation_does_not_block_firing(file_session, monkeypatch, ignore_cooldown):
+    session, engine = file_session
+    original = MetricAggregator.get_overview_metrics
+
+    def ingest_after_aggregation(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with Session(engine) as writer:
+            writer.add(TraceEvent(trace_id="collector", provider="openai", model_name="gpt-4o"))
+            writer.commit()
+        return result
+
+    monkeypatch.setattr(MetricAggregator, "get_overview_metrics", ingest_after_aggregation)
+    monkeypatch.setattr(AlertEvaluator, "dispatch_webhook", lambda *args: True)
+    results = AlertEvaluator.evaluate_rules(session, ignore_cooldown=ignore_cooldown)
+    assert len(results) == 1 and results[0].sent_successfully is True
+    with Session(engine) as reader:
+        stamped = reader.exec(select(AlertRule)).one().last_triggered_at
+        assert (stamped is None) is ignore_cooldown
 
 
 @pytest.mark.parametrize("message,sent,status", [("[delivery pending] test", False, "pending"), ("test", True, "succeeded"), ("test", False, "failed")])
