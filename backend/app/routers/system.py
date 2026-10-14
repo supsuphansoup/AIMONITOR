@@ -4,7 +4,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
-from backend.app.core.config import settings
+from backend.app.core.config import settings, validate_retention_days
 from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.db.session import check_db, get_session
 from backend.app.services.cost import (
@@ -80,6 +80,13 @@ def purge_old_data(
             status_code=HTTP_422_UNPROCESSABLE,
             detail="days must be at least 1.",
         )
+    try:
+        validate_retention_days(days)
+    except ValueError:
+        raise HTTPException(
+            status_code=HTTP_422_UNPROCESSABLE,
+            detail="days are outside the supported date range.",
+        ) from None
     return purge_older_than(session, days)
 
 

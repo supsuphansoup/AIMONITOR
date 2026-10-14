@@ -38,7 +38,8 @@
 ### 보관·정리 (`services/retention.py`)
 
 - `RETENTION_DAYS`(기본 0 = 무제한) > 0이면 스케줄러가 `RETENTION_INTERVAL_SECONDS`(3600)마다 기준일 이전 `trace_events`·`alert_histories` 삭제.
-- 수동: `POST /api/v1/system/purge?days=N` (쓰기 인증). `days ≤ 0`은 아무것도 지우지 않는다.
+- 수동: `POST /api/v1/system/purge?days=N` (쓰기 인증). API의 `days ≤ 0` 또는 UTC 기준일에서 빼면 1년 이전이 되는 값은 422이며 삭제하지 않는다. 서비스 함수의 `days ≤ 0`은 삭제 없이 반환한다.
+- `RETENTION_DAYS`는 0 또는 현재 UTC 날짜의 ordinal − 1 이하만 허용한다. 설정 시 검증하고 삭제 직전에도 다시 검사해 `timedelta`·날짜 오버플로를 막는다.
 
 ### 스키마 업그레이드 (`db/session.py: ensure_schema`)
 

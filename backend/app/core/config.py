@@ -3,6 +3,15 @@ from typing import List, Optional, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from backend.app.core.timeutil import utc_now
+
+
+def validate_retention_days(days: int) -> int:
+    """Keep the cutoff within datetime's supported calendar (year 1 onward)."""
+    if days < 0 or days > utc_now().toordinal() - 1:
+        raise ValueError("Retention days are outside the supported date range.")
+    return days
+
 
 class Settings(BaseSettings):
     # --- Identity -------------------------------------------------------
@@ -52,6 +61,11 @@ class Settings(BaseSettings):
     RETENTION_INTERVAL_SECONDS: int = 3600
     # 0 disables automatic purging; otherwise traces older than N days are removed.
     RETENTION_DAYS: int = 0
+
+    @field_validator("RETENTION_DAYS")
+    @classmethod
+    def validate_retention_setting(cls, value: int) -> int:
+        return validate_retention_days(value)
 
     @field_validator("CORS_ORIGINS", "ALLOWED_HOSTS", mode="before")
     @classmethod
