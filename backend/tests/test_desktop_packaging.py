@@ -59,7 +59,7 @@ def test_serve_backend_binds_localhost_from_the_data_folder(entry, monkeypatch, 
     assert entry.main(argv) == 0
     from backend.app.main import app
 
-    run.assert_called_once_with(app, host="127.0.0.1", port=port)
+    run.assert_called_once_with(app, host="127.0.0.1", port=port, access_log=False)
     # .env and the default relative SQLite path resolve inside the data folder, not the install folder.
     assert Path.cwd() == entry.DATA_DIR
 
@@ -71,6 +71,22 @@ def test_windowed_exe_without_console_logs_to_a_file(entry, monkeypatch):
     entry.main(["--serve-backend"])
     try:
         assert sys.stdout is sys.stderr and sys.stdout.name == str(entry.DATA_DIR / "logs" / "backend.log")
+    finally:
+        sys.stdout.close()
+
+
+def test_windowed_log_rotates_and_bounds_large_writes(entry, monkeypatch):
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(entry, "LOG_MAX_BYTES", 1024, raising=False)
+    entry._log_to_file("bounded")
+    try:
+        for _ in range(8):
+            sys.stdout.write("한" * 1024)
+        sys.stdout.flush()
+        logs = list((entry.DATA_DIR / "logs").glob("bounded.log*"))
+        assert len(logs) <= 4
+        assert all(path.stat().st_size <= 1024 for path in logs)
     finally:
         sys.stdout.close()
 

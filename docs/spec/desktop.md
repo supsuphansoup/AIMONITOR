@@ -43,8 +43,17 @@ PyInstaller 단일 폴더 빌드 `AIMONITOR.exe` 하나가 세 역할을 한다(
 기본은 데스크톱 앱, `--serve-backend [--port N]`은 `127.0.0.1` 로컬 API 서버, `--self-test`는 GUI·API 모듈을 모두
 import한 뒤 종료 코드로 결과를 알린다. exe 실행 시 작업 폴더는 `~/.aimonitor`이므로 기본 DB는
 `~/.aimonitor/aimonitor.db`, `.env`도 그 폴더에서 읽는다. 콘솔이 없으므로 출력은 `~/.aimonitor/logs/<역할>.log`에
-실행마다 새로 쓴다. 데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄운다.
+역할별로 회전 저장한다(UTF-8, 파일당 최대 1MiB, 백업 3개, 역할당 최대 4MiB).
+한 번의 로그 쓰기는 16KiB 이하로 잘라 기록하고 잘림 표식을 남긴다. 백엔드 접근 로그는 끈다.
+데스크톱 앱은 exe 자신을 `--serve-backend`로 실행해 백엔드를 띄운다.
 코드 서명이 없어 첫 실행 시 SmartScreen 경고가 뜰 수 있다. 빌드·릴리스 절차는 [security-ops.md](security-ops.md)의 배포 절.
+
+빌드는 실제 Analysis에 포함된 원본 파일과 설치된 배포판 RECORD를 대조하여 고지를 수집한다.
+`dist/AIMONITOR/` 최상위에 프로젝트 MIT `LICENSE`, `THIRD_PARTY_NOTICES.txt`, 배포판·버전별 원문
+`licenses/`를 포함한다. Python·Tcl/Tk 런타임, pystray의 GPLv3·LGPLv3 전문과 소스 위치·수정 라이브러리로
+다시 빌드하는 절차, certifi MPL 소스 취득 위치도 포함한다. 라이선스는 설치된 실제 메타데이터를 사용하며
+필수 원문이 없으면 빌드를 실패시킨다. 릴리스 zip에는 이 폴더 전체를 담는다.
+Python 설치본에 Tcl 고지가 없으면 번들 init.tcl의 정확한 버전과 일치하는 저장소 내 upstream 원문만 쓴다.
 
 ### Windows 시작 시 자동 실행
 
