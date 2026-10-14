@@ -61,6 +61,8 @@ def test_fresh_git_repository_excludes_only_local_private_state(isolated_git, pa
 
 def test_project_has_no_tracked_files_excluded_by_ignore_rules(isolated_git):
     command, environment, _repository = isolated_git
+    if not (ROOT / ".git").exists():
+        pytest.skip("source archive without a git checkout")
     result = subprocess.run([*command, "ls-files", "-ci", "--exclude-standard"],
                             cwd=ROOT, env=environment, capture_output=True, text=True, check=True)
     assert result.stdout == ""
