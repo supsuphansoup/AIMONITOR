@@ -1,6 +1,8 @@
 """Collector regressions use only temporary vendor-shaped log files."""
 import copy
 import json
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,3 +130,155 @@ def test_acc21_antigravity_input_estimate_uses_only_identified_body(tmp_path, mo
     assert known["prompt_tokens"] == 10
     assert known["metadata"]["tokens"] == "estimated"
     assert "synthetic private body" not in json.dumps(known)
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", "copilot", "antigravity"])
+@pytest.mark.parametrize("vendor_id", [False, True])
+def test_acc01_keys_survive_failed_delivery_and_restart(tmp_path, monkeypatch, tool, vendor_id):
+    obj = event(tool)
+    if not vendor_id:
+        obj.pop("id", None)
+        if tool == "claude":
+            obj["message"].pop("id")
+    append(log_path(tmp_path, tool), [obj])
+    instance, _ = watcher(tmp_path, monkeypatch)
+    attempts = []
+    monkeypatch.setattr(instance, "_send_traces", lambda rows: attempts.append(copy.deepcopy(rows)) or False)
+    assert instance.scan_all() == 0
+    assert instance.scan_all() == 0
+    restarted, _ = watcher(tmp_path, monkeypatch)
+    monkeypatch.setattr(restarted, "_send_traces", lambda rows: attempts.append(copy.deepcopy(rows)) or True)
+    assert restarted.scan_all() == 1
+    keys = [rows[0]["dedupe_key"] for rows in attempts]
+    assert len(set(keys)) == 1
+    assert re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", keys[0])
+    assert all(rows[0]["trace_id"] == keys[0] for rows in attempts)
+
+
+def test_acc01_batch_posts_keep_keys_after_partial_success(tmp_path, monkeypatch):
+    import httpx
+
+    append(log_path(tmp_path, "claude"), [event("claude", str(index)) for index in range(201)])
+    instance, _ = watcher(tmp_path, monkeypatch)
+    monkeypatch.setattr(instance, "_send_traces", ai_watcher.UnifiedAIWatcher._send_traces.__get__(instance))
+    bodies = []
+
+    def receive(request):
+        bodies.append(json.loads(request.content)["traces"])
+        return httpx.Response(503 if len(bodies) == 2 else 201)
+
+    client = httpx.Client
+    monkeypatch.setattr(ai_watcher.httpx, "Client", lambda **kwargs:
+                        client(transport=httpx.MockTransport(receive), **kwargs))
+    assert instance.scan_all() == 0
+    assert instance.scan_all() == 201
+    assert [len(body) for body in bodies] == [200, 1, 200, 1]
+    assert [row["dedupe_key"] for row in bodies[0]] == [row["dedupe_key"] for row in bodies[2]]
+    assert bodies[1][0]["dedupe_key"] == bodies[3][0]["dedupe_key"]
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", "copilot", "antigravity"])
+def test_acc03_replaced_same_size_file_starts_new_generation(tmp_path, monkeypatch, tool):
+    path = log_path(tmp_path, tool)
+    append(path, [event(tool)])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    replacement = json.loads(json.dumps(event(tool)).replace('"one"', '"two"')
+                             .replace('"total_tokens": 30', '"total_tokens": 31')
+                             .replace("private body", "changed body"))
+    temporary = path.with_suffix(".replacement")
+    append(temporary, [replacement])
+    assert temporary.stat().st_size == path.stat().st_size
+    temporary.replace(path)
+    assert instance.scan_all() == 1
+    assert len(sent) == 2
+    assert sent[0]["dedupe_key"] != sent[1]["dedupe_key"]
+
+
+def test_acc03_in_place_rewrite_with_same_context_does_not_reuse_old_cursor(tmp_path, monkeypatch):
+    path = log_path(tmp_path, "codex")
+    context = {"type": "turn_context", "payload": {"model": "gpt-5"}}
+    append(path, [context, event("codex")])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    replacement = event("codex")
+    replacement["payload"]["info"]["total_token_usage"]["total_tokens"] = 31
+    path.write_bytes(b"")
+    append(path, [context, replacement, {"type": "padding", "value": "x" * 100}])
+    assert instance.scan_all() == 1
+    assert sent[0]["dedupe_key"] != sent[1]["dedupe_key"]
+
+
+def test_acc08_codex_reads_only_new_bytes_and_persists_model(tmp_path, monkeypatch):
+    path = log_path(tmp_path, "codex")
+    append(path, [{"type": "turn_context", "payload": {"model": "gpt-5"}},
+                  *[{"type": "padding", "value": "x" * 1000} for _ in range(1000)], event("codex")])
+    instance, _ = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    original_open = Path.open
+    read_bytes = [0]
+
+    class CountingReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, *args):
+            raw = self.stream.read(*args)
+            read_bytes[0] += len(raw)
+            return raw
+
+        def readline(self, *args):
+            raw = self.stream.readline(*args)
+            read_bytes[0] += len(raw)
+            return raw
+
+        def __iter__(self):
+            for raw in self.stream:
+                read_bytes[0] += len(raw)
+                yield raw
+
+    def open_file(file, mode="r", *args, **kwargs):
+        stream = original_open(file, mode, *args, **kwargs)
+        return CountingReader(stream) if file == path and mode == "rb" else stream
+
+    monkeypatch.setattr(Path, "open", open_file)
+    updated = event("codex")
+    updated["payload"]["info"]["total_token_usage"]["total_tokens"] = 60
+    append(path, [updated])
+    restarted, sent = watcher(tmp_path, monkeypatch)
+    assert restarted.scan_all() == 1
+    assert sent[0]["model_name"] == "gpt-5"
+    assert read_bytes[0] < 8192
+
+
+def test_acc18_missing_offsets_are_pruned_after_30_days(tmp_path, monkeypatch):
+    clock = [NOW.timestamp()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    path = log_path(tmp_path, "codex")
+    append(path, [event("codex")])
+    instance, _ = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    path.unlink()
+    instance.scan_all()
+    assert instance._offsets
+    clock[0] += 30 * 86400 - 1
+    instance.scan_all()
+    assert instance._offsets
+    clock[0] += 2
+    instance.scan_all()
+    assert instance._offsets == {}
+    for state in (instance.state_file.parent / "folder_offsets").glob("*.json"):
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+    append(path, [event("codex")])
+    restarted, sent = watcher(tmp_path, monkeypatch)
+    assert restarted.scan_all() == 1
+    assert sent[0]["dedupe_key"]

@@ -7,11 +7,16 @@ Automatically discovers and watches:
 Streams usage events to local AIMONITOR backend.
 """
 
+import copy
 import hashlib
 import json
 import logging
+import math
 import os
+import re
+import tempfile
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +45,21 @@ def _decode_line(raw: bytes) -> tuple:
     if not isinstance(obj, dict):
         raise ValueError("Invalid log object")
     return line, obj
+
+
+def _write_state(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(value, stream)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _iter_files(root: Path, suffix: str):
@@ -106,6 +126,10 @@ class UnifiedAIWatcher:
         self.state_file = state_file or (Path.home() / ".aimonitor" / "ai_offsets.json")
         self.poll_interval = poll_interval
         self._offsets: Dict[str, int] = self._load_offsets()
+        self.cursor_file = self.state_file.with_name("ai_cursors.json")
+        self._cursors = self._load_cursors()
+        self._present = set()
+        self._present_paths = set()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock_fh = None
@@ -140,7 +164,9 @@ class UnifiedAIWatcher:
             if self.state_file.exists():
                 offsets = json.loads(self.state_file.read_text(encoding="utf-8"))
                 normalized = {}
-                for key, offset in offsets.items():
+                for key, offset in offsets.items() if isinstance(offsets, dict) else []:
+                    if not isinstance(key, str) or type(offset) is not int or offset < 0:
+                        continue
                     is_identity = ":session:" in key
                     key = _normalize_offset_key(key)
                     if is_identity:
@@ -151,6 +177,137 @@ class UnifiedAIWatcher:
             logger.debug("Failed to read offsets: %s", type(e).__name__)
         return {}
 
+    def _load_cursors(self) -> Dict[str, Dict[str, Any]]:
+        try:
+            data = json.loads(self.cursor_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        result = {}
+        for key, meta in data.items() if isinstance(data, dict) else []:
+            if not isinstance(key, str) or not isinstance(meta, dict):
+                continue
+            missing = meta.get("missing_since")
+            if missing is not None and (type(missing) not in (float, int) or not math.isfinite(missing)):
+                continue
+            generation = meta.get("generation")
+            if generation is None:
+                if missing is not None:
+                    result[_normalize_offset_key(key)] = {"missing_since": missing}
+                continue
+            if not isinstance(generation, str) or re.fullmatch(r"[a-f0-9]{64}", generation) is None:
+                continue
+            if any(type(meta.get(field, 0)) is not int or meta.get(field, 0) < 0
+                   for field in ("size", "created_ns", "prefix_len", "anchor_offset", "anchor_len")):
+                continue
+            if meta.get("prefix_len", 0) > 4096 or meta.get("anchor_len", 0) > 64:
+                continue
+            if any(not isinstance(meta.get(field, ""), str) for field in (
+                "prefix_hash", "anchor_hash", "path_hash", "model",
+            )):
+                continue
+            file_id = meta.get("file_id", [])
+            if not isinstance(file_id, list) or any(type(value) is not int for value in file_id):
+                continue
+            result[_normalize_offset_key(key)] = dict(meta)
+        return result
+
+    def _cursor_offset(self, key: str, path: Path, stream: Any) -> tuple:
+        """Inspect the same open file that supplies bytes, including in-place rewrites."""
+        self._present.add(key)
+        self._present_paths.add(str(path))
+        stat = os.fstat(stream.fileno())
+        size = stat.st_size
+        file_id = [stat.st_dev, stat.st_ino] if stat.st_dev and stat.st_ino else []
+        created = getattr(stat, "st_birthtime_ns", 0) or (stat.st_ctime_ns if os.name == "nt" else 0)
+        path_hash = hashlib.sha256(str(canonical_path(path)).encode()).hexdigest()
+        previous = self._cursors.get(key, {})
+        offset = self._offsets.get(key, 0)
+        stream.seek(0)
+        first = stream.readline(4096)
+        first_hash = hashlib.sha256(first).hexdigest()
+        prefix_len = previous.get("prefix_len", len(first))
+        stream.seek(0)
+        prefix_hash = hashlib.sha256(stream.read(prefix_len)).hexdigest()
+        same_source = previous.get("path_hash") == path_hash or (
+            bool(file_id) and previous.get("file_id") == file_id
+        )
+        replaced = bool(previous.get("generation")) and (
+            (previous.get("path_hash") == path_hash and (
+                previous.get("file_id", []) != file_id or previous.get("created_ns", 0) != created
+            )) or previous.get("prefix_hash") != prefix_hash
+            or (same_source and (size < offset or size < previous.get("size", 0)))
+        )
+        anchor_len = previous.get("anchor_len", 0)
+        if not replaced and anchor_len and offset <= size:
+            stream.seek(previous.get("anchor_offset", 0))
+            replaced = hashlib.sha256(stream.read(anchor_len)).hexdigest() != previous.get("anchor_hash")
+        if replaced:
+            seed = f"{previous['generation']}:{file_id}:{created}:{first_hash}"
+            offset = 0
+            self._offsets.pop(key.replace("codex:", "codex_total:", 1), None)
+            previous = {}
+        else:
+            seed = f"{key}:{first_hash}"
+            if "missing_since" in previous or (not previous and size < offset):
+                offset = 0
+        generation = previous.get("generation") or hashlib.sha256(seed.encode()).hexdigest()
+        meta = dict(previous, generation=generation, file_id=file_id, created_ns=created,
+                    path_hash=path_hash, size=size)
+        meta.pop("missing_since", None)
+        if not previous.get("generation"):
+            meta.update(prefix_len=len(first), prefix_hash=first_hash)
+        self._cursors[key] = meta
+        self._offsets[key] = offset
+        return offset, size
+
+    def _finish_cursor(self, key: str, stream: Any, offset: int, model: Optional[str] = None) -> None:
+        self._offsets[key] = offset
+        meta = self._cursors[key]
+        anchor_offset = max(0, offset - 64)
+        stream.seek(anchor_offset)
+        anchor = stream.read(offset - anchor_offset)
+        meta.update(size=max(meta["size"], offset), anchor_offset=anchor_offset, anchor_len=len(anchor),
+                    anchor_hash=hashlib.sha256(anchor).hexdigest())
+        if model is not None:
+            meta["model"] = model
+
+    def _event_key(self, prefix: str, identity: Optional[str], offset: int, line: str,
+                   model: str = "") -> str:
+        generation = self._cursors.get(identity, {}).get("generation", identity or "")
+        digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+        seed = f"{generation}:{offset}:{digest}:{model}"
+        return prefix + "-" + hashlib.sha256(seed.encode()).hexdigest()[:32]
+
+    def _prune_cursors(self) -> None:
+        now = time.time()
+        removed = set()
+        for key in list(self._offsets):
+            if key.startswith("codex_total:") or key in self._present:
+                continue
+            meta = self._cursors.setdefault(key, {})
+            missing = meta.setdefault("missing_since", now)
+            if now - missing >= 30 * 86400:
+                removed.update((key, key.replace("codex:", "codex_total:", 1)))
+        for key in removed:
+            self._offsets.pop(key, None)
+            self._cursors.pop(key, None)
+        if removed:
+            paths = list((self.state_file.parent / "folder_offsets").glob("*.json"))
+            paths.append(self.state_file.with_name("claude_offsets.json"))
+            for path in paths:
+                try:
+                    old = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(old, dict):
+                        continue
+                    kept = {key: value for key, value in old.items()
+                            if _normalize_offset_key(key if path.name != "claude_offsets.json"
+                                                     else "claude:" + key) not in removed}
+                    if kept != old:
+                        _write_state(path, kept)
+                except (OSError, ValueError, TypeError):
+                    logger.debug("Failed to prune old folder cursors")
+        self._resolved = {key: value for key, value in self._resolved.items() if key in self._present_paths}
+
     def _save_offsets(self) -> None:
         try:
             # Keep aliases in sync so removing the first folder or renaming a hardlink
@@ -159,11 +316,14 @@ class UnifiedAIWatcher:
                 for alias in aliases:
                     if key in self._offsets:
                         self._offsets[alias] = self._offsets[key]
+                    if key in self._cursors:
+                        self._cursors[alias] = dict(self._cursors[key])
                     total_key = key.replace("codex:", "codex_total:", 1)
                     if key.startswith("codex:") and total_key in self._offsets:
                         self._offsets[alias.replace("codex:", "codex_total:", 1)] = self._offsets[total_key]
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            self.state_file.write_text(json.dumps(self._offsets), encoding="utf-8")
+            _write_state(self.state_file, self._offsets)
+            _write_state(self.cursor_file, self._cursors)
             self._identity_state_keys.update(k for k in self._offsets if ":session:" in k)
             for tool, directory in self._collection_dirs:
                 root = str(canonical_path(directory))
@@ -177,7 +337,7 @@ class UnifiedAIWatcher:
                         offsets[total_key] = self._offsets[total_key]
                 target = self._folder_state(tool, directory)
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(json.dumps(offsets), encoding="utf-8")
+                _write_state(target, offsets)
         except Exception as e:
             logger.debug("Failed to save offsets: %s", type(e).__name__)
 
@@ -270,6 +430,10 @@ class UnifiedAIWatcher:
                 (selected[3], selected[4], key)
             )
             for alias in aliases:
+                self._present.add(alias)
+                if alias in self._cursors and (key not in self._cursors
+                                              or self._offsets.get(alias, 0) > self._offsets.get(key, 0)):
+                    self._cursors[key] = dict(self._cursors[alias])
                 if alias in self._offsets:
                     self._offsets[key] = max(self._offsets.get(key, 0), self._offsets[alias])
                 total_alias = alias.replace("codex:", "codex_total:", 1)
@@ -313,7 +477,7 @@ class UnifiedAIWatcher:
     def _save_seen(self) -> None:
         try:
             self.seen_file.parent.mkdir(parents=True, exist_ok=True)
-            self.seen_file.write_text(json.dumps(list(self._seen_claude)), encoding="utf-8")
+            _write_state(self.seen_file, list(self._seen_claude))
         except Exception as e:
             logger.debug("Failed to save seen keys: %s", type(e).__name__)
 
@@ -390,6 +554,7 @@ class UnifiedAIWatcher:
         if got_lock:
             # Re-read offsets: the previous lock holder may have advanced them.
             self._offsets = self._load_offsets()
+            self._cursors = self._load_cursors()
             self._seen_claude = self._load_seen()
             logger.info("UnifiedAIWatcher started for Antigravity, Claude, and GPT")
         else:
@@ -411,6 +576,7 @@ class UnifiedAIWatcher:
                     self._stop_event.wait(max(self.poll_interval, 5.0))
                     continue
                 self._offsets = self._load_offsets()
+                self._cursors = self._load_cursors()
                 self._seen_claude = self._load_seen()
                 logger.info("UnifiedAIWatcher took over AI log watching")
             try:
@@ -421,6 +587,8 @@ class UnifiedAIWatcher:
 
     def scan_all(self) -> int:
         """Scan all AI providers and stream traces."""
+        self._present.clear()
+        self._present_paths.clear()
         overridden = self.claude_dir != Path.home() / ".claude"
         folders = [] if overridden else self.accounts.refresh()
         if overridden:
@@ -438,6 +606,7 @@ class UnifiedAIWatcher:
         # Migration is part of the initial state, so failed delivery rolls back to
         # the migrated cursor rather than to an empty, pre-migration dictionary.
         offsets_before = dict(self._offsets)
+        cursors_before = copy.deepcopy(self._cursors)
         seen_before = OrderedDict(self._seen_claude)
         traces = []
         scanned_antigravity = False
@@ -469,9 +638,11 @@ class UnifiedAIWatcher:
             if not self._send_traces(traces):
                 # 전송 실패: 읽은 위치를 되돌려 다음 주기에 같은 줄을 다시 보낸다.
                 self._offsets = offsets_before
+                self._cursors = cursors_before
                 self._seen_claude = seen_before
                 return 0
         # Persist consumed non-usage/duplicate lines too, so restart does not rescan them.
+        self._prune_cursors()
         self._save_offsets()
         self._save_seen()
         return len(traces)
@@ -488,15 +659,12 @@ class UnifiedAIWatcher:
             return traces
 
         for fpath, size, key in self._files_for("claude", directory):
-            offset = self._offsets.get(key, 0)
-            if size < offset:
-                offset = 0
-            if size == offset:
-                continue
-
             invalid = 0
             try:
-                with open(fpath, "rb") as f:
+                with fpath.open("rb") as f:
+                    offset, size = self._cursor_offset(key, fpath, f)
+                    if size == offset:
+                        continue
                     f.seek(offset)
                     consumed = offset
                     for raw in f:
@@ -513,7 +681,7 @@ class UnifiedAIWatcher:
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
                             continue
-                    self._offsets[key] = consumed
+                    self._finish_cursor(key, f, consumed)
             except OSError:
                 logger.debug("Failed to read Claude usage")
             if invalid:
@@ -555,8 +723,7 @@ class UnifiedAIWatcher:
         else:
             # Responses with vendor IDs retain their existing content-based ID and
             # seen key. Without an ID, use the shared session identity and cursor.
-            content_key = f"{identity_key}:{line_offset}" if identity_key else line
-            trace_id = "cc-" + hashlib.sha256(content_key.encode("utf-8")).hexdigest()[:32]
+            trace_id = self._event_key("cc", identity_key, line_offset, line)
             dedupe_key = trace_id
 
         # 로그에 적힌 모델 그대로. 모르면 지어내지 않고 unknown -> 가격 "계산 불가".
@@ -584,25 +751,44 @@ class UnifiedAIWatcher:
         }
         if trace_id:
             trace["trace_id"] = trace_id
+            trace["dedupe_key"] = trace_id
         if not self._mark_seen(dedupe_key):
             return None
         return trace
+
+    def _restore_codex_model(self, stream: Any, offset: int) -> str:
+        start = max(0, offset - 512 * 1024)
+        stream.seek(start)
+        lines = stream.read(offset - start).splitlines()
+        if start:
+            lines = lines[1:]
+        for raw in reversed(lines):
+            try:
+                _, obj = _decode_line(raw)
+                payload = obj.get("payload")
+                if obj.get("type") == "turn_context" and isinstance(payload, dict):
+                    model = payload.get("model")
+                    if isinstance(model, str) and 0 < len(model) <= 200:
+                        return model
+            except (ValueError, TypeError, AttributeError):
+                continue
+        return "unknown"
 
     def _scan_codex(self, directory: Path) -> List[Dict[str, Any]]:
         traces = []
         for fpath, size, key in self._files_for("codex", directory):
             total_key = key.replace("codex:", "codex_total:", 1)
-            offset = self._offsets.get(key, 0)
-            if size == offset:
-                continue
-            if size < offset:
-                offset = 0
-                self._offsets.pop(total_key, None)
             try:
-                # Read context lines preceding the cursor too; no usage before cursor is sent.
-                model = "unknown"
                 with fpath.open("rb") as stream:
-                    consumed = 0
+                    offset, size = self._cursor_offset(key, fpath, stream)
+                    model = self._cursors[key].get("model")
+                    if model is None:
+                        model = self._restore_codex_model(stream, offset) if offset else "unknown"
+                    if size == offset:
+                        self._finish_cursor(key, stream, offset, model)
+                        continue
+                    stream.seek(offset)
+                    consumed = offset
                     invalid = 0
                     for raw in stream:
                         if not raw.endswith(b"\n"):
@@ -610,13 +796,15 @@ class UnifiedAIWatcher:
                         start = consumed
                         consumed += len(raw)
                         try:
-                            _, obj = _decode_line(raw)
+                            line, obj = _decode_line(raw)
                             payload = obj.get("payload") or {}
                             if not isinstance(payload, dict):
                                 raise ValueError("Invalid Codex payload")
                             if obj.get("type") == "turn_context":
-                                model = payload.get("model") or "unknown"
-                            if start < offset or payload.get("type") != "token_count":
+                                candidate = payload.get("model")
+                                if isinstance(candidate, str) and 0 < len(candidate) <= 200:
+                                    model = candidate
+                            if payload.get("type") != "token_count":
                                 continue
                             info = payload.get("info") or {}
                             usage = info.get("last_token_usage") or {}
@@ -628,12 +816,11 @@ class UnifiedAIWatcher:
                             outgoing = _count(usage.get("output_tokens", 0))
                             if incoming + outgoing == 0:
                                 continue
+                            trace_id = self._event_key("cx", key, start, line)
                             traces.append({
                                 "account_id": self.accounts.account_at(directory, obj.get("timestamp")),
                                 "timestamp": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-                                "trace_id": "cx-" + hashlib.sha256(
-                                    f"{key}:{start}".encode()
-                                ).hexdigest()[:32],
+                                "trace_id": trace_id, "dedupe_key": trace_id,
                                 "session_id": fpath.stem, "provider": "openai", "model_name": model,
                                 "prompt_tokens": incoming - cached, "cache_read_tokens": cached,
                                 "completion_tokens": outgoing, "status": "SUCCESS", "tags": ["codex", "cli"],
@@ -644,7 +831,7 @@ class UnifiedAIWatcher:
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
                             continue
-                    self._offsets[key] = consumed
+                    self._finish_cursor(key, stream, consumed, model)
                     if invalid:
                         logger.warning("Skipped invalid Codex log lines: %s", invalid)
             except (OSError, ValueError, TypeError, AttributeError):
@@ -682,15 +869,11 @@ class UnifiedAIWatcher:
 
         for _, fpath, size in found:
             key = self._offset_key("antigravity", fpath)
-            offset = self._offsets.get(key, 0)
-
-            if size < offset:
-                offset = 0
-            if size == offset:
-                continue
-
             try:
-                with open(fpath, "rb") as f:
+                with fpath.open("rb") as f:
+                    offset, size = self._cursor_offset(key, fpath, f)
+                    if size == offset:
+                        continue
                     f.seek(offset)
                     line_start = offset
                     invalid = 0
@@ -701,7 +884,7 @@ class UnifiedAIWatcher:
                         try:
                             line, obj = _decode_line(raw)
                             tr = self._parse_antigravity_line(
-                                line, fpath, prev_offset=line_start, curr_offset=line_end
+                                line, fpath, prev_offset=line_start, curr_offset=line_end, identity_key=key
                             )
                             if tr:
                                 tr["account_id"] = self.accounts.account_at(directory, obj.get("created_at"))
@@ -709,7 +892,7 @@ class UnifiedAIWatcher:
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
                         line_start = line_end
-                    self._offsets[key] = line_start
+                    self._finish_cursor(key, f, line_start)
                     if invalid:
                         logger.warning("Skipped invalid Antigravity log lines: %s", invalid)
             except Exception as e:
@@ -717,7 +900,8 @@ class UnifiedAIWatcher:
         return traces
 
     def _parse_antigravity_line(
-        self, line: str, fpath: Path, prev_offset: int = 0, curr_offset: int = 0
+        self, line: str, fpath: Path, prev_offset: int = 0, curr_offset: int = 0,
+        identity_key: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         try:
             obj = json.loads(line)
@@ -744,7 +928,9 @@ class UnifiedAIWatcher:
         ts = obj.get("created_at") or datetime.now(timezone.utc).isoformat()
         status = "SUCCESS" if obj.get("status") == "DONE" else "ERROR"
 
+        trace_id = self._event_key("ag", identity_key, prev_offset, line)
         return {
+            "trace_id": trace_id, "dedupe_key": trace_id,
             "account_id": None,
             "timestamp": ts,
             "session_id": conv_id,
@@ -776,15 +962,11 @@ class UnifiedAIWatcher:
 
         for fpath in session_state.glob("*/events.jsonl"):
             key = self._offset_key("copilot", fpath)
-            last_offset = self._offsets.get(key, 0)
             try:
-                cur_size = fpath.stat().st_size
-                if cur_size < last_offset:
-                    last_offset = 0
-                if cur_size == last_offset:
-                    continue
-
-                with open(fpath, "rb") as f:
+                with fpath.open("rb") as f:
+                    last_offset, cur_size = self._cursor_offset(key, fpath, f)
+                    if cur_size == last_offset:
+                        continue
                     f.seek(last_offset)
                     consumed = last_offset
                     invalid = 0
@@ -792,10 +974,11 @@ class UnifiedAIWatcher:
                         # A line still being written has no newline yet; read it next time.
                         if not raw.endswith(b"\n"):
                             break
+                        start = consumed
                         consumed += len(raw)
                         try:
                             line, obj = _decode_line(raw)
-                            parsed = self._parse_copilot_line(line, fpath)
+                            parsed = self._parse_copilot_line(line, fpath, key, start)
                             for trace in parsed:
                                 trace["account_id"] = self.accounts.account_at(
                                     directory, obj.get("timestamp")
@@ -803,7 +986,7 @@ class UnifiedAIWatcher:
                             traces.extend(parsed)
                         except (ValueError, TypeError, AttributeError, OverflowError):
                             invalid += 1
-                    self._offsets[key] = consumed
+                    self._finish_cursor(key, f, consumed)
                     if invalid:
                         logger.warning("Skipped invalid Copilot log lines: %s", invalid)
             except Exception as e:
@@ -811,7 +994,9 @@ class UnifiedAIWatcher:
 
         return traces
 
-    def _parse_copilot_line(self, line: str, fpath: Path) -> List[Dict[str, Any]]:
+    def _parse_copilot_line(
+        self, line: str, fpath: Path, identity_key: Optional[str] = None, line_offset: int = 0,
+    ) -> List[Dict[str, Any]]:
         try:
             d = json.loads(line)
         except Exception:
@@ -867,6 +1052,9 @@ class UnifiedAIWatcher:
                 trace["trace_id"] = (
                     "cp-" + hashlib.sha256(f"{event_id}:{model_name}".encode("utf-8")).hexdigest()[:32]
                 )
+            else:
+                trace["trace_id"] = self._event_key("cp", identity_key, line_offset, line, model_name)
+            trace["dedupe_key"] = trace["trace_id"]
             # The API time is a session total; it maps to one model only when one was used.
             if len(metrics) == 1 and count > 0 and isinstance(duration_ms, (int, float)) and duration_ms > 0:
                 trace["latency_ms"] = float(duration_ms) / count
