@@ -23,9 +23,8 @@ class Settings(BaseSettings):
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ]
-    # Without API_KEY the server only answers requests addressed to localhost, so a web page cannot
-    # reach it by pointing its own domain at 127.0.0.1 (DNS rebinding). Add host names here only for
-    # a trusted network; setting API_KEY is the usual way to serve other names.
+    # Always restrict Host to localhost or this allowlist to prevent DNS rebinding,
+    # including when a write API_KEY is set but reads remain unauthenticated.
     ALLOWED_HOSTS: Union[List[str], str] = []
 
     # --- Authentication -------------------------------------------------
@@ -75,6 +74,8 @@ class Settings(BaseSettings):
         if v is None:
             return None
         stripped = str(v).strip()
+        if stripped and any(ord(char) < 33 or ord(char) > 126 for char in stripped):
+            raise ValueError("API_KEY must contain only printable ASCII without whitespace.")
         return stripped or None
 
     @property
@@ -108,6 +109,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
 

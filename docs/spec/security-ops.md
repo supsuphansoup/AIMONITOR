@@ -15,6 +15,7 @@
 
 - `X-API-Key: <키>` 또는 `Authorization: Bearer <키>`, `hmac.compare_digest`로 비교.
 - `API_KEY` 미설정 = 개방 모드 + 시작 시 경고 로그. 빈 문자열도 미설정으로 본다.
+- 설정 키는 앞뒤 공백 제거 후 공백 없는 출력 가능한 ASCII만 허용한다. 비 ASCII 인증 헤더는 401로 거부한다.
 - `REQUIRE_AUTH_FOR_READS=true`면 조회 API도 키 필요. 공개: `/health`, `/api/v1/system/ready`.
 
 ### 원문 보호 (`core/sanitize.py`)
@@ -30,7 +31,7 @@
 - 미들웨어 순서: **CORS가 최외곽** — 오류 응답에도 CORS 헤더가 붙는다.
 - `CORS_ORIGINS`에 `*`가 있으면 credentials 자동 비활성화. 노출 헤더: `X-Request-ID`, `X-Total-Count`.
 - 모든 요청에 `X-Request-ID` (전달값 또는 16자 hex 발급).
-- 브라우저 공격 차단(`reject_browser_attacks`, CORS 안쪽): `Origin`이 `CORS_ORIGINS` 밖인 쓰기 요청(GET·HEAD·OPTIONS 제외)은 403. `*`이면 검사하지 않는다. `API_KEY` 미설정이면 Host가 `localhost`·`127.0.0.1`·`[::1]`·`ALLOWED_HOSTS`가 아닌 요청을 403으로 거부한다(DNS rebinding). 데스크톱 앱·SDK는 `Origin`을 보내지 않는다.
+- 브라우저 공격 차단(`reject_browser_attacks`, CORS 안쪽): `Origin`이 `CORS_ORIGINS` 밖인 쓰기 요청(GET·HEAD·OPTIONS 제외)은 403. `*`이면 검사하지 않는다. API 키 유무와 관계없이 Host가 `localhost`·`127.0.0.1`·`[::1]`·`ALLOWED_HOSTS`가 아닌 요청을 403으로 거부한다(DNS rebinding). 데스크톱 앱·SDK는 `Origin`을 보내지 않는다.
 - CORS 기본 출처는 로컬 API 포트 8000이며 웹 개발 서버 출처는 없다. 정적 파일·SPA fallback은 없고 `GET /`는 JSON 404다. Swagger·ReDoc API 문서는 유지한다.
 
 ### 보관·정리 (`services/retention.py`)
@@ -68,7 +69,7 @@ python -c "import secrets; print('API_KEY=' + secrets.token_urlsafe(32))" >> .en
 docker compose up --build -d   # http://localhost:8000/api/v1, Swagger: /api/v1/docs
 ```
 
-외부에 노출하려면 먼저 `API_KEY`를 설정한 뒤 `docker-compose.yml`의 포트 바인딩을 바꾼다.
+Docker의 `0.0.0.0` 바인딩 등을 외부에 노출하려면 `API_KEY`와 `REQUIRE_AUTH_FOR_READS=true`를 함께 설정하고, `ALLOWED_HOSTS`에는 사용할 호스트 이름만, `CORS_ORIGINS`에는 신뢰하는 정확한 출처만 허용한 뒤 `docker-compose.yml`의 포트 바인딩을 바꾼다. API 키 설정만으로 임의 Host가 허용되지는 않는다.
 
 - Dockerfile: `python:3.11-slim` API 전용 런타임, non-root `aimonitor` 사용자. 연결 AI API가 사용하는 데스크톱 공유 헬퍼만 포함하며 GUI는 실행하지 않는다.
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.

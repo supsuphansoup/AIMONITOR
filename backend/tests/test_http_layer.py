@@ -133,13 +133,16 @@ def test_open_mode_answers_only_local_host_names(client: TestClient, monkeypatch
     for host in ("localhost:8000", "127.0.0.1:8000", "[::1]:8000", "LOCALHOST"):
         assert client.get("/api/v1/metrics/overview", headers={"Host": host}).status_code == 200, host
     res = client.get("/api/v1/metrics/overview", headers={"Host": "evil.example:8000"})
-    assert res.status_code == 403 and "API_KEY" in res.json()["detail"]
+    assert res.status_code == 403
     monkeypatch.setattr(settings, "ALLOWED_HOSTS", ["aimonitor.lan"])
     assert client.get("/health", headers={"Host": "aimonitor.lan:8000"}).status_code == 200
 
 
-def test_api_key_mode_serves_any_host_name(client: TestClient, monkeypatch, api_key):
+def test_api_key_mode_rejects_untrusted_host_names(client: TestClient, monkeypatch, api_key):
     monkeypatch.setattr(settings, "ALLOWED_HOSTS", [])
+    for path in ("/health", "/api/v1/metrics/overview", "/api/v1/alerts/rules"):
+        assert client.get(path, headers={"Host": "monitor.example.com"}).status_code == 403
+    monkeypatch.setattr(settings, "ALLOWED_HOSTS", ["monitor.example.com"])
     assert client.get("/health", headers={"Host": "monitor.example.com"}).status_code == 200
 
 

@@ -1,7 +1,9 @@
 """API key authentication."""
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from backend.app.core.config import settings
+from backend.app.core.config import Settings, settings
 
 TRACE = {"provider": "openai", "model_name": "gpt-4o", "prompt_tokens": 10, "completion_tokens": 5}
 
@@ -51,3 +53,22 @@ def test_alert_and_purge_endpoints_are_guarded(client: TestClient, api_key: str)
 def test_health_is_never_gated(client: TestClient, api_key: str, monkeypatch):
     monkeypatch.setattr(settings, "REQUIRE_AUTH_FOR_READS", True)
     assert client.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("header,value", [(b"x-api-key", b"\xff"), (b"authorization", b"Bearer \xff")])
+def test_non_ascii_credentials_are_unauthorized(client, api_key, header, value):
+    response = client.post("/api/v1/traces", json=TRACE, headers=[(header, value)])
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize("key", ["PRIVATE_비밀", "PRIVATE_\x00", "PRIVATE_\nsecret", "PRIVATE_ secret"])
+def test_invalid_configured_key_fails_without_echoing_it(key):
+    with pytest.raises(ValidationError) as error:
+        Settings(_env_file=None, API_KEY=key)
+    assert "PRIVATE_" not in str(error.value)
+
+
+@pytest.mark.parametrize("key,expected", [(None, None), ("  ", None), (" valid-key_123 ", "valid-key_123")])
+def test_configured_key_normalization(key, expected):
+    assert Settings(_env_file=None, API_KEY=key).API_KEY == expected

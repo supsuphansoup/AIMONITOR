@@ -158,14 +158,10 @@ async def reject_browser_attacks(request: Request, call_next):
     ):
         logger.warning("Rejected cross-origin %s %s", request.method, request.url.path)
         return JSONResponse(status_code=403, content={"detail": "Cross-origin request rejected."})
-    if not settings.auth_enabled:
-        host = _hostname(request.headers.get("host", ""))
-        if host not in LOCAL_HOSTNAMES and host not in settings.allowed_host_list:
-            logger.warning("Rejected %s %s for a non-local host name", request.method, request.url.path)
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "This server only answers localhost until API_KEY is set."},
-            )
+    host = _hostname(request.headers.get("host", ""))
+    if host not in LOCAL_HOSTNAMES and host not in settings.allowed_host_list:
+        logger.warning("Rejected %s %s for an untrusted host name", request.method, request.url.path)
+        return JSONResponse(status_code=403, content={"detail": "Untrusted Host header."})
     return await call_next(request)
 
 
