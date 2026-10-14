@@ -106,6 +106,11 @@ save_config(config)
 
 config 키는 메모리에서만 복호화하며 파일에는 `api_key_scheme`·`api_key_sealed`로 DPAPI 암호화하여 쓴다.
 인증 키는 화면이나 오류 문자열에 출력하지 않는다. 암호화 미지원 환경에서는 환경 변수를 사용한다.
+복호화 실패는 키 없음과 구별해 환경설정의 서버 인증 키 행에 고정 문구로 알리고 인증 헤더를 보내지 않는다.
+환율·위젯 등 무관한 설정 저장(`update_config`·`save_config`)은 기존 암호문을 그대로 보존한다.
+환경설정의 마스킹 입력으로 키를 교체하고 삭제 버튼으로 명시적으로 제거한다. 빈 입력 저장은 삭제하지 않는다.
+프로그램에서 삭제할 때는 `update_config({"api_key": None})` 또는
+`save_config(config, api_key_changed=True)`를 사용한다. 복호화가 회복되면 기존 키를 다시 사용한다.
 
 ### 테마
 

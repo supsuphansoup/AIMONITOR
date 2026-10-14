@@ -82,15 +82,21 @@ def load_config() -> Dict[str, Any]:
 
 def _load_config() -> Dict[str, Any]:
     config = _validated({})
+    config["api_key_unreadable"] = False
     try:
         if CONFIG_FILE.exists():
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 config = _validated(data)
+                config["api_key_unreadable"] = False
                 if data.get("api_key_sealed"):
                     from backend.app.services.secret_store import unseal
 
-                    config["api_key"] = unseal(data.get("api_key_scheme", ""), data["api_key_sealed"])
+                    try:
+                        config["api_key"] = unseal(data.get("api_key_scheme", ""), data["api_key_sealed"])
+                    except Exception:
+                        config["api_key"] = None
+                    config["api_key_unreadable"] = config["api_key"] is None
                 elif data.get("api_key"):
                     # Migrate a manually configured/legacy clear-text value.
                     save_config(config)
@@ -101,35 +107,48 @@ def _load_config() -> Dict[str, Any]:
     return config
 
 
-def save_config(config: Dict[str, Any]) -> None:
+def save_config(config: Dict[str, Any], *, api_key_changed: bool = False) -> None:
     """Atomically replace settings; failures propagate without exposing secret values."""
     with _config_lock:
-        _save_config(config)
+        _save_config(config, api_key_changed=api_key_changed)
 
 
 def update_config(changes: Union[Dict[str, Any], Callable[[Dict[str, Any]], None]]) -> Dict[str, Any]:
     """Apply only changed fields to the latest settings under the shared writer lock."""
     with _config_lock:
         config = _load_config()
+        previous_key = config.get("api_key")
         if callable(changes):
             changes(config)
+            api_key_changed = config.get("api_key") != previous_key
         else:
             config.update(changes)
+            api_key_changed = "api_key" in changes
         config = _validated(config)
-        _save_config(config)
-        return config
+        _save_config(config, api_key_changed=api_key_changed)
+        return _load_config()
 
 
-def _save_config(config: Dict[str, Any]) -> None:
+def _save_config(config: Dict[str, Any], *, api_key_changed: bool = False) -> None:
     from backend.app.services.secret_store import restrict_file, seal
 
     data = _validated(config)
     key = data.pop("api_key", None)
+    data.pop("api_key_unreadable", None)  # Runtime state, never a persisted preference.
+    data.pop("api_key_scheme", None)
+    data.pop("api_key_sealed", None)
     if key:
         data["api_key_scheme"], data["api_key_sealed"] = seal(key.strip())
-    else:
-        data.pop("api_key_scheme", None)
-        data.pop("api_key_sealed", None)
+    elif not api_key_changed and CONFIG_FILE.exists():
+        # A missing plaintext key may mean DPAPI cannot open it, not that the user deleted it.
+        try:
+            previous = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeError):
+            previous = {}
+        if isinstance(previous, dict):
+            for field in ("api_key_scheme", "api_key_sealed"):
+                if field in previous:
+                    data[field] = previous[field]
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -149,6 +168,8 @@ def _save_config(config: Dict[str, Any]) -> None:
 def backend_headers(config: Dict[str, Any] = None) -> Dict[str, str]:
     """Resolve the server key, independently from provider/OAuth credentials."""
     settings = load_config() if config is None else config
+    if settings.get("api_key_unreadable"):
+        return {}
     key = str(settings.get("api_key") or "").strip() or os.environ.get("AIMONITOR_API_KEY", "").strip()
     return {"X-API-Key": key} if key else {}
 

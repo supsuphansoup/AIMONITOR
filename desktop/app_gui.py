@@ -1251,6 +1251,26 @@ class DesktopMainWindow(ctk.CTk):
         ).pack(anchor="w")
         self._refresh_autostart_status()
 
+        server = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
+        server.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_2)
+        server_inner = ctk.CTkFrame(server, fg_color="transparent")
+        server_inner.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_3)
+        ctk.CTkLabel(server_inner, text="서버 인증 키 (공급자 API 키와 별개)",
+                     font=theme.font(theme.FONT_BODY), text_color=theme.ACCENT).pack(anchor="w")
+        server_row = ctk.CTkFrame(server_inner, fg_color="transparent")
+        server_row.pack(fill="x", pady=theme.SPACE_1)
+        self.entry_server_key = ctk.CTkEntry(server_row, show="*", width=300,
+                                            placeholder_text="새 서버 인증 키")
+        self.entry_server_key.pack(side="left", padx=(0, theme.SPACE_2))
+        ctk.CTkButton(server_row, text="저장", width=60, command=self._save_server_api_key).pack(side="left")
+        ctk.CTkButton(server_row, text="삭제", width=60,
+                     command=lambda: self._save_server_api_key(clear=True)).pack(
+                         side="left", padx=theme.SPACE_2)
+        self.lbl_server_key_status = ctk.CTkLabel(server_inner, text="", font=theme.font(theme.FONT_SM),
+                                                 text_color=theme.MUTED, wraplength=850, justify="left")
+        self.lbl_server_key_status.pack(anchor="w")
+        self._refresh_server_key_status()
+
         # 1. Exchange Rate Row (100% Automatic)
         r1 = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
         r1.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
@@ -1374,6 +1394,36 @@ class DesktopMainWindow(ctk.CTk):
         if self.tabview.get() == "환경설정":
             self._refresh_autostart_status()
             self._refresh_accounts_list()
+            self._refresh_server_key_status()
+
+    def _refresh_server_key_status(self) -> None:
+        self.config = load_config()
+        unreadable = self.config.get("api_key_unreadable", False)
+        self.lbl_server_key_status.configure(
+            text=("저장된 서버 인증 키를 이 Windows 계정에서 읽을 수 없습니다. 다시 입력하세요." if unreadable
+                  else "서버 인증 키 저장됨" if self.config.get("api_key")
+                  else "저장된 서버 인증 키 없음 · 환경 변수 AIMONITOR_API_KEY도 사용할 수 있습니다."),
+            text_color=theme.ERROR if unreadable else theme.MUTED,
+        )
+
+    def _save_server_api_key(self, clear: bool = False) -> None:
+        key = None if clear else self.entry_server_key.get().strip()
+        if not clear and not key:
+            self.lbl_status_msg.configure(
+                text="새 서버 인증 키를 입력하세요. 삭제하려면 삭제 버튼을 누르세요.",
+                text_color=theme.WARNING)
+            return
+        try:
+            self.config = update_config({"api_key": key})
+        except Exception:
+            self.lbl_status_msg.configure(text="서버 인증 키를 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
+        self.entry_server_key.delete(0, "end")
+        self._refresh_server_key_status()
+        self.lbl_status_msg.configure(
+            text="서버 인증 키를 삭제했습니다." if clear else "서버 인증 키를 저장했습니다.",
+            text_color=theme.SUCCESS)
+        self.refresh_data()
 
     def _refresh_autostart_status(self) -> None:
         try:
