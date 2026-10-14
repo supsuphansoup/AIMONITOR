@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -27,19 +28,21 @@ from backend.app.services.cost import SOURCE_UNKNOWN, calculate_cost_detail
 
 logger = logging.getLogger(__name__)
 
-# Starlette renamed its 422 constant between releases; the literal works on both.
-HTTP_422_UNPROCESSABLE = 422
-
 router = APIRouter(prefix="/traces", tags=["Traces"])
 
 
-def _utc_filter_time(value: datetime) -> Optional[datetime]:
+def _utc_filter_time(value: datetime, field: str) -> Optional[datetime]:
     try:
         return to_naive_utc(value)
     except (OverflowError, ValueError):
-        raise HTTPException(
-            status_code=HTTP_422_UNPROCESSABLE, detail="Timestamp outside supported UTC range",
-        ) from None
+        raise RequestValidationError([{"type": "datetime_parsing", "loc": ["query", field]}]) from None
+
+
+def _query_status(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in VALID_STATUSES:
+        raise RequestValidationError([{"type": "value_error", "loc": ["query", "status"]}])
+    return normalized
 
 
 def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
@@ -204,13 +207,7 @@ def list_traces(
     if model_name:
         filters.append(TraceEvent.model_name == model_name)
     if status_filter:
-        normalized = status_filter.strip().upper()
-        if normalized not in VALID_STATUSES:
-            raise HTTPException(
-                status_code=HTTP_422_UNPROCESSABLE,
-                detail=f"Invalid status filter. Must be one of: {sorted(VALID_STATUSES)}",
-            )
-        filters.append(TraceEvent.status == normalized)
+        filters.append(TraceEvent.status == _query_status(status_filter))
     if session_id:
         filters.append(TraceEvent.session_id == session_id)
     if account_id is not None:
@@ -218,9 +215,9 @@ def list_traces(
     if account_unknown:
         filters.append(col(TraceEvent.account_id).is_(None))
     if start_time:
-        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time, "start_time"))
     if end_time:
-        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time, "end_time"))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one()
     response.headers["X-Total-Count"] = str(total or 0)
@@ -288,17 +285,11 @@ def export_traces_csv(
     if model_name:
         filters.append(TraceEvent.model_name == model_name)
     if status_filter:
-        normalized = status_filter.strip().upper()
-        if normalized not in VALID_STATUSES:
-            raise HTTPException(
-                status_code=HTTP_422_UNPROCESSABLE,
-                detail=f"Invalid status filter. Must be one of: {sorted(VALID_STATUSES)}",
-            )
-        filters.append(TraceEvent.status == normalized)
+        filters.append(TraceEvent.status == _query_status(status_filter))
     if start_time:
-        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time, "start_time"))
     if end_time:
-        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time, "end_time"))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one() or 0
     query = (

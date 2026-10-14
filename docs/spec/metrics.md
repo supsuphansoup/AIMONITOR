@@ -23,9 +23,9 @@
 | timeseries | `provider`, `model_name`, `account_id` | 선택 |
 | breakdown | `hours_back`, `provider`, `account_id` | 24 (1–8760), 필터 선택 |
 
-`overview`·`timeseries`·`breakdown`은 `account_unknown=true`로 계정 미상(`account_id IS NULL`) 기록만 집계한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`의 동시 지정은 기존 `detail` 배열 형식의 HTTP 422이며 입력 원문은 반환하지 않는다.
+`overview`·`timeseries`·`breakdown`은 `account_unknown=true`로 계정 미상(`account_id IS NULL`) 기록만 집계한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`의 동시 지정은 HTTP 422이며 `detail` 배열에 `loc=["query", "account_unknown"]`·`type=value_error`·고정 `msg="Invalid field value"`만 반환한다.
 
-`overview`의 날짜 입력은 UTC로 정규화한다. 오프셋 변환 결과가 datetime 범위를 벗어나면 HTTP 422의 `detail` 배열로 응답하며 입력 원문·예외 문자열을 포함하지 않는다.
+`overview`의 날짜 입력은 UTC로 정규화한다. 오프셋 변환 결과가 datetime 범위를 벗어나면 HTTP 422의 `detail` 배열에 `loc=["query", 필드명]`·`type=datetime_parsing`·고정 `msg="Invalid field value"`만 반환한다. 일반 쿼리 검증과 같은 OpenAPI `HTTPValidationError` 형식이며 입력 원문·검증 문맥·예외 문자열을 포함하지 않는다.
 
 rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·끝 경계에 사용하며 `timestamp <= now`다. overview는 명시적 `start_time`이 있으면 hours_back을 무시하고, 명시적 `end_time`은 그대로 적용한다. hours_back도 start_time도 생략한 전체 기간 조회에는 암묵적 현재 상한을 붙이지 않는다. 모든 명시적 기간 경계는 포함한다.
 

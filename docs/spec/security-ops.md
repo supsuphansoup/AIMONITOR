@@ -25,7 +25,7 @@
 - 500 응답은 일반 메시지만 반환한다. 전역 오류·DB readiness 로그에는 예외 종류만 기록하며 예외 문자열·체인·SQL 매개변수는 기록하지 않는다(`hide_parameters=True`).
 - 스케줄러 작업·데스크톱 자동 실행 설정 실패도 예외 종류만 기록한다. 스케줄러의 `last_alert_error`는 작업 이름·예외 종류만 유지하며 다음 주기에 재시도한다. exe `--self-test` 실패는 고정 문구·예외 종류만 stderr에 남기고 종료 코드 1을 반환한다. 이 경로들에서 traceback·예외 문자열·원인 체인을 출력하지 않는다.
 - `httpx`·`httpcore` 로그는 WARNING 이상으로 제한한다. Uvicorn 접근 로그는 비활성화하고 쿼리 문자열 없이 앱의 요청 메타데이터 로그만 사용한다(Docker도 `--no-access-log`).
-- FastAPI `RequestValidationError`의 422 응답은 `detail` 배열의 `loc`·`type`과 고정 메시지 `Invalid field value`만 반환한다. 제출한 `input`·`ctx`·원래 오류 메시지를 직렬화하지 않아 원문 반사와 비유한 수/거대 정수의 오류 직렬화 실패를 막는다. 키 라우터는 기존 일반 `Invalid key request` 메시지를 유지한다.
+- FastAPI `RequestValidationError`의 422 응답은 `detail` 배열의 `loc`·`type`과 고정 메시지 `Invalid field value`만 반환한다. 조회·CSV의 UTC 날짜 범위 오류, `account_id`·`account_unknown=true` 충돌과 잘못된 상태 필터도 같은 처리기를 사용하며 `loc`에 query 필드명을 담는다. 제출한 `input`·`ctx`·원래 오류 메시지를 직렬화하지 않아 원문 반사와 비유한 수/거대 정수의 오류 직렬화 실패를 막는다. 조회 422는 OpenAPI `HTTPValidationError` 스키마를 따른다. 키 라우터는 예외로 기존 일반 문자열 `Invalid key request` 메시지를 유지한다.
 
 ### HTTP 계층 (`main.py`)
 
