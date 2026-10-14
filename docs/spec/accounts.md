@@ -51,6 +51,13 @@ Claude Code·Codex·Copilot·Antigravity의 로컬 로그를 읽어 트레이스
 Cursor에는 신뢰할 수 있는 호출별 사용량이 없어 트레이스를 만들지 않는다.
 트레이스는 `account_id`를 포함하며 200건씩 `POST /traces/batch`로 보낸다. 전송 실패 시 커서·중복 상태를 되돌린다.
 Claude 응답의 내용 블록 중복은 `ai_seen_claude.json`(최대 2만 키)으로 제거한다. 아직 개행이 없는 줄은 다음 주기에 읽는다.
+네 도구 모두 바이너리 바이트 커서로 완성된 개행까지만 읽는다. 손상된 완성 줄은 건수만 로그에 남기고 다음 줄을 계속 수집한다.
+Claude 응답 중복 키는 유효한 사용량 트레이스를 만든 뒤에만 등록한다.
+Antigravity는 로그의 `model`(또는 `model_name`)·`provider` 문자열만 사용하며 없으면 `unknown`으로 둔다.
+출력 토큰은 `content`·`thinking` 문자열 길이 ÷ 4의 합, 입력 토큰은 `input_text`·`prompt`·`input` 중
+첫 번째로 확인되는 문자열 길이 ÷ 4로 추정한다. 다른 JSON 필드·메타데이터·직렬화 바이트 수는 입력에 합치지 않는다.
+식별 가능한 입력 본문이 없으면 입력은 0, `metadata.input_tokens_estimate=unavailable`이다.
+입력 본문이 확인되면 `body_length`로 표시하며 모든 경우 `metadata.tokens=estimated`를 유지한다. 본문은 전송·저장하지 않는다.
 
 **파일 정체성.** Claude·Codex 파일은 `projects/`·`sessions/` 아래 상대경로를 정체성 키로 사용하여 다른 폴더의 복사본도 한 번만 읽는다.
 `(st_dev, st_ino)`가 같은 하드링크·정션 파일도 같은 그룹으로 묶으며, 파일 식별자가 0이면 물리적 동일성을 추측하지 않는다.
@@ -100,4 +107,5 @@ Copilot 월 합계는 UTC의 `월초 <= 기록 시각 <= 현재`만 포함한다
 ## Areas of concern
 
 - Claude 한도는 문서화되지 않은 엔드포인트에 의존한다. 응답 형식이 바뀌면 `확인 불가`로 떨어진다.
-- Antigravity 토큰은 본문 길이 ÷ 4 추정치다. 공식 단가가 없는 모델 이름은 비용 계산 불가로 남는다.
+- Antigravity 토큰은 확인 가능한 본문 길이 ÷ 4 추정치이며 입력을 식별할 수 없으면 입력 추정 불가다.
+  로그에 모델이 없거나 공식 단가가 없는 모델 이름은 비용 계산 불가로 남는다.

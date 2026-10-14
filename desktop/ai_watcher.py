@@ -25,6 +25,23 @@ from desktop.config import backend_headers
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
 
 
+def _count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("Invalid usage counter")
+    number = int(value)
+    if number < 0:
+        raise ValueError("Invalid usage counter")
+    return number
+
+
+def _decode_line(raw: bytes) -> tuple:
+    line = raw.decode("utf-8", errors="replace").strip()
+    obj = json.loads(line) if line else {}
+    if not isinstance(obj, dict):
+        raise ValueError("Invalid log object")
+    return line, obj
+
+
 def _iter_files(root: Path, suffix: str):
     """Yield (path, size) for files under root ending with suffix.
 
@@ -477,6 +494,7 @@ class UnifiedAIWatcher:
             if size == offset:
                 continue
 
+            invalid = 0
             try:
                 with open(fpath, "rb") as f:
                     f.seek(offset)
@@ -486,17 +504,20 @@ class UnifiedAIWatcher:
                             break
                         start = consumed
                         consumed += len(raw)
-                        line = raw.decode("utf-8", errors="replace").strip()
-                        if not line:
+                        try:
+                            line, obj = _decode_line(raw)
+                            tr = self._parse_claude_line(line, fpath, key, start)
+                            if tr:
+                                tr["account_id"] = self.accounts.account_at(directory, obj.get("timestamp"))
+                                traces.append(tr)
+                        except (ValueError, TypeError, AttributeError, OverflowError):
+                            invalid += 1
                             continue
-                        tr = self._parse_claude_line(line, fpath, key, start)
-                        if tr:
-                            timestamp = json.loads(line).get("timestamp")
-                            tr["account_id"] = self.accounts.account_at(directory, timestamp)
-                            traces.append(tr)
                     self._offsets[key] = consumed
-            except Exception:
-                pass
+            except OSError:
+                logger.debug("Failed to read Claude usage")
+            if invalid:
+                logger.warning("Skipped invalid Claude log lines: %s", invalid)
         return traces
 
     def _parse_claude_line(self, line: str, fpath: Path, identity_key: Optional[str] = None,
@@ -506,7 +527,7 @@ class UnifiedAIWatcher:
         except Exception:
             return None
 
-        if data.get("type") != "assistant":
+        if not isinstance(data, dict) or data.get("type") != "assistant":
             return None
 
         msg = data.get("message")
@@ -517,10 +538,10 @@ class UnifiedAIWatcher:
         if not isinstance(usage, dict):
             return None
 
-        in_tok = usage.get("input_tokens", 0)
-        out_tok = usage.get("output_tokens", 0)
-        c_write = usage.get("cache_creation_input_tokens", 0)
-        c_read = usage.get("cache_read_input_tokens", 0)
+        in_tok = _count(usage.get("input_tokens", 0))
+        out_tok = _count(usage.get("output_tokens", 0))
+        c_write = _count(usage.get("cache_creation_input_tokens", 0))
+        c_read = _count(usage.get("cache_read_input_tokens", 0))
 
         if (in_tok + out_tok + c_write + c_read) == 0:
             return None
@@ -530,23 +551,20 @@ class UnifiedAIWatcher:
         msg_id = msg.get("id")
         if msg_id:
             dedupe_key = f"{msg_id}:{data.get('requestId') or ''}"
-            if not self._mark_seen(dedupe_key):
-                return None
             trace_id = "cc-" + hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:32]
         else:
             # Responses with vendor IDs retain their existing content-based ID and
             # seen key. Without an ID, use the shared session identity and cursor.
             content_key = f"{identity_key}:{line_offset}" if identity_key else line
             trace_id = "cc-" + hashlib.sha256(content_key.encode("utf-8")).hexdigest()[:32]
-            if not self._mark_seen(trace_id):
-                return None
+            dedupe_key = trace_id
 
         # 로그에 적힌 모델 그대로. 모르면 지어내지 않고 unknown -> 가격 "계산 불가".
         model_name = msg.get("model") or "unknown"
         cache_creation = usage.get("cache_creation")
         c_write_1h = 0
         if isinstance(cache_creation, dict):
-            c_write_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
+            c_write_1h = _count(cache_creation.get("ephemeral_1h_input_tokens", 0))
 
         ts_str = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
         trace = {
@@ -566,6 +584,8 @@ class UnifiedAIWatcher:
         }
         if trace_id:
             trace["trace_id"] = trace_id
+        if not self._mark_seen(dedupe_key):
+            return None
         return trace
 
     def _scan_codex(self, directory: Path) -> List[Dict[str, Any]]:
@@ -583,42 +603,50 @@ class UnifiedAIWatcher:
                 model = "unknown"
                 with fpath.open("rb") as stream:
                     consumed = 0
+                    invalid = 0
                     for raw in stream:
                         if not raw.endswith(b"\n"):
                             break
                         start = consumed
                         consumed += len(raw)
                         try:
-                            obj = json.loads(raw)
-                        except ValueError:
-                            continue
-                        payload = obj.get("payload") or {}
-                        if obj.get("type") == "turn_context":
-                            model = payload.get("model") or "unknown"
-                        if start < offset or payload.get("type") != "token_count":
-                            continue
-                        info = payload.get("info") or {}
-                        usage = info.get("last_token_usage") or {}
-                        total = (info.get("total_token_usage") or {}).get("total_tokens")
-                        if total is not None:
-                            if self._offsets.get(total_key) == total:
+                            _, obj = _decode_line(raw)
+                            payload = obj.get("payload") or {}
+                            if not isinstance(payload, dict):
+                                raise ValueError("Invalid Codex payload")
+                            if obj.get("type") == "turn_context":
+                                model = payload.get("model") or "unknown"
+                            if start < offset or payload.get("type") != "token_count":
                                 continue
-                            self._offsets[total_key] = total
-                        incoming = int(usage.get("input_tokens") or 0)
-                        cached = min(incoming, int(usage.get("cached_input_tokens") or 0))
-                        outgoing = int(usage.get("output_tokens") or 0)
-                        if incoming + outgoing == 0:
+                            info = payload.get("info") or {}
+                            usage = info.get("last_token_usage") or {}
+                            total = (info.get("total_token_usage") or {}).get("total_tokens")
+                            if total is not None and self._offsets.get(total_key) == total:
+                                continue
+                            incoming = _count(usage.get("input_tokens", 0))
+                            cached = min(incoming, _count(usage.get("cached_input_tokens", 0)))
+                            outgoing = _count(usage.get("output_tokens", 0))
+                            if incoming + outgoing == 0:
+                                continue
+                            traces.append({
+                                "account_id": self.accounts.account_at(directory, obj.get("timestamp")),
+                                "timestamp": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                                "trace_id": "cx-" + hashlib.sha256(
+                                    f"{key}:{start}".encode()
+                                ).hexdigest()[:32],
+                                "session_id": fpath.stem, "provider": "openai", "model_name": model,
+                                "prompt_tokens": incoming - cached, "cache_read_tokens": cached,
+                                "completion_tokens": outgoing, "status": "SUCCESS", "tags": ["codex", "cli"],
+                                "metadata": {"source": "codex-watcher"},
+                            })
+                            if total is not None:
+                                self._offsets[total_key] = total
+                        except (ValueError, TypeError, AttributeError, OverflowError):
+                            invalid += 1
                             continue
-                        traces.append({
-                            "account_id": self.accounts.account_at(directory, obj.get("timestamp")),
-                            "timestamp": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
-                            "trace_id": "cx-" + hashlib.sha256(f"{key}:{start}".encode()).hexdigest()[:32],
-                            "session_id": fpath.stem, "provider": "openai", "model_name": model,
-                            "prompt_tokens": incoming - cached, "cache_read_tokens": cached,
-                            "completion_tokens": outgoing, "status": "SUCCESS", "tags": ["codex", "cli"],
-                            "metadata": {"source": "codex-watcher"},
-                        })
                     self._offsets[key] = consumed
+                    if invalid:
+                        logger.warning("Skipped invalid Codex log lines: %s", invalid)
             except (OSError, ValueError, TypeError, AttributeError):
                 logger.debug("Failed to read Codex usage")
         return traces
@@ -662,29 +690,30 @@ class UnifiedAIWatcher:
                 continue
 
             try:
-                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                with open(fpath, "rb") as f:
                     f.seek(offset)
                     line_start = offset
-                    while True:
-                        line = f.readline()
-                        if not line:
+                    invalid = 0
+                    for raw in f:
+                        if not raw.endswith(b"\n"):
                             break
-                        line_end = f.tell()
-                        line_clean = line.strip()
-                        if not line_clean:
-                            line_start = line_end
-                            continue
-                        tr = self._parse_antigravity_line(
-                            line_clean, fpath, prev_offset=line_start, curr_offset=line_end
-                        )
-                        if tr:
-                            timestamp = json.loads(line_clean).get("created_at")
-                            tr["account_id"] = self.accounts.account_at(directory, timestamp)
-                            traces.append(tr)
+                        line_end = line_start + len(raw)
+                        try:
+                            line, obj = _decode_line(raw)
+                            tr = self._parse_antigravity_line(
+                                line, fpath, prev_offset=line_start, curr_offset=line_end
+                            )
+                            if tr:
+                                tr["account_id"] = self.accounts.account_at(directory, obj.get("created_at"))
+                                traces.append(tr)
+                        except (ValueError, TypeError, AttributeError, OverflowError):
+                            invalid += 1
                         line_start = line_end
-                    self._offsets[key] = f.tell()
+                    self._offsets[key] = line_start
+                    if invalid:
+                        logger.warning("Skipped invalid Antigravity log lines: %s", invalid)
             except Exception as e:
-                logger.debug("Error reading transcript %s: %s", fpath, type(e).__name__)
+                logger.debug("Error reading Antigravity transcript: %s", type(e).__name__)
         return traces
 
     def _parse_antigravity_line(
@@ -695,25 +724,21 @@ class UnifiedAIWatcher:
         except Exception:
             return None
 
-        if obj.get("source") != "MODEL" or obj.get("type") != "PLANNER_RESPONSE":
+        if (not isinstance(obj, dict) or obj.get("source") != "MODEL"
+                or obj.get("type") != "PLANNER_RESPONSE"):
             return None
 
         content = obj.get("content", "")
         thinking = obj.get("thinking", "")
-        tool_calls = obj.get("tool_calls", [])
 
         # Model output tokens estimate
-        comp_tokens = max(10, (len(content) + len(thinking)) // 4)
-
-        # In Google Antigravity (Gemini 3.1 Pro):
-        # Record actual incremental turn tokens for the trace event.
-        # Context size is tracked separately from Antigravity's gen_metadata DB.
-        if curr_offset > 0:
-            turn_bytes = max(100, curr_offset - prev_offset)
-            turn_tokens = max(50, turn_bytes // 4)
-            prompt_tokens = turn_tokens
-        else:
-            prompt_tokens = max(50, (len(str(tool_calls)) + 400) // 4)
+        comp_tokens = (len(content) if isinstance(content, str) else 0) // 4
+        comp_tokens += (len(thinking) if isinstance(thinking, str) else 0) // 4
+        input_body = next((obj[field] for field in ("input_text", "prompt", "input")
+                           if isinstance(obj.get(field), str)), None)
+        prompt_tokens = len(input_body) // 4 if input_body is not None else 0
+        model = obj.get("model") or obj.get("model_name")
+        provider = obj.get("provider")
 
         conv_id = fpath.parents[2].name if len(fpath.parents) > 2 else "session"
         ts = obj.get("created_at") or datetime.now(timezone.utc).isoformat()
@@ -723,8 +748,8 @@ class UnifiedAIWatcher:
             "account_id": None,
             "timestamp": ts,
             "session_id": conv_id,
-            "provider": "gemini",
-            "model_name": "gemini-3.1-pro",
+            "provider": provider if isinstance(provider, str) and 0 < len(provider) <= 64 else "unknown",
+            "model_name": model if isinstance(model, str) and 0 < len(model) <= 200 else "unknown",
             "prompt_tokens": prompt_tokens,
             "completion_tokens": comp_tokens,
             "cache_read_tokens": 0,
@@ -732,7 +757,8 @@ class UnifiedAIWatcher:
             "status": status,
             "tags": ["antigravity", "ide", "estimated-tokens"],
             # 로그에 토큰 수가 없어 글자 수로 추정한 값이다.
-            "metadata": {"source": "antigravity-watcher", "tokens": "estimated"},
+            "metadata": {"source": "antigravity-watcher", "tokens": "estimated",
+                         "input_tokens_estimate": "body_length" if input_body is not None else "unavailable"},
         }
 
     # 3. GitHub Copilot Scanner (~/.copilot/session-state/**/events.jsonl)
@@ -761,21 +787,27 @@ class UnifiedAIWatcher:
                 with open(fpath, "rb") as f:
                     f.seek(last_offset)
                     consumed = last_offset
+                    invalid = 0
                     for raw in f:
                         # A line still being written has no newline yet; read it next time.
                         if not raw.endswith(b"\n"):
                             break
                         consumed += len(raw)
-                        line = raw.decode("utf-8", errors="replace").strip()
-                        if line:
+                        try:
+                            line, obj = _decode_line(raw)
                             parsed = self._parse_copilot_line(line, fpath)
-                            timestamp = json.loads(line).get("timestamp")
                             for trace in parsed:
-                                trace["account_id"] = self.accounts.account_at(directory, timestamp)
+                                trace["account_id"] = self.accounts.account_at(
+                                    directory, obj.get("timestamp")
+                                )
                             traces.extend(parsed)
+                        except (ValueError, TypeError, AttributeError, OverflowError):
+                            invalid += 1
                     self._offsets[key] = consumed
+                    if invalid:
+                        logger.warning("Skipped invalid Copilot log lines: %s", invalid)
             except Exception as e:
-                logger.debug("Error reading Copilot file %s: %s", fpath, type(e).__name__)
+                logger.debug("Error reading Copilot file: %s", type(e).__name__)
 
         return traces
 
