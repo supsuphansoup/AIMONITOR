@@ -228,7 +228,7 @@ class UnifiedAIWatcher:
             if meta.get("prefix_len", 0) > 4096 or meta.get("anchor_len", 0) > 64:
                 continue
             if any(not isinstance(meta.get(field, ""), str) for field in (
-                "prefix_hash", "anchor_hash", "path_hash", "model",
+                "prefix_hash", "first_hash", "anchor_hash", "path_hash", "event_generation", "model",
             )):
                 continue
             file_id = meta.get("file_id", [])
@@ -251,12 +251,17 @@ class UnifiedAIWatcher:
         stream.seek(0)
         first = stream.readline(4096)
         first_hash = hashlib.sha256(first).hexdigest()
-        prefix_len = previous.get("prefix_len", len(first))
+        prefix_len = previous.get("prefix_len", min(size, 4096))
         stream.seek(0)
-        prefix_hash = hashlib.sha256(stream.read(prefix_len)).hexdigest()
+        prefix = stream.read(prefix_len)
+        prefix_hash = hashlib.sha256(prefix).hexdigest()
         same_source = previous.get("path_hash") == path_hash or (
             bool(file_id) and previous.get("file_id") == file_id
         )
+        if (previous.get("generation") and not same_source and size < offset
+                and previous.get("first_hash", previous.get("prefix_hash")) == first_hash):
+            # An older, shorter mirror cannot replace the cursor's physical source.
+            return offset, size
         replaced = bool(previous.get("generation")) and (
             (previous.get("path_hash") == path_hash and (
                 previous.get("file_id", []) != file_id or previous.get("created_ns", 0) != created
@@ -280,8 +285,15 @@ class UnifiedAIWatcher:
         meta = dict(previous, generation=generation, file_id=file_id, created_ns=created,
                     path_hash=path_hash, size=size)
         meta.pop("missing_since", None)
-        if not previous.get("generation"):
-            meta.update(prefix_len=len(first), prefix_hash=first_hash)
+        target_len = min(size, 4096)
+        if len(prefix) != target_len:
+            stream.seek(0)
+            prefix = stream.read(target_len)
+        meta.update(prefix_len=len(prefix), prefix_hash=hashlib.sha256(prefix).hexdigest(),
+                    first_hash=first_hash)
+        # Delivery identity must be reproducible after a missing cursor is expired.
+        event_seed = f"{key}:{file_id}:{created}" if file_id or created else f"{key}:{first_hash}"
+        meta["event_generation"] = hashlib.sha256(event_seed.encode()).hexdigest()
         self._cursors[key] = meta
         self._offsets[key] = offset
         return offset, size
@@ -299,7 +311,11 @@ class UnifiedAIWatcher:
 
     def _event_key(self, prefix: str, identity: Optional[str], offset: int, line: str,
                    model: str = "") -> str:
-        generation = self._cursors.get(identity, {}).get("generation", identity or "")
+        # Logical Claude/Codex sessions survive physical copies. Other logs use
+        # stable physical generation data, rather than the retained cursor history.
+        generation = (identity or "") if prefix in ("cc", "cx") else self._cursors.get(identity, {}).get(
+            "event_generation", identity or "",
+        )
         digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
         seed = f"{generation}:{offset}:{digest}:{model}"
         return prefix + "-" + hashlib.sha256(seed.encode()).hexdigest()[:32]

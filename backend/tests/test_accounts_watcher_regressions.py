@@ -342,6 +342,23 @@ def test_acc03_in_place_rewrite_with_same_context_does_not_reuse_old_cursor(tmp_
     assert sent[0]["dedupe_key"] != sent[1]["dedupe_key"]
 
 
+def test_acc03_same_size_rewrite_with_unchanged_first_and_last_lines(tmp_path, monkeypatch):
+    path = log_path(tmp_path, "codex")
+    context = {"type": "turn_context", "payload": {"model": "gpt-5"}}
+    padding = {"type": "padding", "value": "x" * 1000}
+    append(path, [context, event("codex"), padding])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    before = path.stat().st_size
+    replacement = event("codex")
+    replacement["payload"]["info"]["total_token_usage"]["total_tokens"] = 31
+    path.write_bytes(b"")
+    append(path, [context, replacement, padding])
+    assert path.stat().st_size == before
+    assert instance.scan_all() == 1
+    assert sent[0]["dedupe_key"] != sent[1]["dedupe_key"]
+
+
 def test_acc08_codex_reads_only_new_bytes_and_persists_model(tmp_path, monkeypatch):
     path = log_path(tmp_path, "codex")
     append(path, [{"type": "turn_context", "payload": {"model": "gpt-5"}},
@@ -415,3 +432,36 @@ def test_acc18_missing_offsets_are_pruned_after_30_days(tmp_path, monkeypatch):
     restarted, sent = watcher(tmp_path, monkeypatch)
     assert restarted.scan_all() == 1
     assert sent[0]["dedupe_key"]
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", "copilot", "antigravity"])
+def test_acc18_restored_file_keeps_delivery_key_after_cursor_expiry(tmp_path, monkeypatch, tool):
+    clock = [NOW.timestamp()]
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    path = log_path(tmp_path, tool)
+    first = event(tool)
+    if tool == "claude":
+        first["message"].pop("id")
+    if tool == "copilot":
+        first.pop("id")
+    append(path, [first])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    path.unlink()
+    second = copy.deepcopy(first)
+    timestamp = datetime.fromtimestamp(clock[0] + 1, tz=timezone.utc).isoformat()
+    second["created_at" if tool == "antigravity" else "timestamp"] = timestamp
+    append(path, [second])
+    assert instance.scan_all() == 1
+    previous_key = sent[-1]["dedupe_key"]
+    held = tmp_path / "held-log.jsonl"
+    path.rename(held)
+    instance.scan_all()
+    clock[0] += 31 * 86400
+    instance.scan_all()
+    assert not instance._offsets
+    # Claude's separate bounded seen cache may also have expired this event.
+    instance._seen_claude.clear()
+    held.rename(path)
+    assert instance.scan_all() == 1
+    assert sent[-1]["dedupe_key"] == previous_key
