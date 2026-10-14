@@ -59,6 +59,7 @@
 | `REQUIRE_AUTH_FOR_READS` | `false` | `true`면 조회에도 키 필요 |
 | `CORS_ORIGINS` | `http://localhost:8000`, `http://127.0.0.1:8000` | 이 밖의 브라우저 출처에서 온 쓰기는 403. `*`이면 credentials 비활성화 |
 | `ALLOWED_HOSTS` | *(없음)* | API 키 유무와 무관하게 추가 허용할 Host 이름 (신뢰하는 네트워크) |
+| `ALERT_ALLOW_PRIVATE_WEBHOOKS` | `false` | 기본은 공개 유니캐스트 Webhook 대상만 허용하고 userinfo를 거부한다. `true`면 사설·루프백·링크 로컬·예약·멀티캐스트 주소와 userinfo를 허용한다. 저장·발송 전에 검사하고 리디렉션은 따르지 않는다. DNS 검사와 실제 연결 사이의 rebinding 경쟁은 남는다 ([alerts.md](alerts.md)) |
 | `RETENTION_DAYS` | `0` (무제한) | 설정 시 오래된 기록을 주기적으로 삭제 |
 
 전체 목록과 설명은 `.env.example`이 정본이다.

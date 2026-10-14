@@ -1,6 +1,7 @@
 # Release baseline: Windows Python 3.11.9, full tests and packaged exe smoke
 # verified on 2026-10-14. Install with -c constraints.txt and the requirements.
 # pip/setuptools are runner tooling; unrelated analysis packages are excluded.
+# Desktop and build pins need Python 3.11+; backend pins also cover 3.10 below.
 altgraph==0.17.5
 annotated-doc==0.0.5
 annotated-types==0.8.0

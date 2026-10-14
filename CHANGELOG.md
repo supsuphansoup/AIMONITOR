@@ -7,25 +7,50 @@
 **동작 변경 (BREAKING)**
 - 웹 대시보드 제거. UI는 Windows 데스크톱 앱(메인 창·트레이·위젯)만 제공한다. `GET /`는 JSON 404이며 `/api/v1/**`·`/health`·SDK·CSV는 유지한다.
 - `AIMONITOR.bat`·`AIMONITOR.vbs` 실행기 제거. exe 또는 `pythonw run_desktop.pyw`를 사용한다. 쓰지 않던 `desktop/claude_watcher.py`·`antigravity_syncer.py`·`claude_statusline_hook.py`·`window.py`도 제거.
-- `API_KEY`가 없으면 `localhost`·`127.0.0.1`·`[::1]`로 들어온 요청에만 응답한다. 다른 호스트 이름(예: Docker 네트워크의 서비스 이름)으로 쓰던 곳은 `API_KEY`를 설정하거나 `ALLOWED_HOSTS`에 이름을 추가해야 한다.
+- API 키 설정과 관계없이 Host가 `localhost`·`127.0.0.1`·`[::1]`·`ALLOWED_HOSTS`인 요청에만 응답한다. 다른 호스트 이름(예: Docker 네트워크의 서비스 이름)으로 쓰던 곳은 `ALLOWED_HOSTS`에 이름을 추가해야 한다. 외부에 공개하려면 `API_KEY`, `REQUIRE_AUTH_FOR_READS=true`, 좁힌 `ALLOWED_HOSTS`·`CORS_ORIGINS`가 모두 필요하다.
+- 입력 검증 오류(422)의 `detail` 항목은 `loc`·`type`과 고정 `msg: "Invalid field value"`만 담는다. 제출한 값과 검증 문맥은 돌려주지 않는다. 메시지 문구를 해석하던 클라이언트는 `loc`·`type`을 쓴다.
+- `GET /keys/spend?force=true`는 400이다. 강제 갱신은 `POST /keys/spend/refresh`(쓰기 인증, 60초에 한 번, 넘으면 429)로 한다.
+- 알림 규칙 응답의 `webhook_url`은 `scheme://host/…`로 가리고 `webhook_configured`를 함께 준다. 가린 값을 PATCH에 넣으면 422이며, URL을 유지하려면 필드를 생략한다. 사설·루프백 등 비공개 주소와 `user:pass@`가 든 Webhook은 거부한다(`ALERT_ALLOW_PRIVATE_WEBHOOKS=true`로 허용).
+- 지연 표본이 상한에 걸린 창에서는 P50·P95·P99 알림 규칙을 평가하지 않는다. `POST /alerts/evaluate?include_skipped=true`는 `{histories, skipped_rules}`로 건너뛴 사유를 준다(기본 응답은 배열 그대로).
+- 수집: `cost_usd`·`latency_ms`의 NaN·±Infinity·`1e309`와 10억을 넘는 토큰 수, 지원 범위 밖 시각은 422다.
+- SDK `observe`가 자동으로 남기는 오류는 예외 메시지 대신 예외 클래스 이름이다. `latency_ms`를 생략하면 미측정(null)으로 기록한다.
+- CSV 내보내기는 UTF-8 BOM으로 시작한다(Excel 한글 인식). 프로그램으로 읽을 때는 `utf-8-sig`로 디코딩한다.
+- 단가: Gemini 3.5 Flash·3.7 Flash는 공식 청구 단가를 확인할 수 없어 `계산 불가`가 된다.
 
 **보안**
 - 웹페이지가 브라우저를 통해 로컬 API를 조작하지 못하게 했다. `CORS_ORIGINS` 밖의 `Origin`을 가진 쓰기 요청(예: `POST /system/purge`)은 403이고, 개방 모드의 비로컬 Host(DNS rebinding)도 403이다.
 - Antigravity·Copilot·VS Code 데이터베이스를 읽기 전용으로 연다.
 - Claude 사용량 조회가 Claude Code를 흉내 내던 User-Agent(`claude-code/…`) 대신 `AIMONITOR/<버전>`으로 자신을 밝힌다.
+- Webhook 대상을 저장·발송 전에 검사하고, 리디렉션과 환경 변수 프록시를 쓰지 않으며, 요청 전체를 5초에 끊는다.
+- 길이를 밝히지 않은(chunked) 요청에도 8 MiB 본문 상한을 적용한다.
+- 오류·DB·HTTP 클라이언트 로그에 예외 문구·SQL 매개변수·요청 URL을 남기지 않고, Uvicorn 접근 로그를 끈다. 수집 메타데이터는 중첩 리스트까지 정제하고 깊이·원소 수를 제한한다.
+- 공급자 키 파일을 원자적으로 저장하고 데스크톱·서버 사이에 잠금을 건다. 검증은 지정한 키에만 보낸다.
+- CI·Docker·릴리스가 `constraints.txt`로 의존성을 고정하고, Actions를 커밋 SHA로 고정한다. 빌드는 읽기 권한만 쓰고 태그 게시만 쓰기 권한을 가지며, 태그 버전과 산출물 SHA256을 검사한다. Docker 빌드 문맥에서 `.env.*`·SQLite 부속 파일을 뺀다.
 
 **추가**
 - Windows exe(`AIMONITOR.exe`, PyInstaller 단일 폴더). Python 설치 없이 실행하며 데이터는 `~/.aimonitor`에 둔다. `v*` 태그에서 빌드·smoke test 후 초안 릴리스에 첨부.
 - 계정별 사용량: Claude·Codex 설정 폴더(기본, `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, `~/.claude-*`·`~/.codex-*`, 수동 추가)를 모두 수집하고 계정별로 나눈다. 트레이스에 `account_id`(SDK 포함), 조회·CSV·집계에 계정 필터.
 - 공급자별 API 키 여러 개(라벨·키별 청구액), 기존 단일 키는 "기본"으로 이관.
 - 설정의 Windows 시작 시 자동 실행 토글.
+- 수집 `dedupe_key`(선택): 같은 키는 한 번만 저장하고 중복에도 201과 기존 행을 돌려준다. 데스크톱 수집기는 안정적인 키를 보내 재시도 중복을 막는다.
+- `POST /keys/{provider}/{key_id}/verify`와 메인 창의 키별 `검증` 버튼. 키 상태에 `storage_error`·`unreadable`·`invalid`·`verification_unavailable`을 구별한다.
+- 시계열 버킷별 `cost_unknown_count`. `GET /system/pricing`에 1시간 캐시 쓰기·장문 구간·시행 기간.
+- exe 배포 폴더에 `THIRD_PARTY_NOTICES.txt`·`licenses/`(번들 구성요소의 라이선스 원문과 고지).
 - `LICENSE`(MIT). CI에 Windows 데스크톱 job — GUI·DPAPI 테스트가 CI에서 실행된다.
 
 **수정**
 - SQLModel 0.0.48 이상에서 서버가 모든 기록 저장에 실패하던 문제. 새 버전은 `datetime` 컬럼을 시간대 필수 형식으로 만들어 naive UTC 값을 거부한다. 시각 컬럼을 `DateTime`으로 명시해 버전과 관계없이 기존 저장 방식을 유지한다.
 - Linux에서 단일 인스턴스 포트가 해제되지 않던 문제.
+- 비용: 공식 캐시 단가와 과거 모델 매칭을 바로잡고, 확인된 장문 구간과 Gemini 3.6·3.8 Flash 프로모션 종료(2027-01-01 00:00 UTC)를 반영했다. 비용은 기록 시각에 유효한 단가로 계산하며, 비유한 결과는 `계산 불가`로 둔다.
+- 집계: 동시 수집 중에도 KPI가 한 시점의 값으로 계산되고, 시계열 `partial`이 실제로 잘린 버킷에만 붙는다. rolling 창의 미래 행 제외, DST 경계·날짜 범위 검증, 도구·계정 집계의 쿼리 수 감소.
+- 알림: 쿨다운 선점과 발송 대기 이력을 한 트랜잭션으로 저장해 다중 워커 중복과 유실을 막고, 결과 저장이 실패해도 대기 이력을 남긴다. 집계 직후의 SQLite 잠금 오류, 일시정지 경합, 입력 null·비유한 임계값, Discord URL 판별, 스케줄러 종료를 고쳤다.
+- 수집: 응답 검증을 커밋 전에 끝내 저장 뒤 오류로 재전송되던 경계를 없앴다. 단건 조회에서 같은 시각의 행은 최신 id를 고른다.
+- SDK: `flush`가 전송 중인 기록까지 기다리고 결과(bool)와 `pending_count`·`dropped_count`를 준다. `close`·`a_close`는 남은 기록을 보내고 종료한다. 잘못된 usage extractor가 사용자 함수의 결과·예외를 바꾸지 않는다.
+- 키: 공식 청구값을 검증하고, UTC 달이 바뀌면 월간 캐시를 다시 조회한다.
+- 데스크톱: 설정을 원자적으로 저장하고 잘못된 값은 그 항목만 복구한다. 위젯에 기준 시각·오래됨·추정을 표시하고, 연결이 끊기면 이전 값임을 알린다. 단가 미상 모델을 0원으로 그리지 않는다. 백엔드 자식 프로세스 종료 경합, 다른 프로그램의 포트 점유 구별, 모니터 작업 영역 밖 위젯 복구, 폴링 중복, 환율 신선도(7일·미래 1일) 검사, exe 로그 크기 제한을 고쳤다.
+- 운영: 보관 기간을 날짜 계산 가능 범위로 검증하고, SQLite 스키마 업그레이드를 프로세스 사이에 직렬화하며 실패하면 되돌린다. 테스트가 사용자 DB를 열지 않는다.
 
-**업그레이드**: `trace_events.account_id` 컬럼과 `(account_id, timestamp)` 인덱스는 시작 시 자동 추가된다. 과거 행은 `account_id=null`(계정 미상). exe는 소스 실행과 다른 DB(`~/.aimonitor/aimonitor.db`)를 쓴다.
+**업그레이드**: `trace_events.account_id` 컬럼과 `(account_id, timestamp)` 인덱스, `dedupe_key` 컬럼과 유일 부분 인덱스는 시작 시 자동 추가된다. 과거 행은 `account_id=null`(계정 미상). 이전 DB에 남은 무한대 비용·지연은 `cost_source='unknown'`·`latency_measured=false`로 정리하며 유한 값은 그대로 둔다. 과거 행의 비용은 재계산하지 않는다. exe는 소스 실행과 다른 DB(`~/.aimonitor/aimonitor.db`)를 쓴다.
 
 ## v0.5.0 — 2026-10-06 · 알림·내보내기·집계 정합성, 단가표 갱신
 

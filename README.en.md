@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Remaining limits and usage for Claude Code, Codex and Copilot — at a glance, in the Windows tray.</b><br>
-  Split per account. Prompts are never stored.
+  Split per account. Prompt and response text is never collected.
 </p>
 
 <p align="center">
@@ -29,7 +29,8 @@
 - **Always-on-top widget** — remaining limit (%) and reset time per tool, plus today's usage and cost, in a corner of the screen. Hide or show it from the tray.
 - **Per-account split** — reads every Claude and Codex config folder and shows each account separately.
 - **Honest numbers** — no official value means "unavailable" or "cannot calculate", never a made-up number. Estimates are labelled as estimates.
-- **Main window** — logs and charts (by account and model), provider API keys with spend and balance, Slack/Discord alerts, CSV export.
+- **Main window** — per-account limits and usage, logs and charts (by account and model), provider API keys with official spend and balance, display and startup settings.
+- **Alerts and CSV through the API** — Slack/Discord alert rules and CSV export are used through the local HTTP API; the main window has no settings screen for them yet ([alerts spec](docs/spec/alerts.md), Korean).
 - **Your own app's LLM calls too** — log OpenAI, Anthropic, Gemini and Ollama calls through the Python SDK or the HTTP API onto the same screen.
 - **Start with Windows**.
 
@@ -80,7 +81,7 @@ def call_gpt(prompt: str):
     return openai_client.chat.completions.create(...)
 ```
 
-Latency, tokens and cost show up in the app. Async, batching and cache tokens are in the [SDK docs](sdk/python/README.md); running the API server alone with Docker is in the [operations spec](docs/spec/security-ops.md) (Korean); the full API is at `/api/v1/docs` on a running server.
+Latency, tokens and cost show up in the app. The SDK reads only the token counts of a response, and automatic error records keep only the exception type. Async, batching and cache tokens are in the [SDK docs](sdk/python/README.md); running the API server alone with Docker is in the [operations spec](docs/spec/security-ops.md) (Korean); the full API is at `/api/v1/docs` on a running server.
 
 ## Docs
 
@@ -95,4 +96,4 @@ Latency, tokens and cost show up in the app. Async, batching and cache tokens ar
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Third-party components bundled in the Windows release keep their own licenses; their texts and notices are in `THIRD_PARTY_NOTICES.txt` and `licenses/` in the release folder.

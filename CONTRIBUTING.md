@@ -11,7 +11,11 @@ ruff check .            # 린트, 줄 길이 110
 pythonw run_desktop.pyw # 앱 실행 (Windows)
 ```
 
-exe 빌드: `pip install -r build-windows/requirements.txt` 후 `pyinstaller build-windows/aimonitor.spec --noconfirm` → `dist/AIMONITOR/`.
+CI·Docker·릴리스는 루트 `constraints.txt`로 버전을 고정합니다. 같은 환경을 재현하려면 설치 명령에 `-c constraints.txt`를 붙입니다 (Windows 배포 기준 Python 3.11, 백엔드는 3.10도 조건부 버전으로 지원).
+
+exe 빌드: `pip install -c constraints.txt -r build-windows/requirements.txt` 후 `pyinstaller build-windows/aimonitor.spec --noconfirm` → `dist/AIMONITOR/`.
+빌드는 `dist/AIMONITOR/` 최상위에 `LICENSE`·`THIRD_PARTY_NOTICES.txt`·`licenses/`를 만들고, 필수 라이선스 원문이 없으면 실패합니다.
+배포 전에는 새 PC에서 GUI·트레이·종료·다중 모니터/DPI를 직접 확인합니다.
 GUI·DPAPI 테스트는 Windows에서만 돌고, 다른 OS에서는 건너뜁니다. CI는 Linux(3.10–3.12)와 Windows에서 모두 실행합니다.
 
 ## 문서 순서

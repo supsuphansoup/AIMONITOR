@@ -14,7 +14,7 @@ ruff check .                                      # 파이썬 린트
 pythonw run_desktop.pyw                            # 데스크톱 앱 (사람이 직접 실행)
 python -m uvicorn backend.app.main:app --port 8000 --reload   # 개발 서버 (사람이 직접 실행)
 python scripts/simulate.py --batches 20 --spread-hours 6      # 데모 트래픽
-pip install -r build-windows/requirements.txt && pyinstaller build-windows/aimonitor.spec --noconfirm  # Windows exe → dist/AIMONITOR/
+pip install -c constraints.txt -r build-windows/requirements.txt && pyinstaller build-windows/aimonitor.spec --noconfirm  # Windows exe → dist/AIMONITOR/
 ```
 
 ## Conventions

@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Claude Code · Codex · Copilot의 남은 한도와 사용량을 Windows 트레이에서 한눈에.</b><br>
-  계정 여러 개도 나눠서. 프롬프트는 어디에도 남기지 않고.
+  계정 여러 개도 나눠서. 프롬프트·응답 본문은 모으지 않고.
 </p>
 
 <p align="center">
@@ -27,7 +27,8 @@
 - **항상 위 위젯** — 도구별 남은 한도(%)와 리셋 시각, 오늘 사용량·비용을 화면 구석에. 트레이에서 숨기기·열기.
 - **계정별 분리** — 여러 Claude·Codex 설정 폴더를 모두 읽고 계정마다 나눠 보여줍니다.
 - **정직한 숫자** — 공식 값이 없으면 지어내지 않고 `확인 불가`·`계산 불가`. 추정치는 추정이라고 표시합니다.
-- **메인 창** — 기록·차트(계정·모델별), 공급자 API 키와 청구액·잔액, Slack/Discord 알림, CSV 내보내기.
+- **메인 창** — 계정별 한도·사용량, 기록·차트(계정·모델별), 공급자 API 키와 공식 청구액·잔액, 표시·자동 실행 설정.
+- **알림·CSV는 API로** — Slack/Discord 알림 규칙과 CSV 내보내기는 로컬 HTTP API로 씁니다. 메인 창에는 아직 설정 화면이 없습니다 ([알림 명세](docs/spec/alerts.md)).
 - **내 앱의 LLM 호출도 함께** — Python SDK나 HTTP API로 OpenAI·Anthropic·Gemini·Ollama 호출을 같은 화면에서.
 - **Windows 시작 시 자동 실행**.
 
@@ -78,7 +79,7 @@ def call_gpt(prompt: str):
     return openai_client.chat.completions.create(...)
 ```
 
-지연·토큰·비용이 앱 화면에 함께 쌓입니다. 비동기·배치 전송·캐시 토큰은 [SDK 문서](sdk/python/README.md), 데스크톱 없이 서버만 띄우는 방법(Docker)은 [운영 명세](docs/spec/security-ops.md), API 전체는 실행 중인 서버의 `/api/v1/docs`.
+지연·토큰·비용이 앱 화면에 함께 쌓입니다. SDK는 응답의 토큰 수만 읽고, 자동 오류 기록에는 예외 종류만 남깁니다. 비동기·배치 전송·캐시 토큰은 [SDK 문서](sdk/python/README.md), 데스크톱 없이 서버만 띄우는 방법(Docker)은 [운영 명세](docs/spec/security-ops.md), API 전체는 실행 중인 서버의 `/api/v1/docs`.
 
 ## 문서
 
@@ -93,4 +94,4 @@ def call_gpt(prompt: str):
 
 ## 라이선스
 
-[MIT](LICENSE)
+[MIT](LICENSE). Windows 배포본에 함께 들어 있는 서드파티 구성요소는 각자의 라이선스를 따르며, 배포 폴더의 `THIRD_PARTY_NOTICES.txt`와 `licenses/`에 원문과 고지를 담았습니다.
