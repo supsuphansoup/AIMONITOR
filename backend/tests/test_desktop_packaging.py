@@ -110,6 +110,21 @@ def test_stdio_survives_logging_reconfiguration(entry, monkeypatch):
         sys.stdout.close()
 
 
+def test_existing_oversized_logs_are_bounded_on_startup(entry, monkeypatch):
+    monkeypatch.setattr(entry, "LOG_MAX_BYTES", 1024)
+    directory = entry.DATA_DIR / "logs"
+    directory.mkdir(parents=True)
+    for suffix in ("", ".1", ".2", ".3"):
+        (directory / f"old.log{suffix}").write_text("한" * 1024, encoding="utf-8")
+    stream = entry.BoundedLogStream(directory / "old.log")
+    try:
+        assert all(path.stat().st_size <= 1024 for path in directory.glob("old.log*"))
+        stream.write("new log\n")
+        assert all(path.stat().st_size <= 1024 for path in directory.glob("old.log*"))
+    finally:
+        stream.close()
+
+
 def test_self_test_fails_with_exit_code_instead_of_raising(entry, monkeypatch):
     monkeypatch.setitem(sys.modules, "desktop.main", None)  # makes `import desktop.main` fail
     assert entry.main(["--self-test"]) == 1
@@ -147,4 +162,3 @@ def test_desktop_http_client_info_logs_do_not_record_request_urls(caplog):
         assert logger.getEffectiveLevel() >= logging.WARNING
         logger.info("GET https://review.invalid/?token=synthetic-test-secret")
     assert "synthetic-test-secret" not in caplog.text
-

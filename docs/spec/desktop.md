@@ -54,6 +54,7 @@ PyInstaller 단일 폴더 빌드 `AIMONITOR.exe` 하나가 세 역할을 한다(
 import한 뒤 종료 코드로 결과를 알린다. exe 실행 시 작업 폴더는 `~/.aimonitor`이므로 기본 DB는
 `~/.aimonitor/aimonitor.db`, `.env`도 그 폴더에서 읽는다. 콘솔이 없으므로 출력은 `~/.aimonitor/logs/<역할>.log`에
 역할별로 회전 저장한다(UTF-8, 파일당 최대 1MiB, 백업 3개, 역할당 최대 4MiB).
+기존 파일·백업이 상한을 넘으면 시작 시 마지막 1MiB만 유지해 같은 상한을 적용한다.
 한 번의 로그 쓰기는 16KiB 이하로 잘라 기록하고 잘림 표식을 남긴다. 백엔드 접근 로그는 끈다.
 소스 모드에서 자동 실행하는 uvicorn도 `--no-access-log`를 사용한다. 데스크톱의 httpx·httpcore 로거는
 WARNING 이상으로 제한해 INFO 요청 URL이 쿼리 문자열과 함께 로그에 남지 않게 한다.

@@ -25,6 +25,14 @@ class BoundedLogStream:
     def __init__(self, path: Path):
         self.name = str(path)
         self._path = path
+        for index in range(4):
+            previous = path if index == 0 else Path(f"{path}.{index}")
+            if previous.is_file() and previous.stat().st_size > LOG_MAX_BYTES:
+                with open(previous, "rb") as stream:
+                    stream.seek(-LOG_MAX_BYTES, os.SEEK_END)
+                    tail = stream.read().decode("utf-8", errors="ignore")
+                with open(previous, "w", encoding="utf-8", newline="") as stream:
+                    stream.write(tail)
         self._stream = open(path, "a", encoding="utf-8", newline="")
         self._lock = threading.Lock()
 
