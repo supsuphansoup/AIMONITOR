@@ -4,8 +4,10 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -53,6 +55,7 @@ KNOWN_PROVIDERS = [
 ]
 
 ADMIN_PROVIDERS = {"anthropic_admin", "openai_admin"}
+MAX_KEY_LENGTH = 4096
 
 
 def mask_key(key: str) -> str:
@@ -72,18 +75,61 @@ class APIKeyManager:
     def __init__(self, filepath: Optional[Path] = None):
         self.filepath = filepath or KEYS_FILE
         self._lock = threading.RLock()
+        self._transaction_depth = 0
+
+    @contextmanager
+    def _transaction(self):
+        with self._lock:
+            if self._transaction_depth:
+                yield
+                return
+            try:
+                with secret_store.lock_file(self.filepath.with_name(self.filepath.name + ".lock")):
+                    self._transaction_depth += 1
+                    try:
+                        yield
+                    finally:
+                        self._transaction_depth -= 1
+            except OSError:
+                raise secret_store.StorageError("Key storage unavailable") from None
+
+    @staticmethod
+    def _validate_store(data):
+        if not isinstance(data, dict):
+            raise secret_store.StorageError("Invalid key storage")
+        for entries in data.values():
+            if not isinstance(entries, dict):
+                raise secret_store.StorageError("Invalid key storage")
+            legacy = any(field in entries for field in ("key", "sealed", "scheme"))
+            for entry in ([entries] if legacy else entries.values()):
+                if not isinstance(entry, dict):
+                    raise secret_store.StorageError("Invalid key storage")
+                for field in ("key", "sealed", "scheme", "label", "status", "last_verified", "balance_info"):
+                    if entry.get(field) is not None and not isinstance(entry[field], str):
+                        raise secret_store.StorageError("Invalid key storage")
+        return data
 
     def _load_raw(self) -> Dict[str, Dict[str, Any]]:
-        if self.filepath.exists():
-            try:
-                data = json.loads(self.filepath.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-            except Exception as e:
-                logger.warning("Could not parse API key storage: %s", type(e).__name__)
-        return {}
+        try:
+            return self._validate_store(json.loads(self.filepath.read_text(encoding="utf-8")))
+        except FileNotFoundError:
+            return {}
+        except (OSError, UnicodeError, ValueError):
+            raise secret_store.StorageError("Invalid or unavailable key storage") from None
+
+    def _read_store(self):
+        if secret_store.AVAILABLE_SCHEME == "unavailable":
+            raw = self._load_raw()
+            return {provider: ({"default": {**entries, "label": "기본"}}
+                               if any(f in entries for f in ("key", "sealed", "scheme")) else entries)
+                    for provider, entries in raw.items()}
+        with self._transaction():
+            self.migrate_plaintext()
+            return self._load_raw()
 
     def _save_raw(self, data: Dict[str, Dict[str, Any]]) -> None:
+        if secret_store.AVAILABLE_SCHEME == "unavailable":
+            raise secret_store.StorageError("Key storage encryption unavailable")
         for provider, entries in list(data.items()):
             if any(field in entries for field in ("key", "sealed", "scheme")):
                 entries = {"default": {**entries, "label": "기본"}}
@@ -93,18 +139,36 @@ class APIKeyManager:
                 if legacy and not entry.get("sealed"):
                     entry["scheme"], entry["sealed"] = secret_store.seal(str(legacy).strip())
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        self.filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        secret_store.restrict_file(self.filepath)
+        temporary = None
+        try:
+            descriptor, name = tempfile.mkstemp(prefix=self.filepath.name + ".", dir=self.filepath.parent)
+            temporary = Path(name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                secret_store.restrict_file(temporary)
+                output.write(json.dumps(data, indent=2, ensure_ascii=False))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.filepath)
+            secret_store.restrict_file(self.filepath)
+        except OSError:
+            raise secret_store.StorageError("Key storage write failed") from None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _stored_secret(entry: Dict[str, Any]) -> Optional[str]:
+        if secret_store.AVAILABLE_SCHEME == "unavailable":
+            return None
         if entry.get("sealed"):
             return secret_store.unseal(entry.get("scheme", ""), entry["sealed"])
         return entry.get("key") or None
 
     def migrate_plaintext(self) -> int:
         """Seal legacy secrets and migrate single-key entries, without inventing accounts."""
-        with self._lock:
+        if secret_store.AVAILABLE_SCHEME == "unavailable":
+            return 0
+        with self._transaction():
             raw = self._load_raw()
             moved, changed = 0, False
             for provider, entries in list(raw.items()):
@@ -136,8 +200,12 @@ class APIKeyManager:
     def get_key(self, provider: str, key_id: str) -> Optional[str]:
         """Resolve one key; an unknown identity never falls back to another key."""
         with self._lock:
-            self.migrate_plaintext()
-            entry = self._load_raw().get(provider, {}).get(key_id)
+            if key_id == "env":
+                return self._env_key(provider)
+            try:
+                entry = self._read_store().get(provider, {}).get(key_id)
+            except ValueError:
+                return None
             if entry is not None:
                 secret = self._stored_secret(entry)
                 return secret.strip() if secret else None
@@ -146,8 +214,10 @@ class APIKeyManager:
     def get_registered_key(self, provider: str) -> Optional[str]:
         """Backward-compatible default or first usable stored key, then environment."""
         with self._lock:
-            self.migrate_plaintext()
-            entries = self._load_raw().get(provider, {})
+            try:
+                entries = self._read_store().get(provider, {})
+            except ValueError:
+                entries = {}
             ids = (["default"] if "default" in entries else []) + [k for k in entries if k != "default"]
             for key_id in ids:
                 secret = self._stored_secret(entries[key_id])
@@ -158,8 +228,11 @@ class APIKeyManager:
     def list_keys(self, provider: Optional[str] = None) -> List[Dict[str, Any]]:
         """With a provider list individual keys; no argument preserves desktop cards."""
         with self._lock:
-            self.migrate_plaintext()
-            raw = self._load_raw()
+            storage_error = False
+            try:
+                raw = self._read_store()
+            except ValueError:
+                raw, storage_error = {}, True
             results = []
             for info in KNOWN_PROVIDERS:
                 prov = info["key"]
@@ -167,6 +240,9 @@ class APIKeyManager:
                     continue
                 entries = raw.get(prov, {})
                 individual = []
+                if storage_error:
+                    individual.append(self._key_view(prov, "storage_error", {
+                        "label": "저장소 확인 불가", "status": "storage_error"}, None, "stored"))
                 env_secret = self._env_key(prov)
                 detected = next((v for v in info["env_vars"] if os.environ.get(v, "").strip()), None)
                 for key_id, entry in entries.items():
@@ -179,7 +255,8 @@ class APIKeyManager:
                     continue
                 chosen = next((k for k in individual if k["key_id"] == "default" and k["has_key"]), None)
                 chosen = chosen or next((k for k in individual if k["has_key"]), None)
-                card = dict(chosen or self._key_view(prov, None, {}, None, "none"))
+                card = dict(chosen or (individual[0] if individual else
+                                      self._key_view(prov, None, {}, None, "none")))
                 card.update({"name": info["name"], "placeholder": info["placeholder"],
                              "detected_env_var": detected, "keys": individual})
                 results.append(card)
@@ -191,7 +268,9 @@ class APIKeyManager:
         return {
             "provider": provider, "key_id": key_id, "label": entry.get("label", "기본"),
             "masked": masked, "masked_key": masked, "has_key": bool(secret), "source": source,
-            "status": entry.get("status", "connected" if secret else "unconfigured"),
+            "status": ("unreadable" if source == "stored" and not secret
+                       and entry.get("status") != "storage_error"
+                       else entry.get("status", "connected" if secret else "unconfigured")),
             "last_verified": entry.get("last_verified"), "balance_info": entry.get("balance_info"),
             "protection": (
                 "Windows DPAPI 암호화" if entry.get("scheme") == secret_store.SCHEME_DPAPI else None
@@ -217,6 +296,10 @@ class APIKeyManager:
         return label
 
     def _write_key(self, provider: str, key_id: str, key_value: str, label: str) -> Dict[str, Any]:
+        if secret_store.AVAILABLE_SCHEME == "unavailable":
+            raise secret_store.StorageError("Key storage encryption unavailable")
+        if len(key_value) > MAX_KEY_LENGTH or any(ord(c) < 32 or ord(c) > 126 for c in key_value):
+            raise ValueError("Invalid provider or key")
         key_value = key_value.strip()
         if not key_value or provider not in {p["key"] for p in KNOWN_PROVIDERS}:
             raise ValueError("Invalid provider or key")
@@ -233,7 +316,7 @@ class APIKeyManager:
     def add_key(self, provider: str, key_value: str, label: str = "기본") -> Dict[str, Any]:
         if provider not in {p["key"] for p in KNOWN_PROVIDERS} or not key_value.strip():
             raise ValueError("Invalid provider or key")
-        with self._lock:
+        with self._transaction():
             self.migrate_plaintext()
             return self._write_key(provider, uuid.uuid4().hex, key_value, label)
 
@@ -241,14 +324,14 @@ class APIKeyManager:
         """Desktop compatibility: replace the default or first key without losing others."""
         if provider not in {p["key"] for p in KNOWN_PROVIDERS} or not key_value.strip():
             raise ValueError("Invalid provider or key")
-        with self._lock:
+        with self._transaction():
             self.migrate_plaintext()
             entries = self._load_raw().get(provider, {})
             key_id = "default" if "default" in entries else next(iter(entries), "default")
             return self._write_key(provider, key_id, key_value, entries.get(key_id, {}).get("label", "기본"))
 
     def update_label(self, provider: str, key_id: str, label: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
+        with self._transaction():
             self.migrate_plaintext()
             raw = self._load_raw()
             entry = raw.get(provider, {}).get(key_id)
@@ -259,7 +342,7 @@ class APIKeyManager:
             return self._key_view(provider, key_id, entry, self._stored_secret(entry), "stored")
 
     def delete_key(self, provider: str, key_id: Optional[str] = None) -> bool:
-        with self._lock:
+        with self._transaction():
             self.migrate_plaintext()
             raw = self._load_raw()
             if provider not in raw or (key_id is not None and key_id not in raw[provider]):

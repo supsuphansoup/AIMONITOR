@@ -105,7 +105,11 @@ def update_label(
 def delete_individual_key(
     provider: str, key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
 ) -> Dict[str, Any]:
-    if not api_key_manager.delete_key(provider.lower().strip(), key_id):
+    try:
+        deleted = api_key_manager.delete_key(provider.lower().strip(), key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Key storage unavailable") from None
+    if not deleted:
         raise HTTPException(status_code=404, detail="No registered key found")
     return {"provider": provider, "key_id": key_id, "deleted": True}
 
@@ -113,7 +117,10 @@ def delete_individual_key(
 @router.delete("/{provider}", response_model=Dict[str, Any], dependencies=[Depends(require_write_auth)])
 def delete_key(provider: str) -> Dict[str, Any]:
     """Remove a registered API key."""
-    deleted = api_key_manager.delete_key(provider.lower().strip())
+    try:
+        deleted = api_key_manager.delete_key(provider.lower().strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Key storage unavailable") from None
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No registered key found")
     return {"provider": provider, "deleted": True}
