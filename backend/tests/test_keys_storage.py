@@ -77,7 +77,11 @@ def test_independent_managers_preserve_concurrent_updates(manager, monkeypatch):
 
 @pytest.mark.parametrize("content", [
     '{"groq":', '[]', '{"groq":null}', '{"groq":[]}', '{"groq":{"id":null}}',
-])
+    '{"groq":{"id":{"label":null}}}', '{"groq":{"id":{"status":null}}}',
+    '{"groq":{"id":{"scheme":null}}}', '{"groq":{"id":{"sealed":null}}}',
+    '{"groq":' + '[' * 1100 + ']' * 1100 + '}',
+], ids=["json", "root", "null-provider", "array-provider", "null-entry", "null-label", "null-status",
+        "null-scheme", "null-sealed", "deep-json"])
 def test_corrupt_store_is_preserved_and_listed_safely(manager, client, content):
     manager.filepath.write_text(content, encoding="utf-8")
     before = manager.filepath.read_bytes()

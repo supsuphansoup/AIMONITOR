@@ -107,7 +107,8 @@ class APIKeyManager:
                 if not isinstance(entry, dict):
                     raise secret_store.StorageError("Invalid key storage")
                 for field in ("key", "sealed", "scheme", "label", "status", "last_verified", "balance_info"):
-                    if entry.get(field) is not None and not isinstance(entry[field], str):
+                    nullable = field in ("last_verified", "balance_info") and entry.get(field) is None
+                    if field in entry and not isinstance(entry[field], str) and not nullable:
                         raise secret_store.StorageError("Invalid key storage")
         return data
 
@@ -116,7 +117,7 @@ class APIKeyManager:
             return self._validate_store(json.loads(self.filepath.read_text(encoding="utf-8")))
         except FileNotFoundError:
             return {}
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError, RecursionError):
             raise secret_store.StorageError("Invalid or unavailable key storage") from None
 
     def _read_store(self):
