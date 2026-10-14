@@ -9,6 +9,8 @@ import base64
 import ctypes
 import os
 import sys
+import time
+from contextlib import contextmanager
 from typing import Optional, Tuple
 
 SCHEME_DPAPI = "dpapi"
@@ -95,3 +97,41 @@ def restrict_file(path: "os.PathLike[str]") -> None:
             os.chmod(path, 0o600)
         except OSError:
             pass
+class StorageError(ValueError):
+    """A key store failure whose message never contains credentials or paths."""
+
+
+@contextmanager
+def lock_file(path, timeout: float = 3.0):
+    """Bounded advisory lock shared by independent desktop/backend processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        restrict_file(path)
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise StorageError("Key storage is busy") from None
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

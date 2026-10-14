@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.core.security import require_read_auth, require_write_auth
 from backend.app.services.api_key_manager import api_key_manager, spend_service
+from backend.app.services.provider_spend import REFRESH_COOLDOWN_SECONDS
 
 
 class SecretRoute(APIRoute):
@@ -46,26 +47,26 @@ def list_keys() -> List[Dict[str, Any]]:
 
 
 @router.get("/spend", response_model=Dict[str, Any], dependencies=[Depends(require_read_auth)])
-def get_spend(force: bool = Query(False, description="Bypass the 15-minute cache")) -> Dict[str, Any]:
+def get_spend(
+    force: bool = Query(False, description="Unsupported; use POST /keys/spend/refresh"),
+) -> Dict[str, Any]:
     """Provider-reported spend or balance for every API card that has a key.
 
     Keyed by desktop card key (`openai_api`, `anthropic_api`, ...). A provider
     with no billing endpoint for its key reports kind `unavailable`.
     """
-    registered = {k["provider"] for k in api_key_manager.list_keys() if k["has_key"]}
-    cards = {f"{p}_api" for p in registered if not p.endswith("_admin")}
-    cards |= {p.replace("_admin", "_api") for p in registered if p.endswith("_admin")}
-    result = spend_service.spend_all(sorted(cards), force=force)
-    items = []
-    for provider in sorted(registered):
-        for entry in api_key_manager.list_keys(provider):
-            if not entry["has_key"]:
-                continue
-            secret = api_key_manager.get_key(provider, entry["key_id"])
-            spend = spend_service.spend_for_key(provider, entry["key_id"], secret, force=force)
-            items.append({**spend, "provider": provider, "key_id": entry["key_id"], "label": entry["label"]})
-    result["items"] = items
-    return result
+    if force:
+        raise HTTPException(status_code=400, detail="Use POST /keys/spend/refresh to force refresh")
+    return spend_service.spend_snapshot(api_key_manager.billing_snapshot())
+
+
+@router.post("/spend/refresh", response_model=Dict[str, Any], dependencies=[Depends(require_write_auth)])
+def refresh_spend() -> Dict[str, Any]:
+    try:
+        return spend_service.refresh_snapshot(api_key_manager.billing_snapshot())
+    except ValueError:
+        raise HTTPException(status_code=429, detail="Billing refresh too frequent",
+                            headers={"Retry-After": str(REFRESH_COOLDOWN_SECONDS)}) from None
 
 
 @router.post(
@@ -105,7 +106,11 @@ def update_label(
 def delete_individual_key(
     provider: str, key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
 ) -> Dict[str, Any]:
-    if not api_key_manager.delete_key(provider.lower().strip(), key_id):
+    try:
+        deleted = api_key_manager.delete_key(provider.lower().strip(), key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Key storage unavailable") from None
+    if not deleted:
         raise HTTPException(status_code=404, detail="No registered key found")
     return {"provider": provider, "key_id": key_id, "deleted": True}
 
@@ -113,7 +118,10 @@ def delete_individual_key(
 @router.delete("/{provider}", response_model=Dict[str, Any], dependencies=[Depends(require_write_auth)])
 def delete_key(provider: str) -> Dict[str, Any]:
     """Remove a registered API key."""
-    deleted = api_key_manager.delete_key(provider.lower().strip())
+    try:
+        deleted = api_key_manager.delete_key(provider.lower().strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Key storage unavailable") from None
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No registered key found")
     return {"provider": provider, "deleted": True}
@@ -123,3 +131,10 @@ def delete_key(provider: str) -> Dict[str, Any]:
 def verify_key(provider: str) -> Dict[str, Any]:
     """Verify an API key against provider official API and retrieve balance or model status."""
     return api_key_manager.verify_key(provider.lower().strip())
+
+
+@router.post("/{provider}/{key_id}/verify", dependencies=[Depends(require_write_auth)])
+def verify_individual_key(
+    provider: str, key_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,32}$"),
+) -> Dict[str, Any]:
+    return api_key_manager.verify_key(provider.lower().strip(), key_id)

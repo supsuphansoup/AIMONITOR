@@ -16,6 +16,11 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 ### 저장
 
 - DPAPI `CryptProtectData`(현재 사용자 범위, UI 금지, 엔트로피 `aimonitor-api-keys-v1`). 이전 평문 키는 조회 전에 암호화하여 이관한다.
+- 저장소 옆 `api_keys.json.lock`의 프로세스 간 잠금으로 읽기부터 쓰기까지 보호한다. 잠금 대기는 최대 3초이며 실패는 통제된 저장소 오류다.
+- 같은 디렉터리의 임시 파일에 쓰고 flush/fsync 후 원자 교체한다. 읽기 실패·손상 JSON/구조는 빈 저장소와 구분하며 원본에 쓰지 않는다.
+- 목록은 저장소 오류를 `status=storage_error`, 개별 복호화 불가는 `status=unreadable`로 표시하고 기존 항목 필드를 유지한다. 비 Windows에서는 레거시 파일을 이관·복호화하지 않고 환경변수 키를 독립적으로 사용한다.
+- 저장 항목의 문자열 필드에 null/잘못된 타입이 있거나 JSON이 과도하게 중첩돼 있으면 저장소 오류다. `last_verified`·`balance_info`의 null은 허용한다.
+- 키는 최대 4096자이며 HTTP 헤더에 사용할 수 없는 제어 문자·비 ASCII 문자를 저장하지 않는다. 공급자 접두사는 강제하지 않는다.
 - 서버가 만드는 `key_id`는 32자 UUID hex다. 기존 공급자 단일 키는 읽을 때 `default`/`기본`으로 이전하며 DPAPI 봉인을 보존한다.
 - 라벨 기본값은 `기본`, 최대 40자이며 등록된/새 키 원문·키 접두사·이메일을 포함할 수 없다.
 - 환경 변수 키(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, `*_ADMIN_KEY`)는 읽기 전용으로 함께 보인다.
@@ -29,13 +34,20 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 | PATCH | `/keys/{provider}/{key_id}` | `{label}` — 이름만 변경 | 쓰기 |
 | DELETE | `/keys/{provider}/{key_id}` | 그 키만 삭제 | 쓰기 |
 | DELETE | `/keys/{provider}` | 그 공급자의 저장 키 모두 삭제 (환경 변수 키는 남음) | 쓰기 |
-| POST | `/keys/{provider}/verify` | 공급자의 모델 목록 API로 검증 | 쓰기 |
+| POST | `/keys/{provider}/verify` | 실제 대표 키를 모델 목록/잔액/관리자 비용 API로 검증 | 쓰기 |
+| POST | `/keys/{provider}/{key_id}/verify` | 지정한 키만 검증 (ID 패턴 `^[A-Za-z0-9_-]{1,32}$`) | 쓰기 |
 | GET | `/keys/spend` | 키별 공식 청구액·잔액 (15분 캐시) | 읽기 |
+| POST | `/keys/spend/refresh` | 캐시를 우회하여 강제 갱신 (최소 간격 60초) | 쓰기 |
 
 키 라우터의 검증 오류는 일반 `Invalid key request` 메시지만 반환한다. 검증 실패도 요청·응답 원문을 싣지 않는다.
+`GET /keys/spend?force=true`는 공급자를 호출하지 않고 400을 반환한다. 강제 갱신 POST는 쓰기 인증·Origin 방어를 적용하며,
+동일 서비스에서 60초 이내의 재시도는 429와 `Retry-After: 60`을 반환한다. 실패한 조회도 갱신 간격 제한에 포함한다.
 
 데스크톱은 HTTP 대신 `api_key_manager`를 직접 import한다. `list_keys()`는 공급자 카드, `set_key(provider, key)`는 기본/첫 키 갱신,
 `get_registered_key(provider)`는 기본/첫 키 또는 환경 키를 반환한다. 개별 키용은 `list_keys(provider)`, `get_key(provider, key_id)`, `add_key`, `update_label`.
+`verify_key(provider, key_id=None)`는 실제 조회한 ID와 secret 지문을 고정하며, 결과 기록 시 같은 키인지 다시 확인한다.
+성공은 `valid`, 401/403은 `invalid`, 일시적 실패는 `verification_unavailable`이다. 환경변수 키의 검증 상태는 메모리에서만 유지한다.
+인증 성공과 잔액 확인은 별개이며 누락 잔액은 `잔액 확인 불가`, 한도 0은 0으로 표시한다. DeepSeek 잔액은 통화별로 표시하고 환산·통화 간 합산하지 않는다.
 
 ### 청구액 조회 (`provider_spend.py`)
 
@@ -49,6 +61,15 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 일반 OpenAI·Anthropic 키로는 청구액을 조회하지 않는다.
 `/keys/spend`의 `items`가 키별 `{provider, key_id, label, kind, amount, currency, …}` 정본이며, 기존 도구 키 필드의 기본/첫 키 결과도 유지한다.
 관리자 키의 조직 청구액은 서로 겹칠 수 있으므로 키별 금액을 합산하지 않는다.
+응답의 필수 data/results 배열과 페이지 상태를 검사한다. 유효한 빈 배열만 0이며 누락/null/잘못된 타입은 확인 불가다.
+`has_more=true`에는 새로운 다음 커서가 필요하다. 최대 10페이지를 초과하거나 후속 페이지가 실패하면 부분 합계를 버린다.
+Anthropic 센트 금액은 달러로 변환하고 OpenAI 금액은 달러 그대로 사용한다. bool·NaN·Infinity 및 합산 overflow를 거부한다.
+같은 통화만 합산하며 통화가 없거나 혼합된 단일 금액 결과는 확인 불가다. 환율 환산은 하지 않는다.
+청구 조회는 한 저장소 스냅샷의 키별 결과를 대표 카드에도 재사용한다. 같은 공급자·secret의 진행 중 요청을 공유한다.
+외부 조회는 최대 4개 병렬, 프로세스의 서비스별 진행/대기 작업은 최대 16개, 한 조회 묶음의 대기는 총 10초다.
+HTTP 요청 단계는 남은 전체 예산 안에서 최대 5초로 제한한다. 시간 초과/대기 상한의 키는 확인 불가이며 빠른 키 결과는 유지한다.
+캐시는 secret 원문 대신 공급자·SHA-256 지문을 식별자로 쓰며 최대 128개다. 만료 항목과 UTC 월이 바뀐 월간 값은 재사용하지 않는다.
+키 삭제·교체는 해당 공급자 캐시를 무효화하고, 새 스냅샷에서 사라진 키의 캐시도 제거한다.
 
 ### 화면 (메인 창 API 키 탭)
 
