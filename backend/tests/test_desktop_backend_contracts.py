@@ -68,7 +68,7 @@ def test_foreign_health_response_is_port_conflict_without_spawn(monkeypatch, bod
     app.ensure_backend()
     spawn.assert_not_called()
     assert "포트 충돌" in app.backend_notice()
-    assert "서버 주소" in app.backend_notice()
+    assert "backend_url" in app.backend_notice()
 
 
 def test_old_aimonitor_health_is_reused_without_version_match(monkeypatch):
@@ -240,7 +240,7 @@ def test_normal_unavailable_spend_is_success_and_unrequested_spend_is_not_failur
 
 def test_known_conflict_skips_queries_and_shows_remedy(monkeypatch):
     ui, requests = fake_window(monkeypatch)
-    notice = "포트 충돌 · 다른 프로그램을 종료하거나 설정의 서버 주소를 변경하세요."
+    notice = "포트 충돌 · 다른 프로그램을 종료하거나 desktop_config.json의 backend_url 포트를 바꾸세요."
     ui.connection_notice = lambda: notice
     app_gui.DesktopMainWindow._fetch_worker(ui, [AI], {}, 1400)
     assert requests == []
@@ -254,7 +254,7 @@ def test_known_conflict_skips_queries_and_shows_remedy(monkeypatch):
 def test_widget_port_conflict_message_overrides_connection_wait(monkeypatch, mode):
     monkeypatch.setattr(widget.theme, "appearance_mode", lambda: "light")
     monkeypatch.setattr(widget.tk, "Label", lambda *_args, **_kwargs: Mock())
-    notice = "포트 충돌 · 다른 프로그램을 종료하거나 설정의 서버 주소를 변경하세요."
+    notice = "포트 충돌 · 다른 프로그램을 종료하거나 desktop_config.json의 backend_url 포트를 바꾸세요."
     ui = SimpleNamespace(connection_notice=lambda: notice, mode=mode, _theme_mode="light", entries=[],
                          _visible=lambda: [], is_connected=False, _resize=Mock(), mini_text=Mock(),
                          lbl_footer=Mock(), lbl_status=Mock(), _rows_sig=None, rows_frame=Mock(), font_normal=(),

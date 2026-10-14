@@ -30,7 +30,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 for _http_logger in ("httpx", "httpcore"):
     logging.getLogger(_http_logger).setLevel(logging.WARNING)
 logger = logging.getLogger("aimonitor.desktop")
-PORT_CONFLICT_MESSAGE = "포트 충돌 · 다른 프로그램을 종료하거나 설정의 서버 주소를 변경하세요."
+PORT_CONFLICT_MESSAGE = (
+    "포트 충돌 · 다른 프로그램을 종료하거나 desktop_config.json의 backend_url 포트를 바꾸세요."
+)
 
 
 def backend_health(url: str, timeout: float = 1.5) -> str:

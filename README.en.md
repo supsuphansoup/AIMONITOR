@@ -61,6 +61,9 @@ pip install -r backend/requirements.txt -r desktop/requirements.txt
 pythonw run_desktop.pyw
 ```
 
+If another program is using the local API port (8000 by default), the app shows a port conflict. Close that program
+or change the port in `backend_url` in `%USERPROFILE%\.aimonitor\desktop_config.json`, then start AIMONITOR again.
+
 ## 🔒 Privacy
 
 AIMONITOR reads other tools' logs and login files, so everything it reads and sends is listed → **[full list](docs/privacy.en.md)**

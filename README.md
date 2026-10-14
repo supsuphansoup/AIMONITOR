@@ -59,6 +59,9 @@ pip install -r backend/requirements.txt -r desktop/requirements.txt
 pythonw run_desktop.pyw
 ```
 
+로컬 API 포트(기본 8000)를 다른 프로그램이 쓰고 있으면 앱에 `포트 충돌`이 표시됩니다. 그 프로그램을 끄거나
+`%USERPROFILE%\.aimonitor\desktop_config.json`의 `backend_url` 포트를 바꾼 뒤 다시 실행하세요.
+
 ## 🔒 개인정보
 
 다른 도구의 로그와 로그인 파일을 읽는 앱이라, 읽고 보내는 것을 모두 공개합니다 → **[전체 목록](docs/privacy.md)**
