@@ -57,6 +57,10 @@ AIMONITOR 서버 자체의 인증 키(`API_KEY`)와는 별개다([security-ops.m
 일반 OpenAI·Anthropic 키로는 청구액을 조회하지 않는다.
 `/keys/spend`의 `items`가 키별 `{provider, key_id, label, kind, amount, currency, …}` 정본이며, 기존 도구 키 필드의 기본/첫 키 결과도 유지한다.
 관리자 키의 조직 청구액은 서로 겹칠 수 있으므로 키별 금액을 합산하지 않는다.
+응답의 필수 data/results 배열과 페이지 상태를 검사한다. 유효한 빈 배열만 0이며 누락/null/잘못된 타입은 확인 불가다.
+`has_more=true`에는 새로운 다음 커서가 필요하다. 최대 10페이지를 초과하거나 후속 페이지가 실패하면 부분 합계를 버린다.
+Anthropic 센트 금액은 달러로 변환하고 OpenAI 금액은 달러 그대로 사용한다. bool·NaN·Infinity 및 합산 overflow를 거부한다.
+같은 통화만 합산하며 통화가 없거나 혼합된 단일 금액 결과는 확인 불가다. 환율 환산은 하지 않는다.
 
 ### 화면 (메인 창 API 키 탭)
 

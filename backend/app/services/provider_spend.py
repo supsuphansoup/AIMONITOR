@@ -18,6 +18,7 @@ import math
 import threading
 import time
 from datetime import datetime
+from functools import wraps
 from typing import Any, Callable, Dict, Optional
 
 import httpx
@@ -65,6 +66,46 @@ def _result(provider: str, kind: str, **kw: Any) -> Dict[str, Any]:
     return out
 
 
+def _unavailable_on_invalid(provider):
+    def decorate(fetch):
+        @wraps(fetch)
+        def safe_fetch(*args, **kwargs):
+            try:
+                return fetch(*args, **kwargs)
+            except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                return _result(provider, KIND_UNAVAILABLE, source_label="청구 정보 확인 불가")
+        return safe_fetch
+    return decorate
+
+
+def _currency(value):
+    if not isinstance(value, str) or len(value) != 3 or not value.isascii() or not value.isalpha():
+        raise ValueError("Missing currency")
+    return value.upper()
+
+
+def _cost_page(body, pages):
+    if not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        raise ValueError("Missing cost data")
+    if not isinstance(body.get("has_more"), bool):
+        raise ValueError("Missing pagination status")
+    rows = []
+    for bucket in body["data"]:
+        if not isinstance(bucket, dict) or not isinstance(bucket.get("results"), list):
+            raise ValueError("Missing cost results")
+        for row in bucket["results"]:
+            if not isinstance(row, dict):
+                raise ValueError("Invalid cost row")
+            rows.append(row)
+    cursor = body.get("next_page") if body["has_more"] else None
+    if body["has_more"]:
+        if not isinstance(cursor, str) or not cursor.strip() or cursor in pages:
+            raise ValueError("Incomplete cost pagination")
+        pages.add(cursor)
+    return rows, cursor
+
+
+@_unavailable_on_invalid("anthropic")
 def fetch_anthropic_cost(
     admin_key: str, client: httpx.Client, now: Optional[datetime] = None
 ) -> Dict[str, Any]:
@@ -76,7 +117,7 @@ def fetch_anthropic_cost(
     }
     headers = {"x-api-key": admin_key, "anthropic-version": ANTHROPIC_VERSION}
     total_cents = 0.0
-    currency = "USD"
+    currency, pages = None, set()
     for _ in range(MAX_PAGES):
         resp = client.get(
             "https://api.anthropic.com/v1/organizations/cost_report", params=params, headers=headers
@@ -88,33 +129,35 @@ def fetch_anthropic_cost(
                 error=f"HTTP {resp.status_code}",
                 source_label="Anthropic 비용 리포트 조회 실패",
             )
-        body = resp.json()
-        for bucket in body.get("data") or []:
-            for r in bucket.get("results") or []:
-                # `amount` is a decimal string in the currency's lowest unit (cents).
-                total_cents += _amount(r.get("amount"))
-                currency = r.get("currency") or currency
-        if not body.get("has_more") or not body.get("next_page"):
+        rows, cursor = _cost_page(resp.json(), pages)
+        for row in rows:
+            current = _currency(row.get("currency"))
+            if currency is not None and current != currency:
+                raise ValueError("Mixed currencies")
+            currency = current
+            total_cents = _amount(total_cents + _amount(row.get("amount")))
+        if cursor is None:
             break
-        params["page"] = body["next_page"]
+        params["page"] = cursor
     else:
         return _result("anthropic", KIND_UNAVAILABLE, source_label="비용 리포트 페이지 상한 초과")
     return _result(
         "anthropic",
         KIND_SPEND,
         amount=round(total_cents / 100.0, 4),
-        currency=currency,
+        currency=currency or "USD",
         period_start=start.isoformat(),
         source_label="Anthropic 공식 비용 리포트 (이번 달)",
     )
 
 
+@_unavailable_on_invalid("openai")
 def fetch_openai_cost(admin_key: str, client: httpx.Client, now: Optional[datetime] = None) -> Dict[str, Any]:
     start = month_start_utc(now)
     params: Dict[str, Any] = {"start_time": int(start.timestamp()), "bucket_width": "1d", "limit": 31}
     headers = {"Authorization": f"Bearer {admin_key}"}
     total = 0.0
-    currency = "usd"
+    currency, pages = None, set()
     for _ in range(MAX_PAGES):
         resp = client.get("https://api.openai.com/v1/organization/costs", params=params, headers=headers)
         if resp.status_code != 200:
@@ -124,27 +167,30 @@ def fetch_openai_cost(admin_key: str, client: httpx.Client, now: Optional[dateti
                 error=f"HTTP {resp.status_code}",
                 source_label="OpenAI 비용 조회 실패",
             )
-        body = resp.json()
-        for bucket in body.get("data") or []:
-            for r in bucket.get("results") or []:
-                amount = r.get("amount") or {}
-                total += _amount(amount.get("value"))
-                currency = amount.get("currency") or currency
-        if not body.get("has_more") or not body.get("next_page"):
+        rows, cursor = _cost_page(resp.json(), pages)
+        for row in rows:
+            amount = row["amount"]
+            current = _currency(amount.get("currency"))
+            if currency is not None and current != currency:
+                raise ValueError("Mixed currencies")
+            currency = current
+            total = _amount(total + _amount(amount.get("value")))
+        if cursor is None:
             break
-        params["page"] = body["next_page"]
+        params["page"] = cursor
     else:
         return _result("openai", KIND_UNAVAILABLE, source_label="비용 리포트 페이지 상한 초과")
     return _result(
         "openai",
         KIND_SPEND,
         amount=round(total, 4),
-        currency=currency.upper(),
+        currency=currency or "USD",
         period_start=start.isoformat(),
         source_label="OpenAI 공식 비용 (이번 달)",
     )
 
 
+@_unavailable_on_invalid("openrouter")
 def fetch_openrouter(key: str, client: httpx.Client, now: Optional[datetime] = None) -> Dict[str, Any]:
     resp = client.get("https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {key}"})
     if resp.status_code != 200:
@@ -160,7 +206,7 @@ def fetch_openrouter(key: str, client: httpx.Client, now: Optional[datetime] = N
         return _result(
             "openrouter",
             KIND_SPEND,
-            amount=float(monthly),
+            amount=_amount(monthly),
             currency="USD",
             period_start=month_start_utc(now).isoformat(),
             source_label="OpenRouter 공식 (이 키의 이번 달 사용액)",
@@ -174,6 +220,7 @@ def fetch_openrouter(key: str, client: httpx.Client, now: Optional[datetime] = N
     )
 
 
+@_unavailable_on_invalid("deepseek")
 def fetch_deepseek(key: str, client: httpx.Client, now: Optional[datetime] = None) -> Dict[str, Any]:
     resp = client.get("https://api.deepseek.com/user/balance", headers={"Authorization": f"Bearer {key}"})
     if resp.status_code != 200:
@@ -186,12 +233,20 @@ def fetch_deepseek(key: str, client: httpx.Client, now: Optional[datetime] = Non
     infos = resp.json().get("balance_infos") or []
     if not infos:
         return _result("deepseek", KIND_UNAVAILABLE, source_label="DeepSeek 잔액 정보 없음")
-    first = infos[0]
+    if not isinstance(infos, list):
+        raise ValueError("Invalid balances")
+    currency, total = None, 0.0
+    for info in infos:
+        current = _currency(info.get("currency"))
+        if currency is not None and current != currency:
+            raise ValueError("Mixed currencies")
+        currency = current
+        total = _amount(total + _amount(info.get("total_balance")))
     return _result(
         "deepseek",
         KIND_BALANCE,
-        amount=_amount(first.get("total_balance")),
-        currency=first.get("currency") or "CNY",
+        amount=total,
+        currency=currency,
         source_label="DeepSeek 공식 잔액",
     )
 
