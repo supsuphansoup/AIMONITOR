@@ -25,6 +25,8 @@ def isolated_pc(tmp_path, monkeypatch):
     monkeypatch.setattr(context_manager, "windows_for", lambda *args, **kwargs: [])
     monkeypatch.setattr(config, "load_config", lambda: {"krw_per_usd": 100})
     monkeypatch.setattr(spend_service, "spend_all", lambda keys: {})
+    # Widget colours ask customtkinter for the theme; the Linux CI job has no GUI packages.
+    monkeypatch.setattr(display.theme, "appearance_mode", lambda: "light")
 
 
 def set_mode(path, tool, mode, identifier="one"):

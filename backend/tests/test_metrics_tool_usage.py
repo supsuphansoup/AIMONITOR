@@ -14,8 +14,13 @@ from backend.app.core.config import settings
 from backend.app.models.trace import TraceEvent
 from backend.app.routers import metrics, traces
 from backend.app.services import aggregator, api_key_manager
-from desktop import ai_detector, ai_watcher, app_gui, config, context_manager, display, widget
 from sdk.python.aimonitor.client import AIMonitor
+
+pytest.importorskip("customtkinter")
+pytest.importorskip("matplotlib")
+pytest.importorskip("pystray")
+
+from desktop import ai_detector, ai_watcher, app_gui, config, context_manager, display, widget
 
 NOW = datetime(2026, 10, 14, 3)
 
