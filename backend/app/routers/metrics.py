@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.exceptions import RequestValidationError
 from sqlmodel import Session
 
 from backend.app.core.accounts import ACCOUNT_ID_MAX_LENGTH, ACCOUNT_ID_PATTERN, validate_account_filter
@@ -22,10 +23,7 @@ def _query_time(value: Optional[datetime], field: str) -> Optional[datetime]:
     try:
         return to_naive_utc(value)
     except ValueError:
-        raise HTTPException(status_code=422, detail=[{
-            "type": "datetime_parsing", "loc": ["query", field],
-            "msg": "Timestamp is outside the UTC range",
-        }]) from None
+        raise RequestValidationError([{"type": "datetime_parsing", "loc": ["query", field]}]) from None
 
 
 @router.get("/overview", response_model=Dict[str, Any])

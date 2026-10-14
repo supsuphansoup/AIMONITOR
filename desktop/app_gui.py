@@ -1379,7 +1379,7 @@ class DesktopMainWindow(ctk.CTk):
         try:
             status = autostart.get_status()
         except OSError:
-            logger.warning("Cannot read Windows startup registration", exc_info=True)
+            logger.warning("Cannot read startup registration error_type=%s", sys.exc_info()[0].__name__)
             self.autostart_var.set(False)
             self.autostart_switch.configure(state="disabled")
             self.lbl_autostart_status.configure(
@@ -1409,7 +1409,7 @@ class DesktopMainWindow(ctk.CTk):
             else:
                 autostart.disable()
         except OSError:
-            logger.warning("Cannot update Windows startup registration", exc_info=True)
+            logger.warning("Cannot update startup registration error_type=%s", sys.exc_info()[0].__name__)
             self._refresh_autostart_status()
             message = "자동 실행 변경 실패 · 레지스트리 접근 권한을 확인한 뒤 다시 시도하세요."
             self.lbl_autostart_status.configure(text=message, text_color=theme.ERROR)

@@ -53,6 +53,10 @@ SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이�
 NaN·±Infinity와 float 범위를 넘는
 `1e309` 등은 422이며, 음수 유한 값의 기존 보정 정책은 유지한다. UTC 정규화 결과가
 지원 시각 범위를 벗어나면 수집·조회·CSV 기간 필터 모두 422로 거부한다.
+조회·CSV의 날짜 범위 오류는 일반 쿼리 검증과 같은 `detail` 배열에 `loc=["query", 필드명]`·
+`type=datetime_parsing`·고정 `msg="Invalid field value"`만 반환한다. 잘못된 상태 필터도 같은
+배열에 `loc=["query", "status"]`·`type=value_error`·고정 메시지를 반환한다. 입력 원문·검증
+문맥을 포함하지 않으며 OpenAPI `HTTPValidationError` 스키마를 따른다.
 
 수집 트랜잭션은 flush·refresh·응답 모델 검증을 모두 마친 뒤 커밋한다. 그 단계의
 실패는 단건·배치 전체를 롤백한다. 커밋 후 네트워크 단절까지 되돌릴 수는 없다.
@@ -100,7 +104,7 @@ NaN·±Infinity와 float 범위를 넘는
 
 ### 계정 식별
 
-`GET /traces`와 `/traces/export.csv`는 `account_unknown=true`로 `account_id IS NULL`인 기록만 조회한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`를 함께 보내면 입력 원문 없는 기존 `detail` 배열 형식의 HTTP 422를 반환한다.
+`GET /traces`와 `/traces/export.csv`는 `account_unknown=true`로 `account_id IS NULL`인 기록만 조회한다. 생략 또는 `false`는 추가 필터가 없다. `account_id`와 `account_unknown=true`를 함께 보내면 HTTP 422의 `detail` 배열에 `loc=["query", "account_unknown"]`·`type=value_error`·고정 `msg="Invalid field value"`만 반환한다.
 
 계정 ID는 도구 로그인 고유값의 SHA-256 hex 앞 12자, 로그인 고유값이 없는 폴더는 `dir-`와 절대경로 SHA-256 hex 앞 12자로 수집자가 만든다. 서버는 원문 로그인 값·이메일·토큰을 받지 않으며 `null` 기록을 다른 계정에 붙이지 않는다. 사용자 계정 label은 데스크톱 설정에서만 보관한다.
 

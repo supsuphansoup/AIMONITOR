@@ -23,8 +23,9 @@
 - 메타데이터 키 이름에 `prompt, completion, response, message, content, answer, question, query, input_text, output_text, system, choices, transcript, document, context_text`가 포함되면 값을 재귀적으로 `[redacted]`.
 - 요청 본문은 로그에 남기지 않는다. 접근 로그는 메서드·경로·상태·소요 시간·`X-Request-ID`만.
 - 500 응답은 일반 메시지만 반환한다. 전역 오류·DB readiness 로그에는 예외 종류만 기록하며 예외 문자열·체인·SQL 매개변수는 기록하지 않는다(`hide_parameters=True`).
+- 스케줄러 작업·데스크톱 자동 실행 설정 실패도 예외 종류만 기록한다. 스케줄러의 `last_alert_error`는 작업 이름·예외 종류만 유지하며 다음 주기에 재시도한다. exe `--self-test` 실패는 고정 문구·예외 종류만 stderr에 남기고 종료 코드 1을 반환한다. 이 경로들에서 traceback·예외 문자열·원인 체인을 출력하지 않는다.
 - `httpx`·`httpcore` 로그는 WARNING 이상으로 제한한다. Uvicorn 접근 로그는 비활성화하고 쿼리 문자열 없이 앱의 요청 메타데이터 로그만 사용한다(Docker도 `--no-access-log`).
-- FastAPI `RequestValidationError`의 422 응답은 `detail` 배열의 `loc`·`type`과 고정 메시지 `Invalid field value`만 반환한다. 제출한 `input`·`ctx`·원래 오류 메시지를 직렬화하지 않아 원문 반사와 비유한 수/거대 정수의 오류 직렬화 실패를 막는다. 키 라우터는 기존 일반 `Invalid key request` 메시지를 유지한다.
+- FastAPI `RequestValidationError`의 422 응답은 `detail` 배열의 `loc`·`type`과 고정 메시지 `Invalid field value`만 반환한다. 조회·CSV의 UTC 날짜 범위 오류, `account_id`·`account_unknown=true` 충돌과 잘못된 상태 필터도 같은 처리기를 사용하며 `loc`에 query 필드명을 담는다. 제출한 `input`·`ctx`·원래 오류 메시지를 직렬화하지 않아 원문 반사와 비유한 수/거대 정수의 오류 직렬화 실패를 막는다. 조회 422는 OpenAPI `HTTPValidationError` 스키마를 따른다. 키 라우터는 예외로 기존 일반 문자열 `Invalid key request` 메시지를 유지한다.
 
 ### HTTP 계층 (`main.py`)
 
@@ -80,6 +81,7 @@ Docker의 `0.0.0.0` 바인딩 등을 외부에 노출하려면 `API_KEY`와 `REQ
 
 - Dockerfile: `python:3.11-slim` API 전용 런타임, non-root `aimonitor` 사용자. 연결 AI API가 사용하는 데스크톱 공유 헬퍼만 포함하며 GUI는 실행하지 않는다.
 - Docker 빌드 컨텍스트에서 DB·SQLite WAL/SHM/journal·`.env.*`·`.review/`를 제외한다. `.env.example`은 예외로 포함한다.
+- Git에서도 `.env`·`.env.*`, SQLite DB와 WAL/SHM/journal, 루트 `.review/`를 제외한다. 설정 예제 `.env.example`은 추적할 수 있다.
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.
 - 시스템 API: `GET /system/info`(버전·인증 여부·스케줄러 상태), `GET /system/pricing`, `GET /system/ready`(DB 확인), `GET /health`(DB 미접근).
 - CI(`.github/workflows/ci.yml`): pytest(Linux Python 3.10/3.11/3.12, Windows 3.11 + 데스크톱 의존성), ruff, Docker 빌드 후 readiness 확인.

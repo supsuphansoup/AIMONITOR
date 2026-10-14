@@ -35,7 +35,11 @@ venv.bak/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
 *.sqlite3
+*-wal
+*-shm
+*-journal
 
 # Environment Variables
 .env
@@ -43,6 +47,8 @@ venv.bak/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.*
+!.env.example
 
 # IDE & OS
 .DS_Store
@@ -50,3 +56,6 @@ venv.bak/
 .vscode/
 *.swp
 *.swo
+
+# Local review artifacts
+/.review/
