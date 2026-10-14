@@ -43,9 +43,13 @@ def system_info() -> Dict[str, Any]:
 @router.get("/pricing", dependencies=[Depends(require_read_auth)])
 def pricing_table() -> Dict[str, Any]:
     """The rate card used for cost calculation, so numbers can be audited."""
+    from backend.app.services.cost import pricing_table_payload
+
+    payload = pricing_table_payload()
     return {
         "unit": "USD per 1,000,000 tokens",
         "as_of": PRICING_AS_OF,
+        "effective_at": payload["effective_at"],
         "sources": PRICING_SOURCES,
         # Self-hosted inference is free by provider, whatever the model name.
         "local_free_providers": sorted(LOCAL_PROVIDERS),
@@ -53,15 +57,7 @@ def pricing_table() -> Dict[str, Any]:
             provider: {"cache_write": write, "cache_read": read}
             for provider, (write, read) in PROVIDER_CACHE_MULTIPLIERS.items()
         },
-        "models": {
-            name: {
-                "input": pricing.input_per_1m,
-                "output": pricing.output_per_1m,
-                "cache_write": pricing.cache_write_per_1m,
-                "cache_read": pricing.cache_read_per_1m,
-            }
-            for name, pricing in MODEL_PRICING_USD_PER_1M.items()
-        },
+        "models": payload["models"],
     }
 
 

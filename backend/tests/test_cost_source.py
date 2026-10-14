@@ -55,14 +55,18 @@ def test_another_models_price_is_not_borrowed(provider, model):
     ("gpt-3.5-turbo-0125", "gpt-3.5-turbo"),
     ("o3-mini-2025-01-31", "o3-mini"),
     ("claude-3-5-sonnet-latest", "claude-3-5-sonnet"),
-    ("claude-3-5-sonnet@20240620", "claude-3-5-sonnet"),                                 # Vertex
+    ("claude-3-5-sonnet@20240620", "claude-3-5-sonnet-20240620"),                       # Vertex
     ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-3-5-sonnet-20241022"),      # Bedrock
-    ("models/gemini-1.5-pro-002", "gemini-1.5-pro"),
-    ("gemini-2.0-flash-001", "gemini-2.0-flash"),
 ])
 def test_versioned_names_keep_their_model_price(model, key):
     assert normalize_model_name(model) == key
     assert calculate_cost_detail("x", model, 1000, 1000).source == SOURCE_PRICING_TABLE
+
+
+@pytest.mark.parametrize("model", ["gemini-1.5-pro-001", "models/gemini-1.5-pro-002", "gemini-2.0-flash-001"])
+def test_unverified_legacy_snapshot_price_is_unknown(model):
+    # Existence of a revision does not verify equal billing to the current alias.
+    assert calculate_cost_detail("gemini", model, 1000, 1000).source == SOURCE_UNKNOWN
 
 
 @pytest.mark.parametrize("provider,model", [
@@ -193,7 +197,7 @@ M = 1_000_000
     # pricing pages as of PRICING_AS_OF.
     ("anthropic", "claude-opus-5-5", (4.00, 20.00, 5.00, 0.20)),       # cache read 0.05x
     ("anthropic", "claude-fable-5-1", (10.00, 50.00, 12.50, 0.25)),    # cache read 0.025x
-    ("anthropic", "claude-sonnet-5-5", (2.00, 10.00, 2.50, 0.20)),
+    ("anthropic", "claude-sonnet-5-5", (2.00, 10.00, 2.50, 0.10)),
     ("anthropic", "claude-sonnet-4-5-20250929", (3.00, 15.00, 3.75, 0.30)),
     ("anthropic", "claude-haiku-4-5", (1.00, 5.00, 1.25, 0.10)),
     ("openai", "gpt-5", (1.25, 10.00, 1.25, 0.125)),                   # cache read 0.1x
@@ -206,7 +210,11 @@ M = 1_000_000
 ])
 def test_rate_card_matches_published_prices(provider, model, rates):
     input_rate, output_rate, write_rate, read_rate = rates
-    assert calculate_cost_detail(provider, model, M, 0).cost_usd == pytest.approx(input_rate)
+    # Keep input below context thresholds; long tiers have separate boundary tests.
+    tokens = M // 10
+    assert calculate_cost_detail(provider, model, tokens, 0).cost_usd == pytest.approx(input_rate / 10)
     assert calculate_cost_detail(provider, model, 0, M).cost_usd == pytest.approx(output_rate)
-    assert calculate_cost_detail(provider, model, 0, 0, cache_write_tokens=M).cost_usd == pytest.approx(write_rate)
-    assert calculate_cost_detail(provider, model, 0, 0, cache_read_tokens=M).cost_usd == pytest.approx(read_rate)
+    assert calculate_cost_detail(provider, model, 0, 0,
+                                 cache_write_tokens=tokens).cost_usd == pytest.approx(write_rate / 10)
+    assert calculate_cost_detail(provider, model, 0, 0,
+                                 cache_read_tokens=tokens).cost_usd == pytest.approx(read_rate / 10)

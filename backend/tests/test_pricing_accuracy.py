@@ -64,8 +64,8 @@ def test_one_hour_share_cannot_exceed_total_writes():
 
 
 def test_gemini_3_1_pro_uses_published_rate():
-    cost = calculate_cost_detail("gemini", "gemini-3.1-pro-preview", 1_000_000, 1_000_000)
-    assert cost.cost_usd == pytest.approx(2.0 + 12.0)
+    cost = calculate_cost_detail("gemini", "gemini-3.1-pro-preview", 100_000, 100_000)
+    assert cost.cost_usd == pytest.approx(0.2 + 1.2)
 
 
 def _trace(**kw):
