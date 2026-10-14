@@ -135,7 +135,7 @@ def _timestamp(value: Any) -> Optional[datetime]:
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return dt.astimezone(timezone.utc) if dt.tzinfo else None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 

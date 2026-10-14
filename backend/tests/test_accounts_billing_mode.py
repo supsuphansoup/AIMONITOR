@@ -359,3 +359,17 @@ def test_unobserved_change_is_read_only_and_unclassified_until_collector_records
     assert (registry.accounts_file.read_bytes(), registry.timeline_file.read_bytes()) == before
     observed = registry.refresh(NOW + timedelta(minutes=1))[0]
     assert observed["auth_mode_changed_at"] == (NOW + timedelta(minutes=1)).isoformat()
+
+
+@pytest.mark.parametrize("field", AUTH_FIELDS[1:])
+@pytest.mark.parametrize("value", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_out_of_range_registry_time_is_unknown_not_a_server_error(client, tmp_path, monkeypatch, field, value):
+    profile(tmp_path)
+    registry = AccountRegistry(home=tmp_path, environ={})
+    rows = registry.refresh(NOW)
+    rows[0][field] = value
+    registry.accounts_file.write_text(json.dumps(rows), encoding="utf-8")
+    assert registry.list_accounts()[0]["auth_mode"] == "unknown"
+    monkeypatch.setattr(ai_detector, "detect_connected_ais", lambda: [])
+    monkeypatch.setattr(metrics, "get_account_quota_windows", lambda _: {})
+    assert client.get("/api/v1/metrics/connected_ais").status_code == 200
