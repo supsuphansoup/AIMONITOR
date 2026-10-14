@@ -30,6 +30,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 for _http_logger in ("httpx", "httpcore"):
     logging.getLogger(_http_logger).setLevel(logging.WARNING)
 logger = logging.getLogger("aimonitor.desktop")
+PORT_CONFLICT_MESSAGE = "포트 충돌 · 다른 프로그램을 종료하거나 설정의 서버 주소를 변경하세요."
+
+
+def backend_health(url: str, timeout: float = 1.5) -> str:
+    """Distinguish an AIMONITOR health response, another HTTP service, and no response."""
+    try:
+        with httpx.Client(timeout=timeout, headers=backend_headers()) as client:
+            response = client.get(f"{url}/health")
+    except Exception:
+        return "unavailable"
+    try:
+        payload = response.json()
+    except ValueError:
+        return "conflict"
+    if (response.status_code == 200 and isinstance(payload, dict)
+            and payload.get("app") == "AIMONITOR" and payload.get("status") == "ok"):
+        return "ready"
+    return "conflict"
 
 
 def backend_command(port: int = 8000, host: str = "127.0.0.1") -> List[str]:
@@ -87,7 +105,11 @@ class DesktopApp:
         self._backend_lock = threading.RLock()
         self._spawn_lock = threading.Lock()
         self._shutdown_started = False
+        self._backend_status = "unavailable"
         self.instance = SingleInstance()
+
+    def backend_notice(self) -> str:
+        return PORT_CONFLICT_MESSAGE if getattr(self, "_backend_status", None) == "conflict" else ""
 
     def ensure_backend(self) -> None:
         """Ensure backend server is running."""
@@ -100,14 +122,13 @@ class DesktopApp:
         if address is None:
             logger.warning("Configured backend is not a local HTTP URL; automatic server start is disabled")
             return
-        try:
-            with httpx.Client(timeout=1.5, headers=backend_headers()) as client:
-                res = client.get(f"{self.backend_url}/health")
-                if res.status_code == 200:
-                    logger.info("Backend is already running at %s", self.backend_url)
-                    return
-        except Exception:
-            pass
+        self._backend_status = backend_health(self.backend_url)
+        if self._backend_status == "ready":
+            logger.info("Backend is already running at %s", self.backend_url)
+            return
+        if self._backend_status == "conflict":
+            logger.warning(PORT_CONFLICT_MESSAGE)
+            return
 
         logger.info("Starting local AIMONITOR backend server...")
         with self._backend_lock:
@@ -143,25 +164,30 @@ class DesktopApp:
             if self._stop_event.is_set():
                 return
             time.sleep(0.5)
-            try:
-                with httpx.Client(timeout=1.0, headers=backend_headers()) as client:
-                    if client.get(f"{self.backend_url}/health").status_code == 200:
-                        logger.info("Backend server ready.")
-                        return
-            except Exception:
-                pass
+            self._backend_status = backend_health(self.backend_url, timeout=1.0)
+            if self._backend_status == "ready":
+                logger.info("Backend server ready.")
+                return
+            if self._backend_status == "conflict":
+                logger.warning(PORT_CONFLICT_MESSAGE)
+                with self._backend_lock:
+                    owned = self._backend_proc is proc
+                    if owned:
+                        self._backend_proc = None
+                if owned:
+                    stop_backend(proc)
+                return
         logger.warning("Backend did not respond immediately, continuing anyway.")
 
     def _watch_backend(self) -> None:
         """Restart the local backend if it stops answering (e.g. it crashed)."""
         failures = 0
         while not self._stop_event.wait(10.0):
-            try:
-                with httpx.Client(timeout=2.0, headers=backend_headers()) as client:
-                    healthy = client.get(f"{self.backend_url}/health").status_code == 200
-            except Exception:
-                healthy = False
-            failures = 0 if healthy else failures + 1
+            self._backend_status = backend_health(self.backend_url, timeout=2.0)
+            if self._backend_status == "conflict":
+                failures = 0
+                continue
+            failures = 0 if self._backend_status == "ready" else failures + 1
             if failures >= 2 and not self._stop_event.is_set():
                 logger.warning("Backend not responding; restarting it")
                 self.ensure_backend()
@@ -189,6 +215,7 @@ class DesktopApp:
                 on_switch_to_widget=self.switch_to_widget,
                 on_visibility_changed=self._on_visibility_changed,
                 start_hidden=autostart,
+                connection_notice=self.backend_notice,
             )
             if local_backend_address(self.backend_url) is None:
                 self.main_window.lbl_status_msg.configure(
@@ -203,6 +230,7 @@ class DesktopApp:
                 on_exit=self.shutdown,
                 on_open_main_app=self.show_main_window,
                 on_topmost_changed=self._sync_topmost,
+                connection_notice=self.backend_notice,
             )
             # Show floating widget so it is always on top as requested
             self.widget.show()

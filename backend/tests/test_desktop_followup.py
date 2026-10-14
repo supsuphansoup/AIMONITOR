@@ -161,7 +161,8 @@ def test_watcher_attaches_header_and_survives_auth_errors(monkeypatch, caplog, s
 def test_health_probe_and_watchdog_attach_optional_header(monkeypatch, key):
     if key:
         monkeypatch.setenv("AIMONITOR_API_KEY", key)
-    requests = transport_client(monkeypatch, lambda _request: httpx.Response(200, json={"status": "ok"}))
+    requests = transport_client(monkeypatch, lambda _request: httpx.Response(
+        200, json={"app": "AIMONITOR", "status": "ok"}))
     controller = main.DesktopApp.__new__(main.DesktopApp)
     import threading
 

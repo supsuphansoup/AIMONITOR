@@ -22,7 +22,7 @@ import logging
 import math
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog
 from typing import Any, Callable, Dict, List, Optional
@@ -63,6 +63,7 @@ from desktop.display import (
     spend_text,
     unclassified_total_text,
     usage_cost_text,
+    valid_api_payload,
     window_text,
 )
 from desktop.quota import account_quotas
@@ -92,6 +93,16 @@ KEY_STATUS_TEXT = {
 }
 
 
+def _spend_snapshot_status(snapshot: Dict[str, Any], failed: bool) -> Dict[str, Any]:
+    def marked(report: Dict[str, Any]) -> Dict[str, Any]:
+        reference = (report.get("last_success_at") or report.get("as_of")) if failed else (
+            report.get("as_of") or datetime.now(timezone.utc).isoformat())
+        return {**report, "fetch_failed": failed, "last_success_at": reference}
+
+    return {key: [marked(item) for item in value] if key == "items" else (
+        marked(value) if key.endswith("_api") else value) for key, value in snapshot.items()}
+
+
 class DesktopMainWindow(ctk.CTk):
     """100% Native Windows GUI Desktop Application."""
 
@@ -100,6 +111,7 @@ class DesktopMainWindow(ctk.CTk):
         on_switch_to_widget: Optional[Callable[[], None]] = None,
         on_visibility_changed: Optional[Callable[[], None]] = None,
         start_hidden: bool = False,
+        connection_notice: Optional[Callable[[], str]] = None,
     ):
         attach_to_default_desktop()
         super().__init__()
@@ -109,6 +121,7 @@ class DesktopMainWindow(ctk.CTk):
         self.on_switch_to_widget = on_switch_to_widget
         # Called after the user hides/shows an AI here, so the widget can refresh at once.
         self.on_visibility_changed = on_visibility_changed
+        self.connection_notice = connection_notice or (lambda: "")
         self.config = load_config()
         self.backend_url = self.config.get("backend_url", "http://127.0.0.1:8000")
         # One rate for the whole process; the widget reads the same updater.
@@ -1251,6 +1264,26 @@ class DesktopMainWindow(ctk.CTk):
         ).pack(anchor="w")
         self._refresh_autostart_status()
 
+        server = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
+        server.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_2)
+        server_inner = ctk.CTkFrame(server, fg_color="transparent")
+        server_inner.pack(fill="x", padx=theme.SPACE_4, pady=theme.SPACE_3)
+        ctk.CTkLabel(server_inner, text="서버 인증 키 (공급자 API 키와 별개)",
+                     font=theme.font(theme.FONT_BODY), text_color=theme.ACCENT).pack(anchor="w")
+        server_row = ctk.CTkFrame(server_inner, fg_color="transparent")
+        server_row.pack(fill="x", pady=theme.SPACE_1)
+        self.entry_server_key = ctk.CTkEntry(server_row, show="*", width=300,
+                                            placeholder_text="새 서버 인증 키")
+        self.entry_server_key.pack(side="left", padx=(0, theme.SPACE_2))
+        ctk.CTkButton(server_row, text="저장", width=60, command=self._save_server_api_key).pack(side="left")
+        ctk.CTkButton(server_row, text="삭제", width=60,
+                     command=lambda: self._save_server_api_key(clear=True)).pack(
+                         side="left", padx=theme.SPACE_2)
+        self.lbl_server_key_status = ctk.CTkLabel(server_inner, text="", font=theme.font(theme.FONT_SM),
+                                                 text_color=theme.MUTED, wraplength=850, justify="left")
+        self.lbl_server_key_status.pack(anchor="w")
+        self._refresh_server_key_status()
+
         # 1. Exchange Rate Row (100% Automatic)
         r1 = ctk.CTkFrame(s_scroll, fg_color=theme.SUBTLE, corner_radius=theme.RADIUS_MD)
         r1.pack(fill="x", padx=theme.SPACE_4, pady=(theme.SPACE_3, theme.SPACE_2))
@@ -1374,6 +1407,36 @@ class DesktopMainWindow(ctk.CTk):
         if self.tabview.get() == "환경설정":
             self._refresh_autostart_status()
             self._refresh_accounts_list()
+            self._refresh_server_key_status()
+
+    def _refresh_server_key_status(self) -> None:
+        self.config = load_config()
+        unreadable = self.config.get("api_key_unreadable", False)
+        self.lbl_server_key_status.configure(
+            text=("저장된 서버 인증 키를 이 Windows 계정에서 읽을 수 없습니다. 다시 입력하세요." if unreadable
+                  else "서버 인증 키 저장됨" if self.config.get("api_key")
+                  else "저장된 서버 인증 키 없음 · 환경 변수 AIMONITOR_API_KEY도 사용할 수 있습니다."),
+            text_color=theme.ERROR if unreadable else theme.MUTED,
+        )
+
+    def _save_server_api_key(self, clear: bool = False) -> None:
+        key = None if clear else self.entry_server_key.get().strip()
+        if not clear and not key:
+            self.lbl_status_msg.configure(
+                text="새 서버 인증 키를 입력하세요. 삭제하려면 삭제 버튼을 누르세요.",
+                text_color=theme.WARNING)
+            return
+        try:
+            self.config = update_config({"api_key": key})
+        except Exception:
+            self.lbl_status_msg.configure(text="서버 인증 키를 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
+        self.entry_server_key.delete(0, "end")
+        self._refresh_server_key_status()
+        self.lbl_status_msg.configure(
+            text="서버 인증 키를 삭제했습니다." if clear else "서버 인증 키를 저장했습니다.",
+            text_color=theme.SUCCESS)
+        self.refresh_data()
 
     def _refresh_autostart_status(self) -> None:
         try:
@@ -1630,6 +1693,13 @@ class DesktopMainWindow(ctk.CTk):
         self.refresh_data()
 
     def _fetch_worker(self, ais: List[Dict[str, Any]], config: Dict[str, Any], krw_rate: float) -> None:
+        if getattr(self, "connection_notice", lambda: "")():
+            self._is_updating = False
+            try:
+                self.after(0, lambda: self._apply_data({}, [], [], None, False))
+            except RuntimeError:
+                pass
+            return
         url_ov = f"{self.backend_url}/api/v1/metrics/overview?hours_back=168"
         url_bd = f"{self.backend_url}/api/v1/metrics/breakdown?hours_back=168"
         url_tr = f"{self.backend_url}/api/v1/traces?limit=50"
@@ -1654,8 +1724,10 @@ class DesktopMainWindow(ctk.CTk):
                     r_ov = client.get(url_ov, params=chart_params)
                     auth_required = auth_required or r_ov.status_code in (401, 403)
                     if r_ov.status_code == 200:
-                        overview = r_ov.json()
-                        endpoint_status["overview"] = True
+                        payload = r_ov.json()
+                        if valid_api_payload("overview", payload):
+                            overview = payload
+                            endpoint_status["overview"] = True
                 except Exception as e:
                     logger.debug("overview fetch err: %s", type(e).__name__)
 
@@ -1663,8 +1735,10 @@ class DesktopMainWindow(ctk.CTk):
                     r_bd = client.get(url_bd, params=chart_params)
                     auth_required = auth_required or r_bd.status_code in (401, 403)
                     if r_bd.status_code == 200:
-                        breakdown = r_bd.json()
-                        endpoint_status["breakdown"] = True
+                        payload = r_bd.json()
+                        if valid_api_payload("breakdown", payload):
+                            breakdown = payload
+                            endpoint_status["breakdown"] = True
                 except Exception as e:
                     logger.debug("breakdown fetch err: %s", type(e).__name__)
 
@@ -1673,8 +1747,9 @@ class DesktopMainWindow(ctk.CTk):
                     auth_required = auth_required or r_tr.status_code in (401, 403)
                     if r_tr.status_code == 200:
                         tr_data = r_tr.json()
-                        traces = tr_data if isinstance(tr_data, list) else tr_data.get("items", [])
-                        endpoint_status["traces"] = True
+                        if valid_api_payload("traces", tr_data):
+                            traces = tr_data if isinstance(tr_data, list) else tr_data["items"]
+                            endpoint_status["traces"] = True
                 except Exception as e:
                     logger.debug("traces fetch err: %s", type(e).__name__)
 
@@ -1682,20 +1757,29 @@ class DesktopMainWindow(ctk.CTk):
                     r_act = client.get(url_act)
                     auth_required = auth_required or r_act.status_code in (401, 403)
                     if r_act.status_code == 200:
-                        act_contexts = r_act.json()
-                        endpoint_status["active_contexts"] = isinstance(act_contexts, dict)
+                        payload = r_act.json()
+                        if valid_api_payload("active_contexts", payload):
+                            act_contexts = payload
+                            endpoint_status["active_contexts"] = True
                 except Exception as e:
                     logger.debug("active_contexts fetch err: %s", type(e).__name__)
 
                 if (any(a["key"].endswith("_api") for a in ais)
                         or any(a.get("has_key") for a in api_key_manager.list_keys())):
+                    endpoint_status["spend"] = False
                     try:
                         r_sp = client.get(f"{self.backend_url}/api/v1/keys/spend", timeout=15.0)
                         auth_required = auth_required or r_sp.status_code in (401, 403)
                         if r_sp.status_code == 200:
-                            self.official_spend = r_sp.json()
+                            payload = r_sp.json()
+                            if valid_api_payload("spend", payload):
+                                self.official_spend = payload
+                                endpoint_status["spend"] = True
                     except Exception as e:
                         logger.debug("spend fetch err: %s", type(e).__name__)
+                    finally:
+                        self.official_spend = _spend_snapshot_status(
+                            self.official_spend, failed=not endpoint_status["spend"])
         except Exception as e:
             logger.debug("fetch_worker client err: %s", type(e).__name__)
 
@@ -1754,6 +1838,12 @@ class DesktopMainWindow(ctk.CTk):
         auth_required: bool = False,
     ) -> None:
         self.is_connected = ok
+        notice = getattr(self, "connection_notice", lambda: "")()
+        if notice:
+            self.is_connected = False
+            self.lbl_status_msg.configure(text=notice, text_color=theme.ERROR)
+            self._schedule_refresh()
+            return
         if not ok or summary is None:
             self.lbl_status_msg.configure(
                 text="인증 필요" if auth_required else (
@@ -1891,10 +1981,16 @@ class DesktopMainWindow(ctk.CTk):
             ctk.CTkLabel(block, text=account.get("label") or "계정 미상", text_color=theme.TEXT, height=20,
                          font=theme.font(theme.FONT_BODY, weight="bold")).pack(anchor="w", padx=theme.SPACE_2)
             windows = account.get("quota_windows") or []
-            quota_text = " · ".join(f"{q['label']} {window_text(q)[0]}" for q in windows) or "한도 확인 불가"
+            formatted = [(q["label"], window_text(q)) for q in windows]
+            quota_text = " · ".join(f"{label} {text[0]}" for label, text in formatted) or "한도 확인 불가"
             ctk.CTkLabel(block, text=quota_text, text_color=theme.ACCENT,
                          wraplength=300, justify="left", height=20,
                          font=theme.font(theme.FONT_XS)).pack(anchor="w", padx=theme.SPACE_2)
+            details = "\n".join(f"{label} · {text[2]}" for label, text in formatted if text[2])
+            if details:
+                ctk.CTkLabel(block, text=details, text_color=theme.MUTED, wraplength=300,
+                             justify="left", height=1, font=theme.font(theme.FONT_XS)).pack(
+                                 anchor="w", padx=theme.SPACE_2)
             lines = account_usage_lines(account, item["cost_meaning"])
             ctk.CTkLabel(block, text="\n".join(lines), text_color=theme.MUTED, height=1,
                          font=theme.font(theme.FONT_XS), wraplength=300, justify="left").pack(
