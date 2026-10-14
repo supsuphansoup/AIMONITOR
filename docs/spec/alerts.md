@@ -30,7 +30,7 @@
 | `operator` | `>` `>=` `<` `<=` `==` `!=` |
 | `window_minutes` | 기본 5, 1–1440 |
 | `cooldown_minutes` | 기본 15, 0–10,080(1주) |
-| `webhook_url` | 선택. `http(s)://`만 허용 |
+| `webhook_url` | 선택. 절대 `http(s)://` URL; 생성·수정·발송 시 대상 검사 |
 | `is_active` | 일시 중지 = `false` |
 | `last_triggered_at` | 쿨다운 기준 시각 (UTC) |
 | 이력 | `rule_id`(FK, 규칙 삭제 시 함께 삭제), `rule_name`, `triggered_value`, `message`(단위 포함), `sent_successfully`, `created_at` |
@@ -40,6 +40,21 @@
 Webhook 미설정은 `webhook_url: null`, `webhook_configured: false`다. 저장된 실제 URL은 반환하지 않는다.
 마스킹 값을 PATCH에 넣으면 422이며, URL을 유지하려면 필드를 생략한다. `webhook_url: null`은 설정을 지운다.
 그 외 필드의 명시적 null과 임계치 NaN·±Infinity는 생성·수정에서 422다. PATCH의 생략 필드는 유지된다.
+
+Webhook은 기본적으로 공개 유니캐스트 주소만 허용한다. 루프백·사설·링크 로컬
+(`169.254.0.0/16`, `fe80::/10` 포함)·예약·멀티캐스트 주소와 userinfo를 거부한다.
+정수·8진·16진·축약 IPv4도 검사하며 DNS 결과 중 하나라도 비공개이면 거부한다.
+`ALERT_ALLOW_PRIVATE_WEBHOOKS=true`로 명시적으로 허용할 수 있다(기본 false).
+이름 해석 실패는 저장 시 422, 발송 시 실패다. 발송 직전 다시 검사하며 환경 프록시는 사용하지 않는다.
+검사와 실제 연결의 이름 해석 사이에는 DNS rebinding 경쟁이 남는다. 외부 서버에 노출할 때는
+네트워크의 송신 제한도 함께 적용해야 한다.
+
+Webhook은 연결·헤더 수신을 포함한 전체 요청에 5초 마감을 적용하고, 마감 시 실제 요청을 취소하고
+응답·클라이언트를 닫는다. 응답 본문은 읽거나 저장하지 않아 본문 수신량은 0이다.
+OS 이름 해석은 취소 후에도 운영체제에서 끝날 수 있으나 이후 HTTP 요청을 시작하지 않는다.
+2xx만 성공이며 3xx를 포함한 나머지는 실패다. `follow_redirects=False`로 리디렉션을 따르지 않는다.
+Discord는 소문자로 정규화한 `discord.com`·`discordapp.com` 호스트와
+`/api/(vN/)?webhooks` 경로일 때만 `content`·`username` 형식으로 발송하며 그 외는 Slack `text` 형식이다.
 
 ### 평가 흐름 (`AlertEvaluator.evaluate_rules`)
 

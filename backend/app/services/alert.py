@@ -1,7 +1,10 @@
 """Alert rule evaluation and webhook dispatch."""
+import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 from sqlmodel import Session, col, select, update
@@ -14,7 +17,7 @@ from backend.app.core.metrics_catalog import (
     unit_for,
 )
 from backend.app.core.timeutil import to_aware_utc, utc_now
-from backend.app.models.alert import AlertHistory, AlertRule
+from backend.app.models.alert import AlertHistory, AlertRule, _validate_webhook_url
 from backend.app.services.aggregator import MetricAggregator
 
 logger = logging.getLogger(__name__)
@@ -59,7 +62,26 @@ def compare_operator(actual_value: float, operator: str, threshold: float) -> bo
 
 
 def _is_discord(url: str) -> bool:
-    return "discord.com/api/webhooks" in url or "discordapp.com/api/webhooks" in url
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    return parsed.hostname in ("discord.com", "discordapp.com") and bool(
+        re.match(r"^/api/(?:v[0-9]+/)?webhooks(?:/|$)", parsed.path)
+    )
+
+
+async def _send_webhook(url: str, payload: Dict[str, Any]) -> bool:
+    # Recheck DNS immediately before sending, including rules saved under older settings.
+    validated_url = await asyncio.get_running_loop().run_in_executor(None, _validate_webhook_url, url)
+    if validated_url is None:
+        return False
+    async with httpx.AsyncClient(
+        timeout=WEBHOOK_TIMEOUT_SECONDS, follow_redirects=False, trust_env=False,
+    ) as client:
+        # Only the status is needed. Never download or buffer the response body.
+        async with client.stream("POST", validated_url, json=payload) as response:
+            return 200 <= response.status_code < 300
 
 
 class AlertEvaluator:
@@ -111,22 +133,22 @@ class AlertEvaluator:
                 "triggered_at": aware_ts.isoformat(),
             }
 
+        loop = asyncio.new_event_loop()
         try:
-            with httpx.Client(timeout=WEBHOOK_TIMEOUT_SECONDS) as client:
-                response = client.post(rule.webhook_url, json=payload)
-                if response.status_code >= 400:
-                    logger.warning(
-                        "Webhook for alert '%s' returned status %d",
-                        rule.name,
-                        response.status_code,
-                    )
-                    return False
-                return True
+            return loop.run_until_complete(
+                asyncio.wait_for(_send_webhook(rule.webhook_url, payload), WEBHOOK_TIMEOUT_SECONDS)
+            )
         except Exception as exc:
             logger.warning(
                 "Webhook for alert '%s' failed: %s", rule.name, exc.__class__.__name__
             )
             return False
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            # OS DNS lookups cannot be interrupted, but cancelled lookups cannot
+            # resume the coroutine or initiate an HTTP request. Do not wait for
+            # the resolver executor as asyncio.run() would at shutdown.
+            loop.close()
 
     @staticmethod
     def is_in_cooldown(rule: AlertRule, now: datetime) -> bool:

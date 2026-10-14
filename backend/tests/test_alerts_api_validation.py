@@ -2,10 +2,16 @@
 import pytest
 
 from backend.app.core.config import settings
+from backend.app.models import alert as alert_models
 from backend.app.models.alert import AlertRule
 
 RULE = {"name": "safe rule", "metric_type": "total_requests", "threshold_value": 1}
 SECRET_URL = "https://hooks.slack.com/services/FAKE/REVIEW/SECRET?token=FAKE"
+
+
+@pytest.fixture(autouse=True)
+def public_dns(monkeypatch):
+    monkeypatch.setattr(alert_models, "getaddrinfo", lambda *args, **kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))])
 
 
 def test_rule_responses_mask_webhook_on_create_read_and_update(client, session, api_key, monkeypatch):

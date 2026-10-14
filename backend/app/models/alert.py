@@ -1,4 +1,7 @@
+import ipaddress
+import re
 from datetime import datetime
+from socket import SOCK_STREAM, gaierror, getaddrinfo
 from typing import Any, ClassVar, FrozenSet, Optional
 from urllib.parse import urlsplit
 
@@ -6,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, computed_field, field_serializer, fi
 from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
 
+from backend.app.core.config import settings
 from backend.app.core.metrics_catalog import VALID_METRIC_TYPES
 from backend.app.core.timeutil import to_aware_utc, utc_now
 
@@ -66,9 +70,66 @@ def _validate_webhook_url(v: Optional[str]) -> Optional[str]:
         return None
     if "…" in stripped:
         raise ValueError("A masked webhook_url cannot be saved; omit it to keep the current URL")
-    if not stripped.startswith(("http://", "https://")):
-        raise ValueError("webhook_url must start with http:// or https://")
+    try:
+        parsed = urlsplit(stripped)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise ValueError("webhook_url has an invalid host or port") from None
+    if parsed.scheme not in ("http", "https") or not host:
+        raise ValueError("webhook_url must be an absolute http:// or https:// URL")
+    if any(ord(char) < 32 or ord(char) == 127 for char in stripped):
+        raise ValueError("webhook_url must not contain control characters")
+    allow_private = settings.ALERT_ALLOW_PRIVATE_WEBHOOKS
+    if not allow_private and (parsed.username is not None or parsed.password is not None):
+        raise ValueError("webhook_url must not contain userinfo")
+
+    address = _webhook_ip(host.rstrip("."))
+    if address is not None:
+        addresses = [address]
+        canonical_host = str(address)
+        if ":" in canonical_host:
+            canonical_host = f"[{canonical_host}]"
+        userinfo = parsed.netloc.rsplit("@", 1)[0] + "@" if "@" in parsed.netloc else ""
+        netloc = userinfo + canonical_host + (f":{port}" if port is not None else "")
+        stripped = parsed._replace(netloc=netloc).geturl()
+    else:
+        try:
+            answers = getaddrinfo(host, port or (443 if parsed.scheme == "https" else 80), type=SOCK_STREAM)
+            addresses = [ipaddress.ip_address(answer[4][0].split("%", 1)[0]) for answer in answers]
+        except (gaierror, ValueError, UnicodeError, OSError):
+            raise ValueError("webhook_url host could not be resolved") from None
+        if not addresses:
+            raise ValueError("webhook_url host could not be resolved")
+    if not allow_private:
+        for address in addresses:
+            address = getattr(address, "ipv4_mapped", None) or address
+            if (not address.is_global or address.is_multicast or address.is_reserved
+                    or getattr(address, "is_site_local", False)):
+                raise ValueError("webhook_url must resolve only to public unicast addresses")
     return stripped
+
+
+def _webhook_ip(host: str) -> Optional[Any]:
+    """Recognize IPv6 and legacy IPv4 forms before the OS resolver can reinterpret them."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or not all(re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)", p) for p in parts):
+        return None
+    try:
+        numbers = [int(p, 16 if p.lower().startswith("0x") else 8 if len(p) > 1 and p[0] == "0" else 10)
+                   for p in parts]
+    except ValueError:
+        raise ValueError("webhook_url contains an invalid IP address") from None
+    if any(n > 255 for n in numbers[:-1]) or numbers[-1] >= 1 << (8 * (5 - len(numbers))):
+        raise ValueError("webhook_url contains an invalid IP address")
+    number = numbers[-1]
+    for index, part in enumerate(numbers[:-1]):
+        number += part << (8 * (3 - index))
+    return ipaddress.IPv4Address(number)
 
 
 class AlertRuleCreate(BaseModel):
