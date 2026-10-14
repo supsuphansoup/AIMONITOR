@@ -287,6 +287,7 @@ def export_traces_csv(
     )
 
     def rows() -> Iterator[str]:
+        yield "\ufeff"
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\n")
         writer.writerow(CSV_COLUMNS)
@@ -335,7 +336,8 @@ def get_trace_detail(
     query = (
         select(TraceEvent)
         .where(TraceEvent.trace_id == trace_id)
-        .order_by(col(TraceEvent.timestamp).desc())
+        .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
+        .limit(1)
     )
     event = session.exec(query).first()
     if not event:

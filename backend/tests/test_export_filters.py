@@ -28,7 +28,7 @@ def _seed(client: TestClient):
 
 def _rows(response):
     assert response.status_code == 200
-    return list(csv.DictReader(io.StringIO(response.text)))
+    return list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
 
 
 @pytest.mark.parametrize("status", ["success", " Error ", "timeout", "rate_limited", ""])

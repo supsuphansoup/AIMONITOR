@@ -65,9 +65,11 @@ SQLite signed 64-bit SUM이 넘치려면 최대값 행만 9,223,372,037건 이�
 - 필터: `provider`, `model_name`, `status`, `session_id`, `account_id`, `start_time`, `end_time`. 잘못된 `status`·`account_id`는 422 (빈 결과로 숨기지 않음).
 - 정렬: `timestamp DESC, id DESC` — 같은 시각 행이 페이지 경계에서 중복되지 않도록 `id`를 2차 키로 쓴다.
 - `limit` 기본 50(1–500), `offset` ≥ 0.
+- 단건 조회도 `timestamp DESC, id DESC LIMIT 1`로 최신 행 한 건을 선택한다.
 
 ### CSV 내보내기
 
+- 스트림 시작에 UTF-8 BOM을 한 번 붙여 Excel에서 한글을 인식하게 한다. 프로그램에서 읽을 때는 `utf-8-sig`로 디코딩한다.
 - 필터: `provider`, `model_name`, `status`, `account_id`, `start_time`, `end_time`을 함께 적용한다. `status`는 조회 API와 동일한 `VALID_STATUSES`를 사용해 공백 제거·대문자 변환 후 검증하며, 잘못된 값은 같은 422 오류로 거부한다 (빈 문자열은 status 필터 생략).
 - 기간 경계는 양쪽 모두 포함한다 (`timestamp >= start_time`, `timestamp <= end_time`). 오프셋이 있는 입력 시각은 `timeutil.to_naive_utc`로 변환해 비교한다.
 - 컬럼: `id, trace_id, timestamp, session_id, provider, model_name, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, total_tokens, latency_ms, cost_usd, cost_source, status, tags, account_id`. 계정 미상은 마지막 열을 빈 칸으로 둔다.

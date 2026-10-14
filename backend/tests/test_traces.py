@@ -126,3 +126,12 @@ def test_get_trace_by_id(client: TestClient):
     # Non-existent ID
     res_404 = client.get("/api/v1/traces/non-existent-id")
     assert res_404.status_code == 404
+
+
+def test_detail_breaks_timestamp_ties_by_latest_id(client: TestClient):
+    payload = {"trace_id": "same-trace", "provider": "openai", "model_name": "gpt-4o",
+               "timestamp": "2026-10-01T00:00:00Z"}
+    first = client.post("/api/v1/traces", json=payload).json()
+    last = client.post("/api/v1/traces", json=payload).json()
+    assert last["id"] > first["id"]
+    assert client.get("/api/v1/traces/same-trace").json()["id"] == last["id"]
