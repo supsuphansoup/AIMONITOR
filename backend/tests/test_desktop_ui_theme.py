@@ -131,11 +131,12 @@ def test_api_key_save_delete_and_visibility_callbacks(monkeypatch):
 def test_settings_save_keeps_widget_preferences(monkeypatch, value, expected):
     monkeypatch.setattr(app_gui, "load_config", lambda: {"widget_opacity": 0.7})
     save = Mock()
-    monkeypatch.setattr(app_gui, "save_config", save)
+    save.return_value = {"widget_opacity": 0.7}
+    monkeypatch.setattr(app_gui, "update_config", save)
     ui = SimpleNamespace(entry_copilot_limit=SimpleNamespace(get=lambda: value),
                          lbl_status_msg=Mock(), refresh_data=Mock())
     app_gui.DesktopMainWindow._save_copilot_limit(ui)
-    save.assert_called_once_with({"widget_opacity": 0.7, "copilot_monthly_premium_limit": expected})
+    save.assert_called_once_with({"copilot_monthly_premium_limit": expected})
     ui.refresh_data.assert_called_once()
 
 

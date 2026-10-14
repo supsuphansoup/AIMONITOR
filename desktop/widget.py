@@ -10,6 +10,7 @@ no official value reads "확인 불가".
 - Double-click opens the native dashboard
 """
 
+import logging
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -20,13 +21,14 @@ import httpx
 from desktop import theme
 from desktop.accounts import list_accounts
 from desktop.ai_detector import detect_connected_ais
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import AccountQuotaView, account_tools, attach_accounts, select_entries, widget_entries
 from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
 ROW_HEIGHT = theme.ROW_HEIGHT
+logger = logging.getLogger(__name__)
 
 
 class FloatingWidget:
@@ -236,11 +238,11 @@ class FloatingWidget:
         self._save(widget_x=self.root.winfo_x(), widget_y=self.root.winfo_y())
 
     def _save(self, **changes: Any) -> None:
-        # Re-read first: the main window and the rate updater write the same file.
-        cfg = load_config()
-        cfg.update(changes)
-        save_config(cfg)
-        self.config = cfg
+        try:
+            self.config = update_config(changes)
+        except Exception:
+            self.root.bell()
+            logger.warning("Could not save widget settings")
 
     def _show_context_menu(self, event) -> None:
         menu = tk.Menu(

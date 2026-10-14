@@ -117,7 +117,8 @@ def test_config_roundtrip_seals_key_and_preserves_preferences(caplog):
 
 def test_config_fails_closed_if_sealing_fails(monkeypatch, caplog):
     monkeypatch.setattr(secret_store, "AVAILABLE_SCHEME", secret_store.SCHEME_UNAVAILABLE)
-    config.save_config({"api_key": "test-only-server-secret"})
+    with pytest.raises(ValueError):
+        config.save_config({"api_key": "test-only-server-secret"})
     assert not config.CONFIG_FILE.exists()
     assert "test-only-server-secret" not in caplog.text
 

@@ -124,13 +124,10 @@ class AutoRateUpdater:
 
 def _persist(updater: AutoRateUpdater) -> None:
     try:
-        from desktop.config import load_config, save_config
+        from desktop.config import update_config
 
-        cfg = load_config()
-        cfg["krw_per_usd"] = updater.rate
-        cfg["krw_rate_source"] = updater.source
-        cfg["krw_rate_as_of"] = updater.as_of.isoformat() if updater.as_of else None
-        save_config(cfg)
+        update_config({"krw_per_usd": updater.rate, "krw_rate_source": updater.source,
+                       "krw_rate_as_of": updater.as_of.isoformat() if updater.as_of else None})
     except Exception as e:
         logger.debug("could not persist rate: %s", type(e).__name__)
 

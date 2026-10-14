@@ -45,7 +45,7 @@ if sys.platform == "win32":
 
 from backend.app.services.api_key_manager import api_key_manager
 from desktop.ai_detector import detect_connected_ais, scan_all_ai_status
-from desktop.config import attach_to_default_desktop, backend_headers, load_config, save_config
+from desktop.config import attach_to_default_desktop, backend_headers, load_config, update_config
 from desktop.context_manager import get_connected_ai_summary, hidden_ai_keys
 from desktop.display import (
     GREY,
@@ -1388,13 +1388,17 @@ class DesktopMainWindow(ctk.CTk):
                 var.set(key not in hidden)
 
     def _toggle_ai_visibility(self, key: str) -> None:
-        cfg = load_config()  # re-read so settings the widget saved are kept
-        hidden = [k for k in hidden_ai_keys(cfg) if k != key]
-        if not self._visibility_vars[key].get():
-            hidden.append(key)
-        cfg["hidden_ais"] = hidden
-        save_config(cfg)
-        self.config = cfg
+        def change(cfg: Dict[str, Any]) -> None:
+            hidden = [k for k in hidden_ai_keys(cfg) if k != key]
+            if not self._visibility_vars[key].get():
+                hidden.append(key)
+            cfg["hidden_ais"] = hidden
+        try:
+            self.config = update_config(change)
+        except Exception:
+            self.lbl_status_msg.configure(text="설정을 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
+        hidden = hidden_ai_keys(self.config)
         name = next((a.get("display_name", key) for a in self.connected_ais if a["key"] == key), key)
         state = "표시" if key not in hidden else "숨김"
         self.lbl_status_msg.configure(text=f"{name}: {state}", text_color=theme.SUCCESS)
@@ -1412,10 +1416,11 @@ class DesktopMainWindow(ctk.CTk):
         except ValueError:
             self.lbl_status_msg.configure(text="한도는 양수로 입력하세요.", text_color=theme.ERROR)
             return
-        cfg = load_config()  # re-read so settings the widget saved are kept
-        cfg["copilot_monthly_premium_limit"] = value
-        save_config(cfg)
-        self.config = cfg
+        try:
+            self.config = update_config({"copilot_monthly_premium_limit": value})
+        except Exception:
+            self.lbl_status_msg.configure(text="설정을 저장하지 못했습니다.", text_color=theme.ERROR)
+            return
         self.lbl_status_msg.configure(text="Copilot 한도를 저장했습니다.", text_color=theme.SUCCESS)
         self.refresh_data()
 
