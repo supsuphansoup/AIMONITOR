@@ -10,7 +10,6 @@ import ipaddress
 import os
 import sys
 import threading
-import traceback
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".aimonitor"
@@ -110,9 +109,9 @@ def main(argv: list) -> int:
         try:
             import backend.app.main  # noqa: F401
             import desktop.main  # noqa: F401  (pulls in customtkinter, matplotlib, pystray)
-        except Exception:
+        except Exception as exc:
             # Report through the exit code; an uncaught error would open a dialog and hang a headless check.
-            traceback.print_exc()
+            print(f"self-test failed: error_type={type(exc).__name__}", file=sys.stderr)
             return 1
         return 0
 

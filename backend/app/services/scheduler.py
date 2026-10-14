@@ -59,7 +59,7 @@ class BackgroundScheduler:
                 # A failing pass must not kill the loop, or monitoring stops
                 # silently at the first transient database error.
                 self.last_alert_error = f"{name}: {exc.__class__.__name__}"
-                logger.exception("Scheduled job '%s' failed", name)
+                logger.error("Scheduled job '%s' failed error_type=%s", name, type(exc).__name__)
             await asyncio.sleep(interval_seconds)
 
     def _job_done(self, task: asyncio.Task[Any]) -> None:
