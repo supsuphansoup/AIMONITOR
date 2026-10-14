@@ -32,6 +32,7 @@ rolling(`hours_back`) 조회는 요청당 현재 UTC를 한 번 읽어 시작·�
 ### 계산 방식
 
 - 건수·합계·평균: SQL `COUNT`/`SUM`/`AVG`, 모델별은 `GROUP BY` — 행을 ORM 객체로 올리지 않는다.
+- overview의 총계·오류·미상 건수는 한 SELECT의 조건부 SUM으로 계산한다. SQLite에서 overview의 지연 표본과 도구·계정 집계는 실제 BEGIN이 발생한 읽기 스냅샷을 사용한다. 스냅샷은 호출자의 Session이 종료·commit·rollback할 때 해제하며 WAL 수집기의 동시 커밋을 막지 않는다.
 - 백분위수: `latency_ms` 컬럼만 **최신순(`DESC`)으로 최대 `MAX_AGGREGATION_ROWS`(200,000)행** 조회 후 선형 보간(numpy 기본과 동일). 상한에 걸리면 `latency_sampled: true`.
 - 시계열: 상한+1행을 최신순으로 읽어 실제 초과 여부를 확인한 뒤 같은 상한을 적용한다. 정확히 상한과 같으면 `partial: false`다. 잘리는 쪽은 항상 과거이며, 잘린 가장 오래된 버킷에 `partial: true`.
 - 버킷 경계: UTC 자정 기준 경과 분을 `interval_minutes`로 내림. 60의 약수가 아닌 간격도 겹치지 않는다.

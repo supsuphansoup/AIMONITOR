@@ -99,6 +99,14 @@ def _watcher_key() -> Any:
     ], else_=None)
 
 
+def _ensure_read_snapshot(session: Session) -> None:
+    """Start a real SQLite snapshot; the caller's Session owns its lifetime."""
+    connection = session.connection()
+    if connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+        # sqlite3 legacy mode does not BEGIN for SELECT, even inside Session.begin().
+        connection.exec_driver_sql("BEGIN")
+
+
 class MetricAggregator:
     @staticmethod
     def get_overview_metrics(
@@ -111,6 +119,7 @@ class MetricAggregator:
         account_unknown: bool = False,
     ) -> Dict[str, Any]:
         """Calculate high-level KPI overview metrics."""
+        _ensure_read_snapshot(session)
         totals_query = _apply_filters(
             select(
                 func.count(col(TraceEvent.id)),
@@ -122,6 +131,8 @@ class MetricAggregator:
                 func.sum(col(TraceEvent.cache_write_tokens)),
                 func.avg(case((col(TraceEvent.latency_measured), col(TraceEvent.latency_ms)), else_=None)),
                 func.sum(case((col(TraceEvent.latency_measured), 1), else_=0)),
+                func.sum(case((TraceEvent.status != "SUCCESS", 1), else_=0)),
+                func.sum(case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0)),
             ),
             start_time,
             end_time,
@@ -141,32 +152,12 @@ class MetricAggregator:
             cache_write_tokens,
             avg_latency,
             latency_measured_count,
+            error_count,
+            cost_unknown_count,
         ) = row
 
         if not total_requests:
             return dict(EMPTY_OVERVIEW)
-
-        error_query = _apply_filters(
-            select(func.count(col(TraceEvent.id))).where(TraceEvent.status != "SUCCESS"),
-            start_time,
-            end_time,
-            provider,
-            model_name,
-            account_id,
-            account_unknown,
-        )
-        error_count = session.exec(error_query).one() or 0
-
-        unpriced_query = _apply_filters(
-            select(func.count(col(TraceEvent.id))).where(TraceEvent.cost_source == SOURCE_UNKNOWN),
-            start_time,
-            end_time,
-            provider,
-            model_name,
-            account_id,
-            account_unknown,
-        )
-        cost_unknown_count = session.exec(unpriced_query).one() or 0
 
         # Newest first: when the row cap truncates the sample, percentiles should
         # describe recent behaviour. Without the ordering the database returns
@@ -368,6 +359,7 @@ class MetricAggregator:
         and the last 7 days. Cost sums only priced rows; `cost_unknown` counts
         the rest so a caller can say "계산 불가" instead of showing a low total.
         """
+        _ensure_read_snapshot(session)
         now_utc = to_aware_utc(now) if now else to_aware_utc(utc_now())
         windows = {
             "5h": now_utc - timedelta(hours=5),
