@@ -10,6 +10,7 @@ Design constraints, in priority order:
    returns the stored record; `enqueue()` hands off to a background worker that
    batches and flushes, costing the caller a queue append.
 """
+import asyncio
 import atexit
 import functools
 import inspect
@@ -142,18 +143,51 @@ class AIMonitor:
         self._worker: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._dropped = 0
+        self._condition = threading.Condition()
+        self._close_lock = threading.Lock()
+        self._closing = False
+        self._closed = False
+        self._outstanding = 0
+        self._active_sends = 0
+        self._flush_requested = False
+        self._atexit_registered = False
+        self._background = background
+        self._max_queue_size = max(1, max_queue_size)
 
         if background:
-            self._queue = queue.Queue(maxsize=max_queue_size)
-            self._worker = threading.Thread(
-                target=self._drain_loop, name="aimonitor-flush", daemon=True
-            )
-            self._worker.start()
-            atexit.register(self.close)
+            self._start_worker()
 
     # --- internals ------------------------------------------------------
     def _headers(self) -> Dict[str, str]:
         return {"X-API-Key": self.api_key} if self.api_key else {}
+
+    def _start_worker(self) -> bool:
+        with self._condition:
+            if self._closing:
+                return False
+            if self._queue is None:
+                self._queue = queue.Queue(maxsize=self._max_queue_size)
+                self._worker = threading.Thread(
+                    target=self._drain_loop, name="aimonitor-flush", daemon=True,
+                )
+                atexit.register(self.close)
+                self._atexit_registered = True
+                self._worker.start()
+            return True
+
+    def _begin_send(self) -> bool:
+        with self._condition:
+            if self._closing:
+                return False
+            self._active_sends += 1
+            return True
+
+    def _finish_send(self, delivered: bool) -> None:
+        with self._condition:
+            self._active_sends -= 1
+            if not delivered:
+                self._dropped += 1
+            self._condition.notify_all()
 
     def _get_async_client(self) -> httpx.AsyncClient:
         # Created lazily so constructing AIMonitor in a sync program does not
@@ -205,30 +239,49 @@ class AIMonitor:
         assert self._queue is not None
         pending: List[Dict[str, Any]] = []
         last_flush = time.monotonic()
-        while not self._stop.is_set() or not self._queue.empty() or pending:
-            timeout = max(0.05, self.flush_interval - (time.monotonic() - last_flush))
+        while True:
+            with self._condition:
+                while True:
+                    while len(pending) < self.batch_size:
+                        try:
+                            pending.append(self._queue.get_nowait())
+                        except queue.Empty:
+                            break
+                    remaining = self.flush_interval - (time.monotonic() - last_flush)
+                    if pending and (
+                        len(pending) >= self.batch_size or remaining <= 0
+                        or self._flush_requested or self._stop.is_set()
+                    ):
+                        break
+                    if self._stop.is_set() and not pending:
+                        return
+                    self._condition.wait(timeout=max(0.01, remaining) if pending else None)
             try:
-                pending.append(self._queue.get(timeout=timeout))
-            except queue.Empty:
-                pass
-
-            due = (
-                len(pending) >= self.batch_size
-                or (pending and time.monotonic() - last_flush >= self.flush_interval)
-                or (pending and self._stop.is_set())
-            )
-            if due:
-                self._post_batch(pending)
+                delivered = self._post_batch(pending)
+            except Exception as exc:
+                delivered = False
+                logger.debug("aimonitor: worker send failed (%s)", type(exc).__name__)
+            with self._condition:
+                if not delivered:
+                    self._dropped += len(pending)
+                self._outstanding -= len(pending)
+                for _ in pending:
+                    self._queue.task_done()
                 pending = []
-                last_flush = time.monotonic()
+                if self._outstanding == 0:
+                    self._flush_requested = False
+                self._condition.notify_all()
+            last_flush = time.monotonic()
 
-    def _post_batch(self, payloads: List[Dict[str, Any]]) -> None:
+    def _post_batch(self, payloads: List[Dict[str, Any]]) -> bool:
         if not payloads:
-            return
+            return True
         try:
-            self._sync_client.post(f"{self.api_url}/traces/batch", json={"traces": payloads})
+            response = self._sync_client.post(f"{self.api_url}/traces/batch", json={"traces": payloads})
+            return 200 <= response.status_code < 300
         except Exception as exc:
             logger.debug("aimonitor: batch flush failed (%s)", exc.__class__.__name__)
+            return False
 
     # --- public API -----------------------------------------------------
     def track(
@@ -251,6 +304,9 @@ class AIMonitor:
         cache_write_1h_tokens: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Send one trace inline and return the stored record, or None on failure."""
+        if not self._begin_send():
+            return None
+        delivered = False
         try:
             payload = self._build_payload(
                 provider, model_name, prompt_tokens, completion_tokens,
@@ -259,11 +315,15 @@ class AIMonitor:
             )
             res = self._sync_client.post(f"{self.api_url}/traces", json=payload)
             if res.status_code == 201:
-                return res.json()
+                result = res.json()
+                delivered = True
+                return result
             logger.debug("aimonitor: ingest rejected with HTTP %s", res.status_code)
         except Exception as exc:
             # Silent by design: a monitoring outage must not break the caller.
             logger.debug("aimonitor: ingest failed (%s)", exc.__class__.__name__)
+        finally:
+            self._finish_send(delivered)
         return None
 
     def enqueue(self, **kwargs: Any) -> bool:
@@ -272,42 +332,73 @@ class AIMonitor:
         Returns False when the queue is full, in which case the trace is dropped
         rather than blocking the calling request.
         """
+        with self._condition:
+            if self._closing:
+                return False
         if self._queue is None:
-            self.track(**kwargs)
-            return True
-        payload = self._build_payload(
-            kwargs.get("provider", "custom"),
-            kwargs.get("model_name", "unknown"),
-            kwargs.get("prompt_tokens", 0),
-            kwargs.get("completion_tokens", 0),
-            kwargs.get("cache_read_tokens", 0),
-            kwargs.get("cache_write_tokens", 0),
-            kwargs.get("latency_ms"),
-            kwargs.get("status", "SUCCESS"),
-            kwargs.get("error_message"),
-            kwargs.get("session_id"),
-            kwargs.get("trace_id"),
-            kwargs.get("tags"),
-            kwargs.get("metadata"),
-            kwargs.get("account_id"),
-            kwargs.get("cache_write_1h_tokens", 0),
-        )
+            return self.track(**kwargs) is not None
         try:
-            self._queue.put_nowait(payload)
-            return True
-        except queue.Full:
-            self._dropped += 1
-            if self._dropped % 100 == 1:
-                logger.warning("aimonitor: queue full, dropped %d traces", self._dropped)
+            payload = self._build_payload(
+                kwargs.get("provider", "custom"),
+                kwargs.get("model_name", "unknown"),
+                kwargs.get("prompt_tokens", 0),
+                kwargs.get("completion_tokens", 0),
+                kwargs.get("cache_read_tokens", 0),
+                kwargs.get("cache_write_tokens", 0),
+                kwargs.get("latency_ms"),
+                kwargs.get("status", "SUCCESS"),
+                kwargs.get("error_message"),
+                kwargs.get("session_id"),
+                kwargs.get("trace_id"),
+                kwargs.get("tags"),
+                kwargs.get("metadata"),
+                kwargs.get("account_id"),
+                kwargs.get("cache_write_1h_tokens", 0),
+            )
+            with self._condition:
+                if self._closing:
+                    return False
+                try:
+                    self._queue.put_nowait(payload)
+                except queue.Full:
+                    self._dropped += 1
+                    if self._dropped % 100 == 1:
+                        logger.warning("aimonitor: queue full, dropped %d traces", self._dropped)
+                    return False
+                self._outstanding += 1
+                self._condition.notify_all()
+                return True
+        except Exception as exc:
+            with self._condition:
+                self._dropped += 1
+            logger.debug("aimonitor: enqueue failed (%s)", type(exc).__name__)
             return False
 
-    def flush(self, timeout: float = 5.0) -> None:
-        """Block until the background queue has drained (no-op in inline mode)."""
-        if self._queue is None:
-            return
+    @property
+    def pending_count(self) -> int:
+        """Accepted traces still queued, pending, or in flight."""
+        with self._condition:
+            return self._outstanding + self._active_sends
+
+    @property
+    def dropped_count(self) -> int:
+        """Cumulative dropped or unconfirmed traces, including transport failures."""
+        with self._condition:
+            return self._dropped
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Force delivery and wait; False means timeout or cumulative delivery loss."""
         deadline = time.monotonic() + timeout
-        while not self._queue.empty() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        with self._condition:
+            self._flush_requested = True
+            self._condition.notify_all()
+            while self._outstanding or self._active_sends:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            self._flush_requested = False
+            return self._dropped == 0
 
     async def a_track(
         self,
@@ -329,6 +420,9 @@ class AIMonitor:
         cache_write_1h_tokens: int = 0,
     ) -> Optional[Dict[str, Any]]:
         """Asynchronously send a single trace event."""
+        if not self._begin_send():
+            return None
+        delivered = False
         try:
             payload = self._build_payload(
                 provider, model_name, prompt_tokens, completion_tokens,
@@ -337,10 +431,14 @@ class AIMonitor:
             )
             res = await self._get_async_client().post(f"{self.api_url}/traces", json=payload)
             if res.status_code == 201:
-                return res.json()
+                result = res.json()
+                delivered = True
+                return result
             logger.debug("aimonitor: async ingest rejected with HTTP %s", res.status_code)
         except Exception as exc:
             logger.debug("aimonitor: async ingest failed (%s)", exc.__class__.__name__)
+        finally:
+            self._finish_send(delivered)
         return None
 
     def observe(
@@ -384,17 +482,21 @@ class AIMonitor:
                 async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                     start_time = time.perf_counter()
                     status_val, err_msg, usage = "SUCCESS", None, {}
+                    cancelled = False
                     try:
                         result = await func(*args, **kwargs)
                         usage = usage_for(result)
                         return result
+                    except asyncio.CancelledError as exc:
+                        status_val, err_msg, cancelled = "ERROR", type(exc).__name__, True
+                        raise
                     except Exception as e:
                         status_val = "ERROR"
                         err_msg = type(e).__name__
                         raise
                     finally:
                         try:
-                            await self.a_track(
+                            payload = dict(
                                 provider=provider,
                                 model_name=model_name,
                                 latency_ms=round((time.perf_counter() - start_time) * 1000.0, 2),
@@ -405,6 +507,11 @@ class AIMonitor:
                                 tags=tags,
                                 **usage,
                             )
+                            if self._background or cancelled:
+                                if self._start_worker():
+                                    self.enqueue(**payload)
+                            else:
+                                await self.a_track(**payload)
                         except Exception as exc:
                             logger.debug("aimonitor: observation failed (%s)", type(exc).__name__)
                 return async_wrapper
@@ -422,7 +529,7 @@ class AIMonitor:
                     err_msg = type(e).__name__
                     raise
                 finally:
-                    send = self.enqueue if self._queue is not None else self.track
+                    send = self.enqueue if self._background else self.track
                     try:
                         send(
                             provider=provider,
@@ -440,21 +547,47 @@ class AIMonitor:
             return sync_wrapper
         return decorator
 
-    def close(self) -> None:
-        """Drain the queue if there is one, then close the sync transport."""
-        if self._worker is not None and self._worker.is_alive():
-            self._stop.set()
-            self._worker.join(timeout=self.timeout + self.flush_interval)
-        try:
-            self._sync_client.close()
-        except Exception:
-            pass
+    def close(self) -> bool:
+        """Reject new work, drain all accepted sends, then close the sync transport."""
+        with self._close_lock:
+            with self._condition:
+                if self._closed:
+                    return self._dropped == 0
+                self._closing = True
+                self._stop.set()
+                self._condition.notify_all()
+            if self._worker is not None:
+                self._worker.join()
+            with self._condition:
+                while self._active_sends:
+                    self._condition.wait()
+                # Defensive accounting if a caller injected a queue without a worker.
+                if self._outstanding:
+                    self._dropped += self._outstanding
+                    self._outstanding = 0
+            try:
+                self._sync_client.close()
+            except Exception as exc:
+                logger.debug("aimonitor: transport close failed (%s)", type(exc).__name__)
+            with self._condition:
+                self._closed = True
+            if self._atexit_registered:
+                atexit.unregister(self.close)
+                self._atexit_registered = False
+            return self.dropped_count == 0
 
-    async def a_close(self) -> None:
-        """Close the async transport."""
-        if self._async_client is not None:
-            await self._async_client.aclose()
-            self._async_client = None
+    async def a_close(self) -> bool:
+        """Drain sync/background work off the event loop, then close async transport."""
+        delivered = await asyncio.to_thread(self.close)
+        with self._async_lock:
+            client, self._async_client = self._async_client, None
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception as exc:
+                logger.debug("aimonitor: async transport close failed (%s)", type(exc).__name__)
+                return False
+        return delivered
 
     def __enter__(self) -> "AIMonitor":
         return self

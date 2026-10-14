@@ -59,8 +59,26 @@ queue and a worker thread batches and flushes it.
 ```python
 monitor = AIMonitor(background=True, batch_size=50, flush_interval=2.0)
 monitor.enqueue(provider="openai", model_name="gpt-4o", prompt_tokens=100)
-monitor.flush()   # drain before shutdown; close() also drains
+if not monitor.flush(timeout=5.0):
+    print("Pending:", monitor.pending_count, "Dropped/unconfirmed:", monitor.dropped_count)
+monitor.close()   # reject new work, drain all accepted sends, then close transport
 ```
+
+Both sync and async decorators enqueue in background mode. `flush()` returns
+`True` only when all queued, pending, and in-flight traces finish with no cumulative
+delivery loss. A timeout returns `False` without cancelling pending delivery;
+`pending_count` and `dropped_count` distinguish pending work from loss. Failed
+batches are counted and are not retried.
+
+`close()` and normal-exit `atexit` drain every accepted send before closing the
+sync transport, so shutdown can take several HTTP timeouts for a large backlog.
+New enqueues return `False` after shutdown begins. Repeated close is safe and
+normal close unregisters the exit callback. Forced termination cannot drain.
+Use `await monitor.a_close()` or `async with AIMonitor(...)` in async code:
+the shared shutdown runs off the event loop and closes both transports.
+Async cancellation is recorded as `ERROR` with only `CancelledError`, then
+immediately re-raised; even inline mode hands this record to a background worker
+that `a_close()` drains.
 
 ## Guarantees
 
