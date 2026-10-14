@@ -115,13 +115,19 @@ class ClaudeQuotaSyncer:
                 return None
 
             data = res.json()
-            fh = data.get("five_hour") or {}
-            sd = data.get("seven_day") or {}
+            if not isinstance(data, dict):
+                return None
+            from desktop.quota import _number
 
-            fh_used = round(float(fh["utilization"]), 1) if fh.get("utilization") is not None else None
+            fh = data.get("five_hour") if isinstance(data.get("five_hour"), dict) else {}
+            sd = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else {}
+
+            fh_used = _number(fh.get("utilization"))
+            fh_used = round(fh_used, 1) if fh_used is not None else None
             fh_rem = round(max(0.0, 100.0 - fh_used), 1) if fh_used is not None else None
 
-            sd_used = round(float(sd["utilization"]), 1) if sd.get("utilization") is not None else None
+            sd_used = _number(sd.get("utilization"))
+            sd_used = round(sd_used, 1) if sd_used is not None else None
             sd_rem = round(max(0.0, 100.0 - sd_used), 1) if sd_used is not None else None
 
             result = {

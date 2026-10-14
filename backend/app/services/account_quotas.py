@@ -73,9 +73,9 @@ def get_account_quota_windows(
         registry = ReadOnlyAccountRegistry(state_dir or Path.home() / ".aimonitor", identities)
         if not registry.refresh():
             return {}
-        from desktop.quota import account_quotas
+        from desktop.quota import account_quotas, merge_account_quota_rows
 
-        rows = account_quotas(registry=registry)
+        rows = merge_account_quota_rows(account_quotas(registry=registry))
     except Exception:
         # Servers without desktop credentials/helpers still serve local usage.
         return {}
