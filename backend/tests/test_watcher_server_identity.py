@@ -1,5 +1,6 @@
 """RR-01/RP-01: identify each backend attempt before sending records or the server key."""
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -122,6 +123,7 @@ def test_unidentified_health_never_posts_or_sends_key(monkeypatch, response):
 
 
 def test_health_connection_failure_preserves_record_for_retry(tmp_path, monkeypatch, client, session, caplog):
+    caplog.set_level(logging.DEBUG, logger=ai_watcher.logger.name)
     append(log_path(tmp_path, "claude"), [event("claude")])
     available = [False]
 
@@ -141,6 +143,9 @@ def test_health_connection_failure_preserves_record_for_retry(tmp_path, monkeypa
     assert len(stored(session)) == 1
     assert_identified_attempts(attempts)
     assert "synthetic-private-error" not in caplog.text
+    # A backend that is still starting is not a port conflict: keep it at debug, as before.
+    assert "Failed to send traces: ConnectError" in caplog.text
+    assert "Backend identity unavailable" not in caplog.text
 
 
 def test_old_identified_backend_isolates_individual_422_without_error_schema(

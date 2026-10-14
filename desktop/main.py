@@ -22,7 +22,6 @@ import httpx
 from desktop.ai_watcher import UnifiedAIWatcher
 from desktop.app_gui import DesktopMainWindow
 from desktop.config import attach_to_default_desktop, identify_backend, load_config
-from desktop.config import backend_headers as backend_headers
 from desktop.single_instance import SingleInstance
 from desktop.tray import TrayManager
 from desktop.widget import FloatingWidget

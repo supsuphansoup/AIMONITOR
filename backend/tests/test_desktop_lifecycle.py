@@ -72,7 +72,6 @@ def test_shutdown_prevents_backend_spawn_after_shutdown_started(monkeypatch):
         assert resume.wait(2)
         return proc
     monkeypatch.setattr(main.subprocess, "Popen", spawn)
-    monkeypatch.setattr(main, "backend_headers", lambda: {})
     monkeypatch.setattr(main.time, "sleep", lambda _delay: None)
     real_client = httpx.Client
     monkeypatch.setattr(main.httpx, "Client", lambda **kwargs: real_client(
@@ -137,7 +136,6 @@ def test_spawned_backend_uses_configured_loopback_port(monkeypatch):
     monkeypatch.setattr(main.httpx, "Client", lambda **kwargs: real_client(
         transport=httpx.MockTransport(Mock(side_effect=httpx.ConnectError("synthetic absent listener"))),
         **kwargs))
-    monkeypatch.setattr(main, "backend_headers", lambda: {})
     monkeypatch.setattr(main.time, "sleep", lambda delay: None)
     spawn = Mock()
     monkeypatch.setattr(main.subprocess, "Popen", spawn)

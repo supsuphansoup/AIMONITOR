@@ -1231,11 +1231,7 @@ class UnifiedAIWatcher:
             with httpx.Client(timeout=8.0) as client:
                 if stop_event is not None and stop_event.is_set():
                     return False
-                try:
-                    identified = identify_backend(client, self.backend_url, backend_headers())
-                except Exception:
-                    identified = False
-                if not identified:
+                if not identify_backend(client, self.backend_url, backend_headers()):
                     logger.warning("Backend identity unavailable; deferred %d traces", len(traces))
                     return False
                 for i in range(0, len(traces), chunk_size):
