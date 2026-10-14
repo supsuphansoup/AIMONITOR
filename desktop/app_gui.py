@@ -1981,10 +1981,16 @@ class DesktopMainWindow(ctk.CTk):
             ctk.CTkLabel(block, text=account.get("label") or "계정 미상", text_color=theme.TEXT, height=20,
                          font=theme.font(theme.FONT_BODY, weight="bold")).pack(anchor="w", padx=theme.SPACE_2)
             windows = account.get("quota_windows") or []
-            quota_text = " · ".join(f"{q['label']} {window_text(q)[0]}" for q in windows) or "한도 확인 불가"
+            formatted = [(q["label"], window_text(q)) for q in windows]
+            quota_text = " · ".join(f"{label} {text[0]}" for label, text in formatted) or "한도 확인 불가"
             ctk.CTkLabel(block, text=quota_text, text_color=theme.ACCENT,
                          wraplength=300, justify="left", height=20,
                          font=theme.font(theme.FONT_XS)).pack(anchor="w", padx=theme.SPACE_2)
+            details = "\n".join(f"{label} · {text[2]}" for label, text in formatted if text[2])
+            if details:
+                ctk.CTkLabel(block, text=details, text_color=theme.MUTED, wraplength=300,
+                             justify="left", height=1, font=theme.font(theme.FONT_XS)).pack(
+                                 anchor="w", padx=theme.SPACE_2)
             lines = account_usage_lines(account, item["cost_meaning"])
             ctk.CTkLabel(block, text="\n".join(lines), text_color=theme.MUTED, height=1,
                          font=theme.font(theme.FONT_XS), wraplength=300, justify="left").pack(
