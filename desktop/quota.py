@@ -443,7 +443,7 @@ def account_quotas(registry: Any = None, force: bool = False,
     A Codex snapshot whose login cannot be established is exposed as account_id=None,
     separately from the current account's unavailable windows.
     """
-    from desktop.accounts import AccountRegistry, account_id_for, config_dir_hash
+    from desktop.accounts import AccountRegistry, account_id_for
     from desktop.claude_quota_syncer import ClaudeQuotaSyncer
 
     global _account_registry
@@ -452,6 +452,7 @@ def account_quotas(registry: Any = None, force: bool = False,
             _account_registry = AccountRegistry()
         registry = _account_registry
     result = []
+    fetched = {}
     for row in registry.refresh(now=now):
         tool = row["tool"]
         directory = Path(row["config_dir"])
@@ -464,14 +465,16 @@ def account_quotas(registry: Any = None, force: bool = False,
                 result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
                 result[-1]["quota_windows"] = claude_windows(None, now)
                 continue
-            key = f"{registry.state_dir}:{row['account_id']}:{config_dir_hash(directory)}"
+            key = f"{registry.state_dir}:{row['account_id']}"
             with _scan_lock:
                 syncer = _account_syncers.get(key)
                 if syncer is None:
                     cache = registry.state_dir / "quota" / f"{row['account_id'].replace(':', '-')}.json"
                     syncer = ClaudeQuotaSyncer(config_dir=directory, cache_file=cache)
                     _account_syncers[key] = syncer
-            windows = claude_windows(syncer.get_quota(force=force), now)
+            if key not in fetched:
+                fetched[key] = syncer.get_quota(force=force)
+            windows = claude_windows(fetched[key], now)
         elif tool == "codex":
             snapshot = latest_codex_rate_limits(
                 directory, account_at=lambda ts, d=directory: registry.account_at(d, ts)
