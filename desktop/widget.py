@@ -46,12 +46,14 @@ class FloatingWidget:
         master: Optional[tk.Misc] = None,
         on_exit: Optional[Callable[[], None]] = None,
         on_open_main_app: Optional[Callable[[], None]] = None,
+        on_topmost_changed: Optional[Callable[[bool], None]] = None,
     ):
         attach_to_default_desktop()
         self.config = load_config()
         self._theme_mode = theme.appearance_mode()
         self.on_exit = on_exit
         self.on_open_main_app = on_open_main_app
+        self.on_topmost_changed = on_topmost_changed
 
         self.root = tk.Toplevel(master) if master is not None else tk.Tk()
         self.root.title("AIMONITOR 위젯")
@@ -244,12 +246,14 @@ class FloatingWidget:
     def _on_drag_release(self, event) -> None:
         self._save(widget_x=self.root.winfo_x(), widget_y=self.root.winfo_y())
 
-    def _save(self, **changes: Any) -> None:
+    def _save(self, **changes: Any) -> bool:
         try:
             self.config = update_config(changes)
+            return True
         except Exception:
             self.root.bell()
             logger.warning("Could not save widget settings")
+            return False
 
     def _show_context_menu(self, event) -> None:
         menu = tk.Menu(
@@ -354,9 +358,15 @@ class FloatingWidget:
         self._render()
 
     def toggle_always_on_top(self) -> None:
-        new_val = not self.config.get("always_on_top", True)
-        self.root.attributes("-topmost", new_val)
-        self._save(always_on_top=new_val)
+        self.set_always_on_top(not self.config.get("always_on_top", True))
+
+    def set_always_on_top(self, value: bool) -> None:
+        if self._save(always_on_top=value) is False:
+            return
+        self.root.attributes("-topmost", value)
+        callback = getattr(self, "on_topmost_changed", None)
+        if callback:
+            callback(value)
 
     def set_opacity(self, opacity: float) -> None:
         self.root.attributes("-alpha", opacity)
@@ -381,6 +391,9 @@ class FloatingWidget:
         if self.on_exit:
             self.on_exit()
         self.root.quit()
+
+    def close(self) -> None:
+        self.root.destroy()
 
     # ------------------------------------------------------------------ data
     def schedule_update(self) -> None:

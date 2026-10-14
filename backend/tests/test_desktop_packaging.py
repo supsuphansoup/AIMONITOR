@@ -48,7 +48,8 @@ def test_backend_runs_uvicorn_from_source_and_the_exe_when_packaged(desktop_main
     assert desktop_main.backend_command()[:4] == ["python.exe", "-m", "uvicorn", "backend.app.main:app"]
     monkeypatch.setattr(desktop_main.sys, "frozen", True, raising=False)
     monkeypatch.setattr(desktop_main.sys, "executable", "AIMONITOR.exe")
-    assert desktop_main.backend_command() == ["AIMONITOR.exe", "--serve-backend"]
+    assert desktop_main.backend_command() == ["AIMONITOR.exe", "--serve-backend", "--port", "8000",
+                                             "--host", "127.0.0.1"]
 
 
 @pytest.mark.parametrize("argv, port", [(["--serve-backend"], 8000), (["--serve-backend", "--port", "18765"], 18765)])

@@ -52,21 +52,39 @@ class TrayManager:
         self._icon: Optional[pystray.Icon] = None
         self._thread: Optional[threading.Thread] = None
         self._unsubscribe_theme: Optional[Callable[[], None]] = None
+        self._master = None
+        self._stopped = False
+
+    def _dispatch(self, callback: Callable[[], None]) -> None:
+        if self._master is not None:
+            try:
+                self._master.after(0, callback)
+            except RuntimeError:
+                pass
+        else:
+            callback()
+
+    def set_topmost(self, value: bool) -> None:
+        self.is_topmost = value
+        if self._icon is not None:
+            self._icon.update_menu()
 
     def _menu_toggle_topmost(self, icon, item):
-        self.is_topmost = not self.is_topmost
         if self.on_toggle_topmost:
-            self.on_toggle_topmost(self.is_topmost)
+            self._dispatch(lambda: self.on_toggle_topmost(not self.is_topmost))
+        else:
+            self.set_topmost(not self.is_topmost)
 
     def _build_menu(self) -> pystray.Menu:
         return pystray.Menu(
             pystray.MenuItem(
                 "📊 대시보드 열기",
-                lambda icon, item: self.on_open_dashboard and self.on_open_dashboard(),
+                lambda icon, item: self.on_open_dashboard and self._dispatch(self.on_open_dashboard),
                 default=True,
             ),
             pystray.MenuItem(
-                "🎛️ 위젯 보이기/숨기기", lambda icon, item: self.on_toggle_widget and self.on_toggle_widget()
+                "🎛️ 위젯 보이기/숨기기",
+                lambda icon, item: self.on_toggle_widget and self._dispatch(self.on_toggle_widget)
             ),
             pystray.MenuItem(
                 "📌 항상 위에 고정",
@@ -74,12 +92,13 @@ class TrayManager:
                 checked=lambda item: self.is_topmost,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("❌ 종료", lambda icon, item: self.stop()),
+            pystray.MenuItem("❌ 종료", lambda icon, item: self._dispatch(self.stop)),
         )
 
     def start(self, master=None) -> None:
         """Start tray icon in a dedicated daemon thread."""
         img = create_tray_icon_image()
+        self._master = master
         self._icon = pystray.Icon("aimonitor", img, "AIMONITOR - AI Observability", menu=self._build_menu())
         if master is not None:
             self._unsubscribe_theme = theme.observe(master, self._on_theme_changed)
@@ -90,12 +109,17 @@ class TrayManager:
         if self._icon is not None:
             self._icon.icon = create_tray_icon_image()
 
-    def stop(self) -> None:
+    def stop(self, notify: bool = True) -> None:
         """Stop tray icon and notify exit."""
+        if self._stopped:
+            return
+        self._stopped = True
         if self._unsubscribe_theme is not None:
             self._unsubscribe_theme()
             self._unsubscribe_theme = None
         if self._icon:
             self._icon.stop()
-        if self.on_exit:
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+        if notify and self.on_exit:
             self.on_exit()

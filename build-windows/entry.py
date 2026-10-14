@@ -6,6 +6,7 @@ One exe plays three roles:
 - ``--self-test``: import the whole GUI and API stack and exit 0, so a build can be checked headless
 """
 
+import ipaddress
 import os
 import sys
 import traceback
@@ -42,7 +43,10 @@ def main(argv: list) -> int:
 
         from backend.app.main import app
 
-        uvicorn.run(app, host="127.0.0.1", port=_port(argv))
+        host = argv[argv.index("--host") + 1] if "--host" in argv else "127.0.0.1"
+        if host != "localhost" and not ipaddress.ip_address(host).is_loopback:
+            raise ValueError("Backend host must be loopback")
+        uvicorn.run(app, host=host, port=_port(argv))
         return 0
 
     if "--self-test" in argv:
