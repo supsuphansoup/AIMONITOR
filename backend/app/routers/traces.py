@@ -31,6 +31,15 @@ HTTP_422_UNPROCESSABLE = 422
 router = APIRouter(prefix="/traces", tags=["Traces"])
 
 
+def _utc_filter_time(value: datetime) -> Optional[datetime]:
+    try:
+        return to_naive_utc(value)
+    except (OverflowError, ValueError):
+        raise HTTPException(
+            status_code=HTTP_422_UNPROCESSABLE, detail="Timestamp outside supported UTC range",
+        ) from None
+
+
 def process_single_trace_create(payload: TraceEventCreate) -> TraceEvent:
     """Transform a TraceEventCreate into a TraceEvent entity with derived fields."""
     prompt_tokens = max(0, payload.prompt_tokens)
@@ -98,9 +107,11 @@ def ingest_trace(
     try:
         event = process_single_trace_create(payload)
         session.add(event)
-        session.commit()
+        session.flush()
         session.refresh(event)
-        return TraceEventRead.model_validate(event)
+        response = TraceEventRead.model_validate(event)
+        session.commit()
+        return response
     except Exception as exc:
         session.rollback()
         logger.error("Ingest failed code=INGEST_FAILED error_type=%s count=1", type(exc).__name__)
@@ -124,10 +135,12 @@ def ingest_batch_traces(
     try:
         events = [process_single_trace_create(item) for item in payload.traces]
         session.add_all(events)
-        session.commit()
+        session.flush()
         for event in events:
             session.refresh(event)
-        return [TraceEventRead.model_validate(e) for e in events]
+        responses = [TraceEventRead.model_validate(e) for e in events]
+        session.commit()
+        return responses
     except Exception as exc:
         session.rollback()
         logger.error(
@@ -183,9 +196,9 @@ def list_traces(
     if account_unknown:
         filters.append(col(TraceEvent.account_id).is_(None))
     if start_time:
-        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
     if end_time:
-        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one()
     response.headers["X-Total-Count"] = str(total or 0)
@@ -261,9 +274,9 @@ def export_traces_csv(
             )
         filters.append(TraceEvent.status == normalized)
     if start_time:
-        filters.append(TraceEvent.timestamp >= to_naive_utc(start_time))
+        filters.append(TraceEvent.timestamp >= _utc_filter_time(start_time))
     if end_time:
-        filters.append(TraceEvent.timestamp <= to_naive_utc(end_time))
+        filters.append(TraceEvent.timestamp <= _utc_filter_time(end_time))
 
     total = session.exec(select(func.count(col(TraceEvent.id))).where(*filters)).one() or 0
     query = (
