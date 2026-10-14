@@ -197,6 +197,48 @@ def test_acc04_invalid_claude_usage_does_not_poison_response_seen_key(tmp_path, 
     assert len(sent) == 1
 
 
+@pytest.mark.parametrize("tool", ["claude", "codex", "copilot", "antigravity"])
+def test_acc04_invalid_timestamp_cannot_poison_batch_or_seen_state(tmp_path, monkeypatch, tool):
+    bad = event(tool)
+    bad["created_at" if tool == "antigravity" else "timestamp"] = {"prompt": "synthetic private body"}
+    append(log_path(tmp_path, tool), [bad, event(tool)])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    assert sent[0]["timestamp"] == NOW.isoformat()
+    assert instance.scan_all() == 0
+
+
+@pytest.mark.parametrize("field", ["model", "id"])
+def test_acc04_invalid_claude_identity_does_not_enter_seen_state(tmp_path, monkeypatch, field):
+    bad = event("claude")
+    bad["message"][field] = {"content": "synthetic private body"}
+    append(log_path(tmp_path, "claude"), [bad, event("claude")])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    assert sent[0]["model_name"] == "claude-sonnet-4-5"
+    assert "private body" not in instance.seen_file.read_text(encoding="utf-8")
+
+
+def test_acc04_invalid_codex_total_does_not_enter_cursor_state(tmp_path, monkeypatch):
+    bad = event("codex")
+    bad["payload"]["info"]["total_token_usage"]["total_tokens"] = []
+    append(log_path(tmp_path, "codex"), [bad, event("codex")])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    assert len(sent) == 1
+    assert all(type(value) is int for value in instance._offsets.values())
+
+
+def test_acc04_copilot_metadata_keeps_only_finite_numeric_cost(tmp_path, monkeypatch):
+    row = event("copilot")
+    row["data"]["modelMetrics"]["gpt-5"]["requests"]["cost"] = {"content": "synthetic private body"}
+    append(log_path(tmp_path, "copilot"), [row])
+    instance, sent = watcher(tmp_path, monkeypatch)
+    assert instance.scan_all() == 1
+    assert sent[0]["metadata"]["premium_requests"] is None
+    assert "private body" not in json.dumps(sent)
+
+
 def test_acc13_antigravity_uses_only_observed_model_and_provider(tmp_path, monkeypatch):
     instance, _ = watcher(tmp_path, monkeypatch)
     path = log_path(tmp_path, "antigravity")

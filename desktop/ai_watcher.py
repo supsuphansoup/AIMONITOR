@@ -47,6 +47,25 @@ def _decode_line(raw: bytes) -> tuple:
     return line, obj
 
 
+def _event_timestamp(value: Any) -> str:
+    if value is None or value == "":
+        return datetime.now(timezone.utc).isoformat()
+    if not isinstance(value, str):
+        raise ValueError("Invalid event timestamp")
+    datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
+
+
+def _event_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) and number >= 0 else None
+    except (ValueError, OverflowError):
+        return None
+
+
 def _write_state(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -773,6 +792,11 @@ class UnifiedAIWatcher:
         # 응답 단위 내용 기반 키. 파일 경로·오프셋은 넣지 않는다.
         trace_id = None
         msg_id = msg.get("id")
+        if msg_id is not None and (not isinstance(msg_id, str) or len(msg_id) > 512):
+            raise ValueError("Invalid response identifier")
+        request_id = data.get("requestId")
+        if request_id is not None and (not isinstance(request_id, str) or len(request_id) > 512):
+            raise ValueError("Invalid request identifier")
         if msg_id:
             dedupe_key = f"{msg_id}:{data.get('requestId') or ''}"
             trace_id = "cc-" + hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:32]
@@ -784,12 +808,14 @@ class UnifiedAIWatcher:
 
         # 로그에 적힌 모델 그대로. 모르면 지어내지 않고 unknown -> 가격 "계산 불가".
         model_name = msg.get("model") or "unknown"
+        if not isinstance(model_name, str) or len(model_name) > 200:
+            raise ValueError("Invalid model name")
         cache_creation = usage.get("cache_creation")
         c_write_1h = 0
         if isinstance(cache_creation, dict):
             c_write_1h = _count(cache_creation.get("ephemeral_1h_input_tokens", 0))
 
-        ts_str = data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        ts_str = _event_timestamp(data.get("timestamp"))
         trace = {
             "account_id": None,
             "timestamp": ts_str,
@@ -865,6 +891,8 @@ class UnifiedAIWatcher:
                             info = payload.get("info") or {}
                             usage = info.get("last_token_usage") or {}
                             total = (info.get("total_token_usage") or {}).get("total_tokens")
+                            if total is not None:
+                                total = _count(total)
                             if total is not None and self._offsets.get(total_key) == total:
                                 continue
                             incoming = _count(usage.get("input_tokens", 0))
@@ -875,7 +903,7 @@ class UnifiedAIWatcher:
                             trace_id = self._event_key("cx", key, start, line)
                             traces.append({
                                 "account_id": self._account_at(directory, obj.get("timestamp")),
-                                "timestamp": obj.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                                "timestamp": _event_timestamp(obj.get("timestamp")),
                                 "trace_id": trace_id, "dedupe_key": trace_id,
                                 "session_id": fpath.stem, "provider": "openai", "model_name": model,
                                 "prompt_tokens": incoming - cached, "cache_read_tokens": cached,
@@ -981,7 +1009,7 @@ class UnifiedAIWatcher:
         provider = obj.get("provider")
 
         conv_id = fpath.parents[2].name if len(fpath.parents) > 2 else "session"
-        ts = obj.get("created_at") or datetime.now(timezone.utc).isoformat()
+        ts = _event_timestamp(obj.get("created_at"))
         status = "SUCCESS" if obj.get("status") == "DONE" else "ERROR"
 
         trace_id = self._event_key("ag", identity_key, prev_offset, line)
@@ -1066,20 +1094,22 @@ class UnifiedAIWatcher:
         if not isinstance(metrics, dict) or not metrics:
             return []
 
-        ts = d.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        ts = _event_timestamp(d.get("timestamp"))
         event_id = d.get("id") or ""
-        duration_ms = data.get("totalApiDurationMs")
+        if not isinstance(event_id, str) or len(event_id) > 512:
+            raise ValueError("Invalid event identifier")
+        duration_ms = _event_number(data.get("totalApiDurationMs"))
         traces = []
         for model_name, m in metrics.items():
-            if not isinstance(m, dict):
+            if not isinstance(m, dict) or not isinstance(model_name, str) or not 0 < len(model_name) <= 200:
                 continue
             usage = m.get("usage") or {}
             requests = m.get("requests") or {}
-            input_tok = int(usage.get("inputTokens") or 0)
-            cache_read = min(int(usage.get("cacheReadTokens") or 0), input_tok)
-            out_tok = int(usage.get("outputTokens") or 0)
-            cache_write = int(usage.get("cacheWriteTokens") or 0)
-            count = int(requests.get("count") or 0)
+            input_tok = _count(usage.get("inputTokens", 0))
+            cache_read = min(_count(usage.get("cacheReadTokens", 0)), input_tok)
+            out_tok = _count(usage.get("outputTokens", 0))
+            cache_write = _count(usage.get("cacheWriteTokens", 0))
+            count = _count(requests.get("count", 0))
             if input_tok + out_tok + cache_write == 0:
                 continue
 
@@ -1101,7 +1131,7 @@ class UnifiedAIWatcher:
                 "metadata": {
                     "source": "copilot-watcher",
                     "requests": count,
-                    "premium_requests": requests.get("cost"),
+                    "premium_requests": _event_number(requests.get("cost")),
                 },
             }
             if event_id:
