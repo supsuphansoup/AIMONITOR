@@ -52,20 +52,7 @@ def get_spend(force: bool = Query(False, description="Bypass the 15-minute cache
     Keyed by desktop card key (`openai_api`, `anthropic_api`, ...). A provider
     with no billing endpoint for its key reports kind `unavailable`.
     """
-    registered = {k["provider"] for k in api_key_manager.list_keys() if k["has_key"]}
-    cards = {f"{p}_api" for p in registered if not p.endswith("_admin")}
-    cards |= {p.replace("_admin", "_api") for p in registered if p.endswith("_admin")}
-    result = spend_service.spend_all(sorted(cards), force=force)
-    items = []
-    for provider in sorted(registered):
-        for entry in api_key_manager.list_keys(provider):
-            if not entry["has_key"]:
-                continue
-            secret = api_key_manager.get_key(provider, entry["key_id"])
-            spend = spend_service.spend_for_key(provider, entry["key_id"], secret, force=force)
-            items.append({**spend, "provider": provider, "key_id": entry["key_id"], "label": entry["label"]})
-    result["items"] = items
-    return result
+    return spend_service.spend_snapshot(api_key_manager.billing_snapshot(), force=force)
 
 
 @router.post(

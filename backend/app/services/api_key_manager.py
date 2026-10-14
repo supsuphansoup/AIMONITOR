@@ -317,6 +317,7 @@ class APIKeyManager:
             "status": "connected", "last_verified": None, "balance_info": None,
         }
         self._save_raw(raw)
+        spend_service.invalidate(provider)
         return self._key_view(provider, key_id, raw[provider][key_id], key_value, "stored")
 
     def add_key(self, provider: str, key_value: str, label: str = "기본") -> Dict[str, Any]:
@@ -360,7 +361,29 @@ class APIKeyManager:
                 if not raw[provider]:
                     del raw[provider]
             self._save_raw(raw)
+            spend_service.invalidate(provider)
             return True
+
+    def billing_snapshot(self) -> List[Dict[str, Any]]:
+        """One consistent store read; secrets only live in this in-memory request."""
+        with self._lock:
+            try:
+                raw = self._read_store()
+            except ValueError:
+                raw = {}
+            entries = []
+            for info in KNOWN_PROVIDERS:
+                provider = info["key"]
+                for key_id, entry in raw.get(provider, {}).items():
+                    secret = self._stored_secret(entry)
+                    if secret:
+                        entries.append({"provider": provider, "key_id": key_id,
+                                        "label": entry.get("label", "기본"), "secret": secret})
+                secret = self._env_key(provider)
+                if secret:
+                    entries.append({"provider": provider, "key_id": "env",
+                                    "label": "환경 변수", "secret": secret})
+            return entries
 
     def verify_key(self, provider: str, key_id: Optional[str] = None) -> Dict[str, Any]:
         with self._lock:
