@@ -29,17 +29,12 @@ from desktop.accounts import AccountRegistry, canonical_path, config_dir_hash, d
 from desktop.config import backend_headers
 
 logger = logging.getLogger("aimonitor.desktop.ai_watcher")
-MAX_COST_USD_PER_TRACE = getattr(trace_models, "MAX_COST_USD_PER_TRACE", 1_000_000_000)
-MAX_LATENCY_MS_PER_TRACE = getattr(trace_models, "MAX_LATENCY_MS_PER_TRACE", 1_000_000_000)
 
 
 def _validate_trace(trace: Dict[str, Any]) -> None:
     # Validate before committing seen/cumulative state. Never log validation input.
+    # The ingestion schema carries every server limit, including cost and latency.
     trace_models.TraceEventCreate.model_validate(trace)
-    for field, limit in (("cost_usd", MAX_COST_USD_PER_TRACE), ("latency_ms", MAX_LATENCY_MS_PER_TRACE)):
-        value = trace.get(field)
-        if value is not None and value > limit:
-            raise ValueError("Trace numeric limit exceeded")
 
 
 def _validate_batch_response(response: httpx.Response, traces: List[Dict[str, Any]]) -> None:
