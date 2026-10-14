@@ -53,7 +53,7 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 
 | 위치 | 내용 |
 | :--- | :--- |
-| DB (`aimonitor.db` — exe는 `~/.aimonitor/`, 소스 실행은 저장소 폴더) | 기록마다 공급자·모델·토큰 수·시각·지연·비용·상태, 계정 해시·trace/session ID·태그·정제된 메타데이터·오류 메시지, 수집기가 보낸 중복 제거 키(`dedupe_key`, 해시). 알림 규칙(**Webhook URL은 평문**)과 발동·발송 결과 이력 |
+| DB (기본값: `aimonitor.db` — exe는 `~/.aimonitor/`, 소스 실행은 저장소 폴더; 실제 저장소는 서버 설정 `DATABASE_URL`이 결정) | 기록마다 공급자·모델·토큰 수·시각·지연·비용·상태, 계정 해시·trace/session ID·태그·정제된 메타데이터·오류 메시지, 수집기가 보낸 중복 제거 키(`dedupe_key`, 해시). 알림 규칙(**Webhook URL은 평문**)과 발동·발송 결과 이력 |
 | `~/.aimonitor/api_keys.json` | 키 원문만 DPAPI로 암호화해(`sealed`) 저장합니다. 공급자·키 ID·라벨·검증 상태·마지막 검증 시각·잔액 설명은 평문입니다. |
 | `~/.aimonitor/api_keys.json.lock` | 데스크톱과 서버가 키 파일을 동시에 고치지 않게 하는 잠금 파일. 비밀값은 없습니다. |
 | `~/.aimonitor/desktop_config.json` | 화면 설정, 서버 주소, 서버 인증 키(DPAPI 암호화), USD/KRW 환율과 출처·기준일·마지막 조회 성공 시각 |
@@ -62,6 +62,8 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 | `~/.aimonitor/*offsets*.json`, `folder_offsets/`, `ai_cursors.json`, `ai_seen_claude.json` | 로그 파일별 읽은 위치와 중복 제거 키, 파일 교체를 알아보기 위한 파일 ID·크기·시각과 앞부분 일부의 해시. 본문은 없습니다. 30일 동안 사라진 파일의 기록은 지웁니다. |
 | `~/.aimonitor/logs/` (exe만) | 역할별 실행 로그 (파일당 1 MiB, 백업 3개). 손상된 로그 줄은 원문 없이 건수만 남깁니다. 요청 로그는 요청 ID·메서드·경로·상태·소요 시간만 남기고 쿼리 문자열·요청 본문은 남기지 않습니다. 오류 로그는 예외 종류만 남기고 예외 문구·SQL 매개변수는 남기지 않습니다. |
 | 레지스트리 `HKCU\…\Run\AIMONITOR` | 자동 실행을 켰을 때만 |
+
+`docker-compose.yml`의 기본 DB는 `aimonitor-data` 데이터 볼륨의 `/app/data/aimonitor.db`입니다.
 
 API 응답은 Webhook URL을 `scheme://host/…`로 가려서 돌려주지만 원본은 DB에 평문으로 남습니다. DB 파일과 백업은 비밀값처럼 다루세요.
 
@@ -76,5 +78,15 @@ API 응답은 Webhook URL을 `scheme://host/…`로 가려서 돌려주지만 �
 
 ## 지우기
 
-앱 설정에서 자동 실행을 끈 뒤 앱 폴더와 `%USERPROFILE%\.aimonitor`를 삭제하면 AIMONITOR가 만든 데이터가 모두 사라집니다.
-소스 실행이었다면 저장소 폴더의 `aimonitor.db*`도 지웁니다. 다른 도구의 로그·로그인 파일은 건드리지 않습니다.
+DB 위치를 바꾸지 않은 기본 로컬 설치의 데이터는 다음 폴더들에 있습니다. 앱 설정에서 자동 실행을 끄고 앱과 서버를 종료한 뒤
+앱 폴더와 `%USERPROFILE%\.aimonitor`를 삭제합니다. 소스 실행이었다면 저장소 폴더의 `aimonitor.db`와 SQLite 부속 파일
+(`aimonitor.db-wal`·`aimonitor.db-shm`·`aimonitor.db-journal`)도 지웁니다.
+
+서버 설정 `DATABASE_URL`을 바꿨다면 그 값이 가리키는 실제 DB도 따로 삭제해야 합니다. SQLite 파일이면 해당 파일과
+같은 이름에 `-wal`·`-shm`·`-journal`이 붙은 부속 파일을 함께 지웁니다. 기본 폴더 삭제만으로 다른 위치의 DB는 지워지지 않습니다.
+
+Docker 설치는 `docker-compose.yml`의 `aimonitor-data` 데이터 볼륨도 따로 삭제해야 합니다. 컨테이너나 이미지만 삭제하면
+DB는 남습니다. 실제 볼륨 이름에는 Compose 프로젝트 이름 접두사가 붙을 수 있으므로 해당 배포의 볼륨을 확인하세요.
+
+서버 주소(`backend_url`)가 가리키는 원격 서버의 데이터와 DB 백업은 따로 삭제해야 합니다. 이 PC의 폴더를 지워도 지워지지 않습니다.
+다른 도구의 로그·로그인 파일은 건드리지 않습니다.
