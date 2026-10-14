@@ -45,6 +45,7 @@
 ### 연결 AI (`/metrics/connected_ais`)
 
 - `connected_ais`는 도구별 합계·기존 필드를 유지하며 각 항목의 `accounts`에 계정별 `usage`, `context`, `last_request_at` 등을 추가한다. 전체 합계에 하위 계정을 다시 더하지 않는다. 도구 기본 자격증명의 공식 한도·청구액을 다른 계정에 복사하지 않는다.
+- `CLAUDE_CONFIG_DIR`·`CODEX_HOME`, 홈의 `.claude-*`·`.codex-*`, 기존 계정 파일에 수동 등록한 폴더도 읽기 전용으로 발견한다. 기본 폴더 없이 사용자 지정 폴더만 있으면 도구를 표시하되 기본 자격증명의 플랜·공식 한도를 대신 붙이지 않는다. 계정별 Claude·Codex 플랜은 확인된 계정별 정보가 없으면 `플랜 확인 불가`다.
 - 계정별 `quota_windows`는 데스크톱 소유 계정·타임라인의 읽기 전용 스냅샷을 통해 조회한다. 계정 파일 부재·읽기 실패 시 `null`이고 HTTP 200과 로컬 사용량은 유지한다. 공식 조회 불가 시 값이 없는 `unavailable` 창 또는 `null`이다. 백엔드는 `accounts.json`·`account_timeline.json`을 생성하거나 갱신하지 않는다.
 
 - 파라미터 없음. `{items, by_key, total, hidden}` 구조이며 `items`에는 `key`, `display_name`, `provider`, `plan_name`, `cost_meaning`, `quota_windows`, `context`, `usage`, `last_request_at`, `session_status`, `billing_note`, `official_spend`가 있다. 빈 연결 목록은 `items=[]`다.

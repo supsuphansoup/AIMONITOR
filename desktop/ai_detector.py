@@ -107,6 +107,27 @@ class AIDetector:
 
         return active
 
+    def _has_custom_profile(self, tool: str) -> bool:
+        """Discover account directories without refreshing manifests or reading their credentials."""
+        from desktop.accounts import discover_folders
+
+        environment, auth_name = {
+            "claude_code": ("CLAUDE_CONFIG_DIR", ".credentials.json"),
+            "codex": ("CODEX_HOME", "auth.json"),
+        }[tool]
+        if os.environ.get(environment):
+            directory = Path(os.environ[environment])
+            if (directory / auth_name).is_file():
+                return True
+        try:
+            manual = json.loads((self.home / ".aimonitor" / "accounts.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manual = []
+        if not isinstance(manual, list):
+            manual = []
+        manual = [row for row in manual if isinstance(row, dict)]
+        return any(row["tool"] == tool for row in discover_folders(self.home, manual=manual))
+
     def _check_claude(self) -> Dict[str, Any]:
         """Check Claude Code installation and Claude.ai subscription."""
         claude_dir = self.home / ".claude"
@@ -143,6 +164,11 @@ class AIDetector:
                 plan_name = "Claude Code (로그인 정보 없음)"
                 detail = "대화 기록은 있으나 로그인 정보가 없어 플랜 확인 불가"
 
+        if not is_connected and self._has_custom_profile("claude_code"):
+            is_connected = True
+            plan_name = "Claude Code (플랜 확인 불가)"
+            detail = "사용자 지정 계정 폴더 감지됨"
+
         return {
             "key": "claude",
             "name": "Claude",
@@ -155,6 +181,7 @@ class AIDetector:
             "max_context_tokens": max_context,
             "badge_color": "#a855f7",
             "path": str(claude_dir),
+            "use_default_quota": claude_dir.is_dir(),
         }
 
     def _decode_antigravity_status(self, raw_val: str) -> Dict[str, Any]:
@@ -361,6 +388,9 @@ class AIDetector:
         codex_dir = self.home / ".codex"
         auth_file = codex_dir / "auth.json"
         is_connected = codex_dir.exists() and (auth_file.exists() or (codex_dir / "sessions").exists())
+        default_connected = is_connected
+        if not is_connected and self._has_custom_profile("codex"):
+            is_connected = True
         plan_name = "미연동"
         detail = "Codex CLI 미설치"
         if is_connected:
@@ -379,6 +409,7 @@ class AIDetector:
             "max_context_tokens": 400_000,
             "badge_color": "#10b981",
             "path": str(codex_dir),
+            "use_default_quota": default_connected,
         }
 
     def _check_openai_api(self) -> Dict[str, Any]:

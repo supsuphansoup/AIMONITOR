@@ -1,4 +1,5 @@
 """Detector failures and non-default profiles use only synthetic local fixtures."""
+import json
 from pathlib import Path
 
 import httpx
@@ -65,3 +66,55 @@ def test_one_unexpected_detector_failure_does_not_abort_scan(detector, monkeypat
     assert candidates["claude"]["detection_status"] == "unavailable"
     assert "codex" in candidates
     assert "private-credential" not in str(candidates)
+
+
+@pytest.mark.parametrize("source", ["environment", "sibling", "manual"])
+def test_custom_profile_is_connected_without_writes(client, detector, monkeypatch, tmp_path, source):
+    folders = []
+    for tool, environment, sibling, structure in (
+        ("claude_code", "CLAUDE_CONFIG_DIR", ".claude-work", "projects"),
+        ("codex", "CODEX_HOME", ".codex-work", "sessions"),
+    ):
+        directory = tmp_path / (sibling if source == "sibling" else f"custom-{tool}")
+        directory.mkdir()
+        if source == "environment":
+            monkeypatch.setenv(environment, str(directory))
+            auth_name = ".credentials.json" if tool == "claude_code" else "auth.json"
+            (directory / auth_name).write_text("{}", encoding="utf-8")
+        else:
+            (directory / structure).mkdir()
+        if source == "manual":
+            folders.append({"tool": tool, "config_dir": str(directory), "source": "manual"})
+    if folders:
+        manifest = tmp_path / ".aimonitor" / "accounts.json"
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps(folders), encoding="utf-8")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    response = client.get("/api/v1/metrics/connected_ais")
+    assert response.status_code == 200
+    assert {row["key"] for row in response.json()["items"]} == {"claude", "codex"}
+    assert all(row["quota_windows"] == [] for row in response.json()["items"])
+    after = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_custom_account_does_not_inherit_default_plan(client, session, detector, monkeypatch, tmp_path):
+    from backend.app.core.timeutil import utc_now
+    from backend.app.models.trace import TraceEvent
+
+    default = tmp_path / ".claude"
+    default.mkdir()
+    (default / ".credentials.json").write_text(json.dumps({
+        "claudeAiOauth": {"subscriptionType": "max"},
+    }), encoding="utf-8")
+    session.add(TraceEvent(
+        trace_id="other-account", timestamp=utc_now(), provider="anthropic", model_name="m",
+        tags="claude-code", account_id="claude_code:dir-abcdef",
+    ))
+    session.commit()
+    response = client.get("/api/v1/metrics/connected_ais")
+    assert response.status_code == 200
+    item = response.json()["by_key"]["claude"]
+    assert item["plan_name"] == "Claude Max"
+    assert item["accounts"][0]["plan_name"] == "플랜 확인 불가"
+    assert item["accounts"][0]["quota_windows"] is None

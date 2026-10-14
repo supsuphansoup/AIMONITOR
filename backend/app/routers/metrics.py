@@ -114,7 +114,10 @@ def get_connected_ais(session: Session = Depends(get_session)):
         usage_by_ai=active,
         krw_rate=rate,
         config=config,
-        quota_overrides={ai["key"]: [] for ai in ais if ai.get("detection_status") == "unavailable"},
+        quota_overrides={
+            ai["key"]: [] for ai in ais
+            if ai.get("detection_status") == "unavailable" or ai.get("use_default_quota") is False
+        },
         official_spend=spend_service.spend_all([
             ai["key"] for ai in ais
             if ai["key"].endswith("_api") and ai.get("detection_status") != "unavailable"
@@ -126,8 +129,9 @@ def get_connected_ais(session: Session = Depends(get_session)):
         accounts = []
         for account in active.get(item["key"], {}).get("accounts", []):
             # A default credential's quota/bill cannot be attributed to another account.
+            account_ai = {**ai, "plan_name": "플랜 확인 불가"} if item["key"] in ("claude", "codex") else ai
             account_item = get_connected_ai_summary(
-                active_ais=[ai], usage_by_ai={item["key"]: account}, krw_rate=rate,
+                active_ais=[account_ai], usage_by_ai={item["key"]: account}, krw_rate=rate,
                 config=config, quota_overrides={item["key"]: []}, official_spend={},
             )["items"][0]
             account_item["account_id"] = account["account_id"]
