@@ -10,6 +10,7 @@ Two invariants this module exists to protect:
    premium to write a prompt into the cache and a steep discount to read it
    back; collapsing both into the plain input rate misprices every cached call.
 """
+import math
 import re
 from typing import Dict, NamedTuple, Optional, Tuple
 
@@ -240,6 +241,13 @@ def cache_rates(provider: str, pricing: ModelPricing) -> Tuple[float, float]:
     return write_rate, read_rate
 
 
+def _is_finite(value: float) -> bool:
+    try:
+        return math.isfinite(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def calculate_cost_detail(
     provider: str,
     model_name: str,
@@ -255,8 +263,14 @@ def calculate_cost_detail(
     ``prompt_tokens`` counts uncached input only; cached tokens are billed
     through their own rates and must not be folded into it.
     """
-    if custom_cost_usd is not None and custom_cost_usd >= 0:
-        return CostResult(round(custom_cost_usd, 6), SOURCE_CUSTOM)
+    inputs = (prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens)
+    if not all(_is_finite(value) for value in inputs):
+        return CostResult(0.0, SOURCE_UNKNOWN)
+    if custom_cost_usd is not None:
+        if not _is_finite(custom_cost_usd):
+            return CostResult(0.0, SOURCE_UNKNOWN)
+        if custom_cost_usd >= 0:
+            return CostResult(round(custom_cost_usd, 12), SOURCE_CUSTOM)
 
     if provider.strip().lower() in LOCAL_PROVIDERS:
         return CostResult(0.0, SOURCE_LOCAL_FREE)
@@ -284,7 +298,9 @@ def calculate_cost_detail(
         + (cache_write_1h_tokens / 1_000_000.0) * (pricing.cache_write_1h_per_1m or 0.0)
         + (cache_read_tokens / 1_000_000.0) * read_rate
     )
-    return CostResult(round(total, 6), SOURCE_PRICING_TABLE)
+    if not _is_finite(total):
+        return CostResult(0.0, SOURCE_UNKNOWN)
+    return CostResult(round(total, 12), SOURCE_PRICING_TABLE)
 
 
 def calculate_cost(

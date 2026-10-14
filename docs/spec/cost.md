@@ -16,7 +16,8 @@
 
 | 순서 | 조건 | `cost_source` | `cost_usd` |
 | :--- | :--- | :--- | :--- |
-| 1 | 호출자가 `cost_usd ≥ 0` 전달 | `custom` | 전달값 (소수 6자리) |
+| 0 | 토큰 수·제출 비용·계산 결과가 비유한 값(inf/NaN 등) | `unknown` | 0 (금액 아님) |
+| 1 | 호출자가 유한한 `cost_usd ≥ 0` 전달 | `custom` | 전달값 (소수 12자리) |
 | 2 | provider ∈ `ollama, local, vllm, llamacpp, lmstudio` | `local_free` | 0 |
 | 3 | 단가표에서 모델을 못 찾음 | `unknown` | 0 (금액 아님) |
 | 4 | 그 외 | `pricing_table` | 계산값 |
@@ -45,6 +46,8 @@ cost = prompt × input + completion × output
 
 - `prompt_tokens`는 **캐시되지 않은 입력만** 센다.
 - 모델별 캐시 단가가 없으면 provider 배수를 입력 단가에 곱한다.
+- 저장 정밀도는 소수 12자리다(부동소수 잡음 정리). 단건 응답은 저장값 그대로, 집계 응답 총액은 소수 6자리로 반올림한다. 요청마다 소수 6자리로 잘라 소액 비용을 잃지 않는다.
+- 비유한 토큰 수·제출 비용은 계산 전에 검사하며, 계산 결과도 유한해야 한다. 계산 함수는 inf/NaN을 반환하지 않는다.
 
 | provider | 쓰기 배수 | 읽기 배수 |
 | :--- | ---: | ---: |

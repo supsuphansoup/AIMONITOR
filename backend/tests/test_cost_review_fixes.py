@@ -1,8 +1,9 @@
 """Release-review regressions; official fixtures checked on 2026-10-14."""
+import math
+
 import pytest
 
 from backend.app.services import cost
-
 
 # Independent fixtures, USD/1M: (input, output, cache write, cache read).
 # https://platform.claude.com/docs/en/about-claude/pricing
@@ -35,7 +36,7 @@ def test_review_official_short_context_rates(provider, model, rates):
         {"prompt_tokens": 0, "completion_tokens": 0, "cache_write_tokens": 100_000},
         {"prompt_tokens": 0, "completion_tokens": 0, "cache_read_tokens": 100_000},
     ]
-    for tokens, rate in zip(calls, rates):
+    for tokens, rate in zip(calls, rates, strict=True):
         result = cost.calculate_cost_detail(provider, model, **tokens)
         assert result.source == cost.SOURCE_PRICING_TABLE
         assert result.cost_usd == pytest.approx(rate / 10, abs=1e-12)
@@ -58,3 +59,40 @@ def test_review_o1mini_price_update_does_not_recalculate_existing_rows(session):
     assert cost.calculate_cost_detail("openai", "o1-mini", 1000, 0).cost_usd == 0.0011
     session.refresh(row)
     assert row.cost_usd == 0.003
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan"), 10 ** 400])
+def test_review_nonfinite_custom_cost_is_unknown(value):
+    # CST-08: even an explicit override cannot introduce a non-finite stored cost.
+    result = cost.calculate_cost_detail("openai", "gpt-4o", 1000, 1000, custom_cost_usd=value)
+    assert result == cost.CostResult(0.0, cost.SOURCE_UNKNOWN)
+
+
+@pytest.mark.parametrize("field", [
+    "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_1h_tokens",
+])
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan"), 10 ** 400])
+def test_review_nonfinite_tokens_are_unknown_even_with_override(field, value):
+    tokens = {"prompt_tokens": 0, "completion_tokens": 0, field: value}
+    result = cost.calculate_cost_detail("openai", "gpt-4o", custom_cost_usd=0.25, **tokens)
+    assert result == cost.CostResult(0.0, cost.SOURCE_UNKNOWN)
+
+
+@pytest.mark.parametrize("rate", [float("inf"), float("nan"), 1e308])
+def test_review_nonfinite_computed_total_is_unknown(rate, monkeypatch):
+    monkeypatch.setitem(cost.MODEL_PRICING_USD_PER_1M, "gpt-4o", cost.ModelPricing(rate, 10.0))
+    result = cost.calculate_cost_detail("openai", "gpt-4o", 10_000_000, 0)
+    assert math.isfinite(result.cost_usd)
+    assert result == cost.CostResult(0.0, cost.SOURCE_UNKNOWN)
+
+
+def test_review_submicrodollar_calls_accumulate_without_losing_cost():
+    # CST-13: 9 * $0.05/1M = $0.00000045; 100K calls must retain $0.045.
+    result = cost.calculate_cost_detail("openai", "gpt-5-nano", 9, 0)
+    assert result.cost_usd == pytest.approx(0.00000045, abs=1e-12)
+    assert math.fsum([result.cost_usd] * 100_000) == pytest.approx(0.045, abs=1e-12)
+
+
+def test_review_custom_cost_retains_storage_precision():
+    result = cost.calculate_cost_detail("custom", "unpriced", 0, 0, custom_cost_usd=0.0000001234567)
+    assert result == cost.CostResult(0.000000123457, cost.SOURCE_CUSTOM)
