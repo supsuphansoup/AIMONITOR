@@ -7,7 +7,6 @@ One exe plays three roles:
 """
 
 import ipaddress
-import logging.handlers
 import os
 import sys
 import threading
@@ -25,9 +24,17 @@ class BoundedLogStream:
 
     def __init__(self, path: Path):
         self.name = str(path)
-        self._handler = logging.handlers.RotatingFileHandler(
-            path, maxBytes=LOG_MAX_BYTES, backupCount=3, encoding="utf-8")
+        self._path = path
+        self._stream = open(path, "a", encoding="utf-8", newline="")
         self._lock = threading.Lock()
+
+    def _rotate(self) -> None:
+        self._stream.close()
+        for index in range(3, 0, -1):
+            previous = self._path if index == 1 else Path(f"{self._path}.{index - 1}")
+            if previous.exists():
+                os.replace(previous, Path(f"{self._path}.{index}"))
+        self._stream = open(self._path, "w", encoding="utf-8", newline="")
 
     def write(self, text: str) -> int:
         data = text.encode("utf-8", errors="replace")
@@ -37,20 +44,20 @@ class BoundedLogStream:
             data = data[:max(0, limit - 24)] + b"\n[log write truncated]\n"
         text_out = data.decode("utf-8", errors="ignore")
         with self._lock:
-            handler = self._handler
-            if handler.stream.tell() + len(data) > LOG_MAX_BYTES:
-                handler.doRollover()
-            handler.stream.write(text_out)
-            handler.flush()
+            if self._stream.tell() + len(data) > LOG_MAX_BYTES:
+                self._rotate()
+            self._stream.write(text_out)
+            self._stream.flush()
         return len(text)
 
     def flush(self) -> None:
         with self._lock:
-            self._handler.flush()
+            if not self._stream.closed:
+                self._stream.flush()
 
     def close(self) -> None:
         with self._lock:
-            self._handler.close()
+            self._stream.close()
 
     def isatty(self) -> bool:
         return False

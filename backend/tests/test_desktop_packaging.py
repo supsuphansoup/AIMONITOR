@@ -91,6 +91,25 @@ def test_windowed_log_rotates_and_bounds_large_writes(entry, monkeypatch):
         sys.stdout.close()
 
 
+def test_stdio_survives_logging_reconfiguration(entry, monkeypatch):
+    import logging
+
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    entry._log_to_file("reconfigured")
+    try:
+        # dictConfig (used by uvicorn) closes every registered logging Handler.
+        for reference in list(logging._handlerList):
+            handler = reference()
+            if getattr(handler, "baseFilename", None) == sys.stdout.name:
+                handler.close()
+        sys.stdout.write("after logging configuration\n")
+        sys.stdout.flush()
+        assert Path(sys.stdout.name).read_text(encoding="utf-8") == "after logging configuration\n"
+    finally:
+        sys.stdout.close()
+
+
 def test_self_test_fails_with_exit_code_instead_of_raising(entry, monkeypatch):
     monkeypatch.setitem(sys.modules, "desktop.main", None)  # makes `import desktop.main` fail
     assert entry.main(["--self-test"]) == 1
