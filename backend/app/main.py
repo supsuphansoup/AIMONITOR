@@ -75,14 +75,15 @@ async def request_context(request: Request, call_next):
     started = time.perf_counter()
     try:
         response = await call_next(request)
-    except Exception:
+    except Exception as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
-        logger.exception(
-            "request_id=%s %s %s failed after %.1fms",
+        logger.error(
+            "request_id=%s %s %s failed after %.1fms (%s)",
             request_id,
             request.method,
             request.url.path,
             elapsed_ms,
+            type(exc).__name__,
         )
         return JSONResponse(
             status_code=500,

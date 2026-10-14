@@ -18,6 +18,7 @@ connect_args = (
 engine = create_engine(
     settings.DATABASE_URL,
     echo=False,
+    hide_parameters=True,
     connect_args=connect_args,
     pool_pre_ping=True,
 )
@@ -137,7 +138,7 @@ def check_db() -> bool:
             conn.execute(text("SELECT 1"))
         return True
     except Exception as exc:  # pragma: no cover - depends on external state
-        logger.error("Database readiness check failed: %s", exc)
+        logger.error("Database readiness check failed: %s", type(exc).__name__)
         return False
 
 

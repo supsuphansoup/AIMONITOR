@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from backend.app.core.config import settings
+from backend.app.db.session import engine as runtime_engine
 from backend.app.db.session import get_session
 from backend.app.main import app
 
@@ -20,6 +21,7 @@ def session_fixture():
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
+        hide_parameters=runtime_engine.hide_parameters,
     )
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
