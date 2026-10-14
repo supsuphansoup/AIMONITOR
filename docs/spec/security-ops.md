@@ -76,6 +76,7 @@ docker compose up --build -d   # http://localhost:8000/api/v1, Swagger: /api/v1/
 Docker의 `0.0.0.0` 바인딩 등을 외부에 노출하려면 `API_KEY`와 `REQUIRE_AUTH_FOR_READS=true`를 함께 설정하고, `ALLOWED_HOSTS`에는 사용할 호스트 이름만, `CORS_ORIGINS`에는 신뢰하는 정확한 출처만 허용한 뒤 `docker-compose.yml`의 포트 바인딩을 바꾼다. API 키 설정만으로 임의 Host가 허용되지는 않는다.
 
 - Dockerfile: `python:3.11-slim` API 전용 런타임, non-root `aimonitor` 사용자. 연결 AI API가 사용하는 데스크톱 공유 헬퍼만 포함하며 GUI는 실행하지 않는다.
+- Docker 빌드 컨텍스트에서 DB·SQLite WAL/SHM/journal·`.env.*`·`.review/`를 제외한다. `.env.example`은 예외로 포함한다.
 - `docker-compose.yml`: 포트 `127.0.0.1:8000`만 바인딩, DB는 볼륨 `/app/data`, readiness 헬스체크.
 - 시스템 API: `GET /system/info`(버전·인증 여부·스케줄러 상태), `GET /system/pricing`, `GET /system/ready`(DB 확인), `GET /health`(DB 미접근).
 - CI(`.github/workflows/ci.yml`): pytest(Linux Python 3.10/3.11/3.12, Windows 3.11 + 데스크톱 의존성), ruff, Docker 빌드 후 readiness 확인.
