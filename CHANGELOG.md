@@ -12,6 +12,7 @@
 **보안**
 - 웹페이지가 브라우저를 통해 로컬 API를 조작하지 못하게 했다. `CORS_ORIGINS` 밖의 `Origin`을 가진 쓰기 요청(예: `POST /system/purge`)은 403이고, 개방 모드의 비로컬 Host(DNS rebinding)도 403이다.
 - Antigravity·Copilot·VS Code 데이터베이스를 읽기 전용으로 연다.
+- Claude 사용량 조회가 Claude Code를 흉내 내던 User-Agent(`claude-code/…`) 대신 `AIMONITOR/<버전>`으로 자신을 밝힌다.
 
 **추가**
 - Windows exe(`AIMONITOR.exe`, PyInstaller 단일 폴더). Python 설치 없이 실행하며 데이터는 `~/.aimonitor`에 둔다. `v*` 태그에서 빌드·smoke test 후 초안 릴리스에 첨부.

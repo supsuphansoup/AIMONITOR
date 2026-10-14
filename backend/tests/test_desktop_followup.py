@@ -184,6 +184,7 @@ def test_ollama_and_oauth_never_receive_backend_key(monkeypatch, tmp_path):
     assert "X-API-Key" not in headers
     assert "test-only-server-secret" not in str(headers)
     assert headers["Authorization"] == "Bearer test-only-oauth-token"
+    assert headers["User-Agent"].startswith("AIMONITOR/")  # never impersonate Claude Code
 
 
 @pytest.mark.parametrize("status", [200, 401, 403])

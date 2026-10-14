@@ -9,14 +9,13 @@ Status: in progress (2026-10-08). 근거: [intent.md](intent.md), [기능별 명
 - Windows exe(`build-windows/`)와 릴리스 워크플로 — `v0.6.0-rc.1` 초안 릴리스로 빌드·smoke test 통과 확인.
 - 문서: README(한국어·영어) 랜딩 중심으로 정리, [privacy.md](privacy.md), 명세를 기능별로 분리(desktop·accounts·keys), `CONTRIBUTING.md`·`SECURITY.md`·이슈 템플릿.
 - 쓰지 않는 모듈·실행기·헬퍼 제거.
+- Claude 사용량 조회 User-Agent를 `AIMONITOR/<버전>`으로, 커밋 작성자 이메일을 GitHub noreply로 변경.
 
 ## 남은 작업 (사람 확인 필요)
 
 1. exe 첫 실행 화면 확인 — 실행 중인 앱을 끄거나 Windows Sandbox에서 rc 초안 zip으로.
 2. 스크린샷(위젯·메인 창) → `docs/images/`, README의 주석 자리에 연결.
-3. Claude 사용량 조회의 User-Agent(`claude-code/…` 사칭) 처리 결정.
-4. 커밋 작성자 이메일을 noreply로 바꿀지 결정 (히스토리 재작성·force-push).
-5. PR #1 머지 → 저장소 설명·topics → 비공개 취약점 제보 켜기 → `v0.6.0` 태그·초안 게시, rc 태그·초안 삭제 → Public 전환.
+3. PR #1 머지 → 저장소 설명·topics → 비공개 취약점 제보 켜기 → `v0.6.0` 태그·초안 게시, rc 태그·초안 삭제 → Public 전환.
 
 ## 검증
 

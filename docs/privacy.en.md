@@ -32,7 +32,7 @@ If the code behaves differently from this page, that is a bug — please [open a
 
 | Destination | When | What is sent |
 | :--- | :--- | :--- |
-| `api.anthropic.com/api/oauth/usage` | When a Claude card or the widget refreshes (60 s cache per account; waits 2 min after a 429) | That account's Claude login token, with no body or parameters. This is an **unofficial endpoint** and may change without notice. |
+| `api.anthropic.com/api/oauth/usage` | When a Claude card or the widget refreshes (60 s cache per account; waits 2 min after a 429) | That account's Claude login token, with no body or parameters. The User-Agent is `AIMONITOR/<version>`. This is an **unofficial endpoint** and may change without notice. |
 | Exchange-rate APIs — `open.er-api.com`, then `exchangerate-api.com`, then jsDelivr if those fail | At start, then every 30 min | Nothing (for the KRW display; no key; the host sees your IP) |
 | Providers of keys you registered (OpenAI, Anthropic, OpenRouter, DeepSeek, Gemini, Groq) | Spend/balance lookups when a key is registered or its environment variable is set (15 min cache), and the Verify button | That provider's own key — only to its issuer |
 | Webhook URLs in alert rules (Slack, Discord, …) | When a rule fires | Rule name, metric, operator, threshold, actual value, time |

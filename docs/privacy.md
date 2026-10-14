@@ -32,7 +32,7 @@ AIMONITOR는 다른 도구의 로그와 로그인 파일을 읽는 앱입니다.
 
 | 목적지 | 언제 | 보내는 것 |
 | :--- | :--- | :--- |
-| `api.anthropic.com/api/oauth/usage` | Claude 카드·위젯이 갱신될 때 (계정별 60초 캐시, 요청 제한(429)을 받으면 2분 대기) | 그 계정의 Claude 로그인 토큰. 본문·파라미터는 없습니다. **비공식 엔드포인트**라 예고 없이 바뀔 수 있습니다. |
+| `api.anthropic.com/api/oauth/usage` | Claude 카드·위젯이 갱신될 때 (계정별 60초 캐시, 요청 제한(429)을 받으면 2분 대기) | 그 계정의 Claude 로그인 토큰. 본문·파라미터는 없고, User-Agent는 `AIMONITOR/<버전>`입니다. **비공식 엔드포인트**라 예고 없이 바뀔 수 있습니다. |
 | 환율 API — `open.er-api.com`, 실패하면 `exchangerate-api.com`, 그다음 jsDelivr | 시작 시, 이후 30분마다 | 없음 (원화 표시용, 키 없음. 상대 서버에는 IP가 보입니다) |
 | 등록한 키의 공급자 (OpenAI·Anthropic·OpenRouter·DeepSeek·Gemini·Groq) | 키를 등록했거나 해당 환경 변수가 있을 때 청구액·잔액 조회 (15분 캐시), 그리고 `검증` 버튼 | 그 공급자의 키 — 발급한 곳에만 보냅니다 ([keys.md](spec/keys.md)) |
 | 알림 규칙에 넣은 Webhook URL (Slack·Discord 등) | 규칙이 발동할 때 | 규칙 이름·지표·연산자·기준값·실제값·시각 |

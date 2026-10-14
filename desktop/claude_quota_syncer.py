@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from backend.app.core.config import settings
+
 logger = logging.getLogger("aimonitor.desktop.claude_syncer")
 
 CACHE_FILE = Path.home() / ".aimonitor" / "claude_official_quota.json"
@@ -89,7 +91,7 @@ class ClaudeQuotaSyncer:
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
-                "User-Agent": "claude-code/2.1.278",
+                "User-Agent": f"AIMONITOR/{settings.VERSION}",
             }
             res = httpx.get("https://api.anthropic.com/api/oauth/usage", headers=headers, timeout=4.0)
             if res.status_code == 429:
