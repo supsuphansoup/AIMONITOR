@@ -1,7 +1,8 @@
 from datetime import datetime
 from typing import Any, ClassVar, FrozenSet, Optional
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_serializer, field_validator
 from sqlalchemy import DateTime
 from sqlmodel import Field, SQLModel
 
@@ -63,6 +64,8 @@ def _validate_webhook_url(v: Optional[str]) -> Optional[str]:
     stripped = str(v).strip()
     if not stripped:
         return None
+    if "…" in stripped:
+        raise ValueError("A masked webhook_url cannot be saved; omit it to keep the current URL")
     if not stripped.startswith(("http://", "https://")):
         raise ValueError("webhook_url must start with http:// or https://")
     return stripped
@@ -78,13 +81,15 @@ class AlertRuleCreate(BaseModel):
     webhook_url: Optional[str] = None
     is_active: bool = True
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
 
     _VALID_OPERATORS: ClassVar[FrozenSet[str]] = VALID_OPERATORS
 
     @field_validator("name", mode="before")
     @classmethod
     def normalize_name(cls, v: str) -> str:
+        if v is None:
+            raise ValueError("Alert rule name must not be null")
         stripped = str(v).strip()
         if not stripped:
             raise ValueError("Alert rule name must not be empty")
@@ -117,7 +122,17 @@ class AlertRuleUpdate(BaseModel):
     webhook_url: Optional[str] = None
     is_active: Optional[bool] = None
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", allow_inf_nan=False)
+
+    @field_validator(
+        "name", "metric_type", "operator", "threshold_value", "window_minutes",
+        "cooldown_minutes", "is_active", mode="before",
+    )
+    @classmethod
+    def reject_explicit_null(cls, v: Any) -> Any:
+        if v is None:
+            raise ValueError("This field must not be null; omit it to keep the current value")
+        return v
 
     @field_validator("name", mode="before")
     @classmethod
@@ -149,6 +164,25 @@ class AlertRuleRead(AlertRuleBase):
     id: int
     created_at: datetime
     last_triggered_at: Optional[datetime] = None
+
+    @computed_field
+    @property
+    def webhook_configured(self) -> bool:
+        return bool(self.webhook_url)
+
+    @field_serializer("webhook_url")
+    def mask_webhook_url(self, value: Optional[str], _info: Any) -> Optional[str]:
+        if not value:
+            return None
+        try:
+            parsed = urlsplit(value)
+            host = parsed.hostname
+            if parsed.scheme in ("http", "https") and host:
+                host = f"[{host}]" if ":" in host else host
+                return f"{parsed.scheme}://{host}/…"
+        except ValueError:
+            pass
+        return "[configured]"
 
     @field_serializer("created_at")
     def serialize_created_at(self, value: datetime, _info: Any) -> str:

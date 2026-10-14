@@ -61,7 +61,8 @@ def test_create_alert_rule(client: TestClient):
     assert data["operator"] == ">"
     assert data["threshold_value"] == 5.0
     assert data["window_minutes"] == 10
-    assert data["webhook_url"] == "https://hooks.slack.com/services/test/webhook"
+    assert data["webhook_url"] == "https://hooks.slack.com/…"
+    assert data["webhook_configured"] is True
     assert data["is_active"] is True
     assert "created_at" in data
 

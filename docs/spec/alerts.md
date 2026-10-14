@@ -35,6 +35,12 @@
 | `last_triggered_at` | 쿨다운 기준 시각 (UTC) |
 | 이력 | `rule_id`(FK, 규칙 삭제 시 함께 삭제), `rule_name`, `triggered_value`, `message`(단위 포함), `sent_successfully`, `created_at` |
 
+규칙 생성·수정·목록·단건 응답의 `webhook_url`은 `scheme://host/…`로 마스킹하고
+`webhook_configured`로 설정 여부를 제공한다. 경로·쿼리·userinfo·포트는 반환하지 않는다.
+Webhook 미설정은 `webhook_url: null`, `webhook_configured: false`다. 저장된 실제 URL은 반환하지 않는다.
+마스킹 값을 PATCH에 넣으면 422이며, URL을 유지하려면 필드를 생략한다. `webhook_url: null`은 설정을 지운다.
+그 외 필드의 명시적 null과 임계치 NaN·±Infinity는 생성·수정에서 422다. PATCH의 생략 필드는 유지된다.
+
 ### 평가 흐름 (`AlertEvaluator.evaluate_rules`)
 
 1. 활성 규칙을 읽는다. 같은 `window_minutes`를 쓰는 규칙은 overview 집계 1회를 공유한다.
