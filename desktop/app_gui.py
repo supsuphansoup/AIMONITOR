@@ -22,7 +22,7 @@ import logging
 import math
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog
 from typing import Any, Callable, Dict, List, Optional
@@ -91,6 +91,16 @@ KEY_STATUS_TEXT = {
     "storage_error": "저장소 확인 불가", "unreadable": "복호화 불가",
     "connected": "미검증", "unconfigured": "미등록",
 }
+
+
+def _spend_snapshot_status(snapshot: Dict[str, Any], failed: bool) -> Dict[str, Any]:
+    def marked(report: Dict[str, Any]) -> Dict[str, Any]:
+        reference = (report.get("last_success_at") or report.get("as_of")) if failed else (
+            report.get("as_of") or datetime.now(timezone.utc).isoformat())
+        return {**report, "fetch_failed": failed, "last_success_at": reference}
+
+    return {key: [marked(item) for item in value] if key == "items" else (
+        marked(value) if key.endswith("_api") else value) for key, value in snapshot.items()}
 
 
 class DesktopMainWindow(ctk.CTk):
@@ -1767,6 +1777,9 @@ class DesktopMainWindow(ctk.CTk):
                                 endpoint_status["spend"] = True
                     except Exception as e:
                         logger.debug("spend fetch err: %s", type(e).__name__)
+                    finally:
+                        self.official_spend = _spend_snapshot_status(
+                            self.official_spend, failed=not endpoint_status["spend"])
         except Exception as e:
             logger.debug("fetch_worker client err: %s", type(e).__name__)
 

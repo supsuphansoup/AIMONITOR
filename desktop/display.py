@@ -195,13 +195,21 @@ def unclassified_total_text(total: Dict[str, Any]) -> Optional[str]:
     return f"{text} · {unknown}건 계산 불가" if unknown else text
 
 
+def _spend_status_text(text: Optional[str], spend: Dict[str, Any], now: Optional[datetime]) -> Optional[str]:
+    if not spend.get("fetch_failed"):
+        return text
+    as_of = format_as_of(spend.get("last_success_at") or spend.get("as_of"), now)
+    reference = f"마지막 성공 {as_of}" if as_of else "마지막 성공 시각 확인 불가"
+    return f"{text or '공식 사용액 확인 불가'} · 갱신 실패 · 이전 값 · {reference}"
+
+
 def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float,
                now: Optional[datetime] = None) -> Optional[str]:
     """Provider-reported spend/balance line, or None when there is nothing to say."""
     if not spend:
         return None
     if spend.get("kind") == "unavailable" or spend.get("amount") is None:
-        return spend.get("source_label") or None
+        return _spend_status_text(spend.get("source_label") or None, spend, now)
     amount = float(spend["amount"])
     cur = (spend.get("currency") or "USD").upper()
     if cur == "USD":
@@ -219,7 +227,7 @@ def spend_text(spend: Optional[Dict[str, Any]], krw_rate: float,
             source = source.replace("이번 달", period_label)
             if period_label not in source:
                 source += f" ({period_label})"
-    return f"{source}: {label} {money}"
+    return _spend_status_text(f"{source}: {label} {money}", spend, now)
 
 
 # --------------------------------------------------------------------------- widget

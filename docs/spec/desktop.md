@@ -151,6 +151,10 @@ API 종량제는 청구 합계, 구독은 API 환산 합계에 넣고, 근거가
 저장소 손상·복호화 실패는 별도로 안내하고 알 수 없는 상태나 공급자 원문 응답을 화면에 출력하지 않는다.
 공식 사용액의 `이번 달` 표시는 period_start가 현재 UTC 월의 시작과 같을 때만 쓴다.
 다른 월/구간은 YYYY-MM, 날짜가 없으면 `기간 확인 불가`로 표시하며 잔액에는 월 조건을 적용하지 않는다.
+공식 사용액을 요청한 주기에는 `endpoint_status.spend`에 결과를 포함한다. 실패 후 유지한 카드·키별 금액은
+`갱신 실패 · 이전 값`과 마지막 성공 응답의 기준 시각(`as_of`, 없으면 성공한 조회 시각)을 표시한다.
+기준 시각도 없으면 `마지막 성공 시각 확인 불가`로 안내한다. 정상 `kind=unavailable` 응답은 성공이며,
+공식 사용액을 요청하지 않는 구성은 실패로 세지 않는다. 다음 정상 응답에서 실패 표식을 지운다.
 
 도구별 사용량은 `/metrics/active_contexts`·`/metrics/connected_ais`([metrics.md](metrics.md)),
 로그·차트는 `/traces`·`/metrics/overview`·`/metrics/breakdown`, 키·청구액은 `/keys`([keys.md](keys.md))를 사용한다.

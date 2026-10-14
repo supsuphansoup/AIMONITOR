@@ -191,6 +191,53 @@ def test_invalid_optional_display_fields_are_rejected(endpoint, payload):
     assert not display.valid_api_payload(endpoint, payload)
 
 
+def test_spend_failure_marks_previous_amount_and_success_reference_then_recovers(monkeypatch):
+    responses = valid_payloads()
+    report = {"kind": "balance", "amount": 0.5, "currency": "USD", "as_of": "2026-10-10T10:00:00+00:00",
+              "source_label": "공식 잔액"}
+    responses["spend"] = {"items": [{**report, "provider": "openai", "key_id": "synthetic"}],
+                          "openai_api": report}
+    ui, _requests = fake_window(monkeypatch, responses)
+    app_gui.DesktopMainWindow._fetch_worker(ui, [AI], {}, 1400)
+    assert ui._apply_data.call_args.args[3]["endpoint_status"]["spend"] is True
+    responses["spend"] = httpx.Response(500)
+    app_gui.DesktopMainWindow._fetch_worker(ui, [AI], {}, 1400)
+    summary = ui._apply_data.call_args.args[3]
+    assert summary["endpoint_status"]["spend"] is False
+    for cached in (summary["items"][0]["official_spend"], ui.official_spend["items"][0]):
+        assert cached["amount"] == 0.5
+        text = display.spend_text(cached, 1400)
+        assert "갱신 실패 · 이전 값" in text
+        assert "마지막 성공" in text and display.format_as_of(report["as_of"]) in text
+    ui.ai_card_widgets, ui.connected_ais, ui.krw_rate = {}, [AI], 1400
+    ui.rate_updater = SimpleNamespace(describe=lambda: "synthetic rate")
+    for name in ("_refresh_account_choices", "_refresh_keys_list", "_rebuild_unified_cards",
+                 "_update_native_charts", "_render_breakdown", "_render_filtered_logs", "_schedule_refresh",
+                 "lbl_status_msg", "lbl_last_time", "lbl_total_cost_title", "lbl_total_cost_krw",
+                 "lbl_total_cost_usd", "lbl_total_requests", "lbl_total_tokens"):
+        setattr(ui, name, Mock())
+    app_gui.DesktopMainWindow._apply_data(ui, *ui._apply_data.call_args.args)
+    assert "일부 갱신 실패" in ui.lbl_status_msg.configure.call_args.kwargs["text"]
+    responses["spend"] = {"items": [], "openai_api": {**report, "amount": 0.25}}
+    app_gui.DesktopMainWindow._fetch_worker(ui, [AI], {}, 1400)
+    assert ui._apply_data.call_args.args[3]["endpoint_status"]["spend"] is True
+    assert "갱신 실패" not in display.spend_text(ui.official_spend["openai_api"], 1400)
+
+
+def test_normal_unavailable_spend_is_success_and_unrequested_spend_is_not_failure(monkeypatch):
+    responses = valid_payloads()
+    responses["spend"] = {"items": [], "openai_api": {"kind": "unavailable", "amount": None,
+                                                     "source_label": "공식 사용액 제공 안 함"}}
+    ui, requests = fake_window(monkeypatch, responses)
+    app_gui.DesktopMainWindow._fetch_worker(ui, [AI], {}, 1400)
+    assert ui._apply_data.call_args.args[3]["endpoint_status"]["spend"] is True
+    assert "갱신 실패" not in display.spend_text(ui.official_spend["openai_api"], 1400)
+    requests.clear()
+    app_gui.DesktopMainWindow._fetch_worker(ui, [], {}, 1400)
+    assert "spend" not in requests
+    assert "spend" not in ui._apply_data.call_args.args[3]["endpoint_status"]
+
+
 def test_known_conflict_skips_queries_and_shows_remedy(monkeypatch):
     ui, requests = fake_window(monkeypatch)
     notice = "포트 충돌 · 다른 프로그램을 종료하거나 설정의 서버 주소를 변경하세요."
