@@ -95,17 +95,15 @@ def ingest_trace(
     session: Session = Depends(get_session),
 ):
     """Ingest a single LLM trace event."""
-    event = process_single_trace_create(payload)
     try:
+        event = process_single_trace_create(payload)
         session.add(event)
         session.commit()
         session.refresh(event)
         return TraceEventRead.model_validate(event)
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        # The exception text can echo the submitted payload, so it is logged
-        # server-side and never returned to the caller.
-        logger.exception("Failed to ingest trace")
+        logger.error("Ingest failed code=INGEST_FAILED error_type=%s count=1", type(exc).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to ingest trace.",
@@ -123,16 +121,19 @@ def ingest_batch_traces(
     session: Session = Depends(get_session),
 ):
     """Ingest multiple LLM trace events in a single transaction."""
-    events = [process_single_trace_create(item) for item in payload.traces]
     try:
+        events = [process_single_trace_create(item) for item in payload.traces]
         session.add_all(events)
         session.commit()
         for event in events:
             session.refresh(event)
         return [TraceEventRead.model_validate(e) for e in events]
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        logger.exception("Failed to ingest batch of %d traces", len(events))
+        logger.error(
+            "Ingest failed code=INGEST_BATCH_FAILED error_type=%s count=%d",
+            type(exc).__name__, len(payload.traces),
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to ingest batch traces.",
