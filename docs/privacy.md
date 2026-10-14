@@ -28,6 +28,8 @@ AIMONITOR는 다른 도구의 로그와 로그인 파일을 읽는 앱입니다.
 | 로컬 Ollama API (`127.0.0.1:11434/api/tags`) | 설치된 모델 이름·개수와 연결 상태. 연결 AI 표시에 씁니다. |
 | Cursor·Windsurf·Ollama 폴더 | 설치 여부만 |
 | 환경 변수 | `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, 공급자 키(`OPENAI_API_KEY` 등, [keys.md](spec/keys.md)), `AIMONITOR_API_KEY` |
+| 프로필·AppData 경로 환경 변수 | 홈 폴더는 Windows의 `USERPROFILE`(없으면 `HOMEDRIVE`·`HOMEPATH`), 다른 OS의 `HOME`으로 찾습니다. `APPDATA`·`LOCALAPPDATA`는 도구 설정 DB의 위치를 찾는 데 씁니다. 홈 폴더는 도구 로그와 `~/.aimonitor/` 위치의 기준입니다. |
+| 서버 설정 환경 변수와 현재 작업 폴더의 `.env` (exe는 `~/.aimonitor/.env`, 소스 데스크톱은 저장소 폴더의 `.env`) | `API_KEY`·`DATABASE_URL`·Host·CORS·보관·크기 제한 등 ([설정 목록](../.env.example)). `.env`의 값은 평문이며, `desktop_config.json`에 DPAPI로 암호화해 저장하는 서버 인증 키와 별도 설정입니다. |
 
 ## 밖으로 보내는 곳 (전부)
 
@@ -43,6 +45,7 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 사내망 Webhook이 필요하면 서버 설정 `ALERT_ALLOW_PRIVATE_WEBHOOKS=true`로 허용합니다.
 
 `127.0.0.1`의 로컬 API 서버와 Ollama(`127.0.0.1:11434`)에 보내는 요청은 이 PC 안에서만 오갑니다.
+중복 실행을 막는 데스크톱 인스턴스끼리는 `127.0.0.1:47821`로 고정 제어 메시지(`AIMONITOR:show`, `AIMONITOR:ping`, `AIMONITOR:ack:v1`)만 주고받습니다. 사용 기록·인증 키는 보내지 않습니다.
 설정의 서버 주소(`backend_url`)를 다른 서버로 바꾸면 사용량 조회·수집 요청과 서버 인증 키가 그 서버로 가며, 이때는 로컬 서버를 띄우지 않습니다.
 
 **Python SDK**로 내 앱의 호출을 기록하면 기록은 `api_url`에 지정한 수집 서버(기본은 이 PC의 localhost)로 갑니다.
@@ -56,6 +59,7 @@ Webhook 대상은 기본적으로 공개 주소만 허용합니다. 사설·루�
 | DB (기본값: `aimonitor.db` — exe는 `~/.aimonitor/`, 소스 실행은 저장소 폴더; 실제 저장소는 서버 설정 `DATABASE_URL`이 결정) | 기록마다 공급자·모델·토큰 수·시각·지연·비용·상태, 계정 해시·trace/session ID·태그·정제된 메타데이터·오류 메시지, 수집기가 보낸 중복 제거 키(`dedupe_key`, 해시). 알림 규칙(**Webhook URL은 평문**)과 발동·발송 결과 이력 |
 | `~/.aimonitor/api_keys.json` | 키 원문만 DPAPI로 암호화해(`sealed`) 저장합니다. 공급자·키 ID·라벨·검증 상태·마지막 검증 시각·잔액 설명은 평문입니다. |
 | `~/.aimonitor/api_keys.json.lock` | 데스크톱과 서버가 키 파일을 동시에 고치지 않게 하는 잠금 파일. 비밀값은 없습니다. |
+| `~/.aimonitor/ai_watcher.lock` | 여러 수집기가 같은 로그를 동시에 수집하지 않게 하는 잠금 파일. 비밀값은 없습니다. |
 | `~/.aimonitor/desktop_config.json` | 화면 설정, 서버 주소, 서버 인증 키(DPAPI 암호화), USD/KRW 환율과 출처·기준일·마지막 조회 성공 시각 |
 | `~/.aimonitor/accounts.json`, `account_timeline.json` | 계정 해시·라벨·설정 폴더 경로·관측 시각 (타임라인은 최신 5,000개까지). `accounts.json`에는 계정별 인증 방식(`subscription/api/unknown`), 현재 방식 첫 관측·마지막 변경 시각도 저장합니다. 키·토큰 값은 없습니다. |
 | `~/.aimonitor/quota/`, `claude_official_quota.json` | 한도 조회 결과(퍼센트·리셋 시각·구독 종류). 토큰은 없습니다. |

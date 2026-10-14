@@ -63,6 +63,8 @@
 | `RETENTION_DAYS` | `0` (무제한) | 설정 시 오래된 기록을 주기적으로 삭제 |
 
 전체 목록과 설명은 `.env.example`이 정본이다.
+서버 설정은 환경 변수와 현재 작업 폴더의 `.env`에서 읽는다. exe는 `~/.aimonitor/`, 소스 데스크톱은 저장소 폴더가 현재 작업 폴더다.
+`.env`의 `API_KEY`는 평문 설정이며, `desktop_config.json`의 DPAPI 암호화 서버 인증 키와 별도다 ([개인정보](../privacy.md)).
 
 ### 배포
 
