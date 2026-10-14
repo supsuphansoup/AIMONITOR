@@ -68,6 +68,9 @@ PRICING_SOURCES: Dict[str, str] = {
     "openai_gpt_5_6_terra": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
     "openai_gpt_5_6_luna": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
     "openai_o1_mini": "https://developers.openai.com/api/docs/models/o1-mini",
+    "openai_deprecations": "https://developers.openai.com/api/docs/deprecations",
+    "openai_snapshots": "https://developers.openai.com/api/docs/models",
+    "anthropic_snapshots": "https://platform.claude.com/docs/en/about-claude/model-deprecations",
 }
 
 
@@ -93,8 +96,8 @@ def _gemini(input_rate: float, output_rate: float, cached: float) -> ModelPricin
 # by provider (LOCAL_PROVIDERS), never by model name: the same weights behind a
 # hosted API (mistral, deepseek, together, ...) have a price we do not know.
 #
-# A dated snapshot only inherits its family's price when it has no key of its
-# own - some snapshots are priced differently (gpt-4o-2024-05-13), so list those.
+# Snapshots with different prices have their own keys. Unlisted dates only
+# inherit a family's price when explicitly verified in _VERIFIED_MODEL_ALIASES.
 MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     # --- OpenAI, verified PRICING_AS_OF (Standard tier; "<272K" models at the short-context rate)
     "gpt-6-astra": _openai(10.00, 50.00, 1.00, write=12.50),
@@ -134,6 +137,8 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gpt-4": _openai(30.00, 60.00, None),                # gpt-4-0613
     "gpt-3.5-turbo": _openai(0.50, 1.50, None),
     "gpt-3.5-turbo-1106": _openai(1.00, 2.00, None),
+    # Historical price verified in PRICING_SOURCES["openai_deprecations"].
+    "gpt-3.5-turbo-0613": _openai(1.50, 2.00, None),
     "gpt-3.5-turbo-instruct": _openai(1.50, 2.00, None),
     "davinci-002": _openai(2.00, 2.00, None),
     "babbage-002": _openai(0.40, 0.40, None),
@@ -193,25 +198,48 @@ MODEL_PRICING_USD_PER_1M: Dict[str, ModelPricing] = {
     "gemini-1.5-flash-8b": _gemini(0.0375, 0.15, 0.01),
 }
 
-#: What may follow a pricing key for a name to still mean that model: dated
-#: snapshots, numbered revisions, "-latest" aliases and Bedrock/Vertex version
-#: tags. Anything else ("-preview", "-pro", ".5", "-32k") is a different model
-#: with its own price, so it must not inherit this one.
-_VERSION_SUFFIX = r"(?:[-@](?:\d{8}|\d{4}-\d{2}-\d{2}|\d{3,4}|latest|v\d+(?::\d+)?))*"
+# Official model pages list these snapshots under the same model pricing;
+# Anthropic's deprecations page identifies the dated IDs for its priced models.
+# Checked 2026-10-14. No arbitrary date or numbered revision inherits a price.
+_VERIFIED_MODEL_ALIASES: Dict[str, str] = {
+    # https://developers.openai.com/api/docs/models/<base-key>
+    "gpt-5-2025-08-07": "gpt-5",
+    "gpt-5.4-2026-03-05": "gpt-5.4",
+    "gpt-5.5-2026-04-23": "gpt-5.5",
+    "gpt-4o-mini-2024-07-18": "gpt-4o-mini",
+    "gpt-3.5-turbo-0125": "gpt-3.5-turbo",
+    "o3-mini-2025-01-31": "o3-mini",
+    "o1-mini-2024-09-12": "o1-mini",
+    # PRICING_SOURCES["anthropic_snapshots"] and ["anthropic"].
+    "claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
+    "claude-opus-4-1-20250805": "claude-opus-4-1",
+    "claude-sonnet-4-20250514": "claude-sonnet-4",
+    "claude-opus-4-20250514": "claude-opus-4",
+    "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+    "claude-opus-4-5-20251101": "claude-opus-4-5",
+}
+
+# Preserve routing aliases/version tags, but never strip an unverified date.
+_VERSION_SUFFIX = r"(?:[-@](?:latest|v\d+(?::\d+)?))*"
 
 #: Longest key first, so "gpt-4o-mini-2024-07-18" resolves to gpt-4o-mini, not gpt-4o.
 #: A key may be preceded by a routing prefix ("models/", "us.anthropic.").
 _PRICING_KEY_PATTERNS = [
-    (key, re.compile(r"(?:^|[/.])" + re.escape(key) + _VERSION_SUFFIX + "$"))
-    for key in sorted(MODEL_PRICING_USD_PER_1M.keys(), key=len, reverse=True)
+    (_VERIFIED_MODEL_ALIASES.get(name, name),
+     re.compile(r"(?:^|[/.])" + re.escape(name) + _VERSION_SUFFIX + "$"))
+    for name in sorted(
+        MODEL_PRICING_USD_PER_1M.keys() | _VERIFIED_MODEL_ALIASES.keys(), key=len, reverse=True,
+    )
 ]
 
 
 def normalize_model_name(name: str) -> str:
     """Map a raw model string onto a pricing key, or return it cleaned if none applies."""
     cleaned = name.strip().lower()
+    # Vertex uses @YYYYMMDD for the same explicitly registered snapshot ID.
+    vertex_name = re.sub(r"@(\d{8})$", r"-\1", cleaned)
     for key, pattern in _PRICING_KEY_PATTERNS:
-        if pattern.search(cleaned):
+        if pattern.search(cleaned) or pattern.search(vertex_name):
             return key
     return cleaned
 

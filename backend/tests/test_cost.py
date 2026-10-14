@@ -6,7 +6,8 @@ from backend.app.services.cost import calculate_cost, normalize_model_name
 def test_normalize_model_name():
     assert normalize_model_name("gpt-4o-mini-2024-07-18") == "gpt-4o-mini"
     assert normalize_model_name("Claude-3-5-Sonnet-20241022") == "claude-3-5-sonnet-20241022"
-    assert normalize_model_name("gemini-1.5-pro-001") == "gemini-1.5-pro"
+    # Unverified numbered snapshots no longer inherit the current alias price.
+    assert normalize_model_name("gemini-1.5-pro-001") == "gemini-1.5-pro-001"
     # Open weights are not in the rate card (free-ness is decided by provider),
     # so the name comes back cleaned rather than mapped.
     assert normalize_model_name("Ollama/Llama3:8B") == "ollama/llama3:8b"

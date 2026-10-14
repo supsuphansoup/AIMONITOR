@@ -7,7 +7,7 @@
 - COST-3 프롬프트 캐시 읽기·쓰기 토큰은 각각의 단가로 계산한다. 일반 입력과 합산하지 않는다.
 - COST-4 적용 중인 단가표, 무료 provider 목록, 단가 확인일(`as_of`)과 출처(`sources`)를 `GET /api/v1/system/pricing`으로 공개한다.
 - COST-5 과거 행의 비용은 단가표가 바뀌어도 재계산하지 않는다 (수집 시점 단가로 고정).
-- COST-6 단가표 키의 일부만 같은 다른 모델(`gpt-4.5-preview`, `o3-pro`)에 그 단가를 빌려주지 않는다.
+- COST-6 단가표 키의 일부만 같은 다른 모델(`gpt-4.5-preview`, `gpt-4-32k`)에 그 단가를 빌려주지 않는다. 정확히 등록된 `o3-pro` 등은 자체 단가를 쓴다.
 - COST-7 오픈 웨이트 모델이라도 유료 API로 호출했으면 무료가 아니다. 무료 여부는 provider로만 판단한다.
 
 ## Design
@@ -33,6 +33,7 @@
   - Anthropic: 기본 쓰기는 5분 캐시 단가. `cache_write_1h_tokens`는 전체 쓰기의 부분집합이며 공식 확인 모델에 한해 입력의 2배 단가로 별도 계산한다 (2026-10-14, PRICING_SOURCES의 Anthropic 페이지). 확인하지 못한 모델의 1시간 쓰기는 전체 호출을 `unknown`으로 처리한다. Sonnet 5.5 읽기는 $0.10/1M이다.
   - Gemini: 쓰기 = 입력 단가, 읽기 = 공식 context caching 단가.
 - 같은 계열이라도 가격이 다른 스냅샷은 별도 키로 둔다 (`gpt-4o-2024-05-13` = $5/$15, `gpt-4o`는 $2.50/$10).
+- `gpt-3.5-turbo-0613`은 공식 deprecations의 과거 입력 $1.50/출력 $2.00(1M당 USD) 키를 따로 둔다. 날짜가 붙었다는 이유만으로 현행 별칭 가격을 적용하지 않는다.
 - `o1-mini`는 현행 공식 입력 $1.10/출력 $4.40/캐시 읽기 $0.55, Gemini 1.5 Flash-8B는 공식 과거 공지의 <128K 입력 $0.0375/출력 $0.15/캐시 읽기 $0.01을 적용한다(모두 1M 토큰당 USD). 기존 DB 행은 재계산하지 않는다.
 - `gemini-3.5-flash`는 2026-10-08 changelog에 3.6으로의 자동 라우팅만 명시되고 별칭 청구 단가는 확인되지 않아 `unknown`이다. `PRICING_SOURCES.gemini_changelog`와 가격 페이지를 2026-10-14에 확인했다.
 
@@ -61,16 +62,21 @@ cost = prompt × input + completion × output
 `normalize_model_name`: 소문자화 후 긴 키부터 아래 형태에 맞는지 본다. 맞는 키가 없으면 `unknown`.
 
 ```
-(문자열 시작 | "/" | ".") + 키 + 버전 접미사* + 문자열 끝
-버전 접미사 = ("-" | "@") + (YYYYMMDD | YYYY-MM-DD | 3–4자리 숫자 | latest | vN | vN:M)
+(문자열 시작 | "/" | ".") + (정확한 단가표 키 | 확인한 별칭) + 라우팅 접미사* + 문자열 끝
+라우팅 접미사 = ("-" | "@") + (latest | vN | vN:M)
 ```
 
 | 입력 | 결과 |
 | :--- | :--- |
-| `gpt-4o-mini-2024-07-18`, `gpt-3.5-turbo-0125`, `gemini-1.5-pro-002` | 각 기본 모델 |
-| `claude-3-5-sonnet@20240620` (Vertex), `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Bedrock), `models/gemini-1.5-pro` | 각 기본 모델 |
+| `gpt-4o-mini-2024-07-18`, `gpt-3.5-turbo-0125` | 공식 확인한 각 기본 모델 |
+| `claude-3-5-sonnet@20240620` (Vertex), `us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Bedrock) | 각 날짜의 명시 키 (Vertex `@YYYYMMDD`를 `-YYYYMMDD`로 해석) |
+| `models/gemini-1.5-pro` | `gemini-1.5-pro` |
 | `claude-opus-4-1-20250805` | `claude-opus-4-1` (`claude-opus-4`가 아님 — 긴 키 우선) |
-| `gpt-4.5-preview`, `gpt-4-32k`, `o3-pro`, `*-preview`, `ft:gpt-4o-mini:...` | `unknown` (다른 모델) |
+| `gpt-3.5-turbo-0613`, `o3-pro`, `gemini-3.1-pro-preview` | 정확한 등록 키의 자체 단가 (`-pro`·`-preview`여도 예외) |
+| `gpt-4.5-preview`, `gpt-4-32k`, `ft:gpt-4o-mini:...` | `unknown` (미등록 모델) |
+| `gpt-4o-2099-01-01`, `gemini-1.5-pro-001/002`, `gemini-2.0-flash-001` | `unknown` (현재 별칭과 가격 동일성이 확인되지 않은 날짜·숫자 버전) |
+
+확인한 날짜 별칭 목록은 코드의 `_VERIFIED_MODEL_ALIASES`에만 둔다. 공식 모델 문서 또는 Anthropic 가격·deprecations 문서(2026-10-14 확인)에 근거하며, 여기에 없는 날짜·숫자 버전을 자동으로 벗겨내지 않는다.
 
 ## Open questions
 
@@ -84,5 +90,5 @@ cost = prompt × input + completion × output
 - Bedrock·Vertex 경유 Claude는 파트너 가격(지역 엔드포인트 10% 할증 등)이지만 1st-party 단가로 계산한다.
 - 은퇴·미게재 모델(`claude-3-*`, `gemini-1.5-pro/flash`, `gemini-2.0-*` 등)은 마지막으로 알려진 단가를 재확인 없이 유지한다. `o1-mini` 현행 단가와 `gemini-1.5-flash-8b` 과거 단가는 2026-10-14에 공식 문서로 재확인했다.
 - 해결됨(v0.5.0): 최신 모델 미등록, 기준일·출처 없음, 공식 가격과 다른 항목(`o3` $10/$40→$2/$8, `gemini-2.5-flash` $0.075/$0.30→$0.30/$2.50, `gpt-4o-2024-05-13`이 `gpt-4o` 단가를 쓰던 문제). 확인할 수 없는 `gemini-2.5-flash-lite`·`gemini-2.0-pro-exp`는 제거(`계산 불가`).
-- 매칭이 엄격해져(v0.4.0) 날짜·버전 외 접미사가 붙은 이름은 모두 `unknown`이다. 같은 단가인 별칭이 자주 쓰이면 키를 표에 추가해야 한다.
+- 날짜·숫자 버전은 공식 가격 동일성을 확인해 목록에 등록한 경우만 매칭한다. 그 밖의 미등록 접미사는 `unknown`이며, 정확한 단가표 키(`o3-pro`, `gemini-3.1-pro-preview` 등)는 자체 단가를 쓴다.
 - 해결됨(v0.4.0): 부분 문자열 매칭으로 다른 모델 단가를 빌려 쓰던 문제, 유료 API의 오픈 웨이트 모델을 $0으로 처리하던 문제.

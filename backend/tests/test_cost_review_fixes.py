@@ -96,3 +96,24 @@ def test_review_submicrodollar_calls_accumulate_without_losing_cost():
 def test_review_custom_cost_retains_storage_precision():
     result = cost.calculate_cost_detail("custom", "unpriced", 0, 0, custom_cost_usd=0.0000001234567)
     assert result == cost.CostResult(0.000000123457, cost.SOURCE_CUSTOM)
+
+
+def test_review_historical_gpt35_snapshot_has_its_own_price():
+    # CST-14: official historical price, checked 2026-10-14.
+    # https://developers.openai.com/api/docs/deprecations#2023-11-06-chat-model-updates
+    result = cost.calculate_cost_detail("openai", "gpt-3.5-turbo-0613", 1000, 1000)
+    assert result == cost.CostResult(0.0035, cost.SOURCE_PRICING_TABLE)
+
+
+@pytest.mark.parametrize("model", [
+    "gpt-3.5-turbo-0301", "gpt-4o-2099-01-01", "gpt-4o-20260701", "claude-opus-5-5-20990101",
+    "models/gemini-2.5-pro-999", "gpt-4o-2024-07-18-2024-07-19",
+])
+def test_review_unverified_snapshot_does_not_inherit_alias_price(model):
+    assert cost.calculate_cost_detail("openai", model, 1000, 1000).source == cost.SOURCE_UNKNOWN
+
+
+@pytest.mark.parametrize("model", ["o3-pro", "gemini-3.1-pro-preview"])
+def test_review_explicit_pro_and_preview_keys_are_priced(model):
+    # CST-16: exact registered keys are exceptions to the unknown suffix examples.
+    assert cost.calculate_cost_detail("api", model, 1000, 1000).source == cost.SOURCE_PRICING_TABLE

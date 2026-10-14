@@ -55,14 +55,18 @@ def test_another_models_price_is_not_borrowed(provider, model):
     ("gpt-3.5-turbo-0125", "gpt-3.5-turbo"),
     ("o3-mini-2025-01-31", "o3-mini"),
     ("claude-3-5-sonnet-latest", "claude-3-5-sonnet"),
-    ("claude-3-5-sonnet@20240620", "claude-3-5-sonnet"),                                 # Vertex
+    ("claude-3-5-sonnet@20240620", "claude-3-5-sonnet-20240620"),                       # Vertex
     ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "claude-3-5-sonnet-20241022"),      # Bedrock
-    ("models/gemini-1.5-pro-002", "gemini-1.5-pro"),
-    ("gemini-2.0-flash-001", "gemini-2.0-flash"),
 ])
 def test_versioned_names_keep_their_model_price(model, key):
     assert normalize_model_name(model) == key
     assert calculate_cost_detail("x", model, 1000, 1000).source == SOURCE_PRICING_TABLE
+
+
+@pytest.mark.parametrize("model", ["gemini-1.5-pro-001", "models/gemini-1.5-pro-002", "gemini-2.0-flash-001"])
+def test_unverified_legacy_snapshot_price_is_unknown(model):
+    # Existence of a revision does not verify equal billing to the current alias.
+    assert calculate_cost_detail("gemini", model, 1000, 1000).source == SOURCE_UNKNOWN
 
 
 @pytest.mark.parametrize("provider,model", [
