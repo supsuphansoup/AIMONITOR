@@ -9,6 +9,7 @@ Returns Anthropic's own 5-hour and 7-day utilization. A cached result keeps its
 
 import json
 import logging
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -31,24 +32,34 @@ class ClaudeQuotaSyncer:
         self.cred_file = (config_dir or Path.home() / ".claude") / ".credentials.json"
         self.cache_file = cache_file or CACHE_FILE
         self._last_result: Optional[Dict[str, Any]] = self._load_cache()
-        self._last_fetch_time: float = 0.0
+        self._last_fetch_time: Optional[float] = None
         self._retry_after: float = 0.0
         self._lock = threading.Lock()
 
     def _load_cache(self) -> Optional[Dict[str, Any]]:
         try:
             if self.cache_file.exists():
-                return json.loads(self.cache_file.read_text(encoding="utf-8"))
+                data = json.loads(self.cache_file.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else None
         except Exception:
             pass
         return None
 
     def _save_cache(self, data: Dict[str, Any]) -> None:
+        temporary = None
         try:
             self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-            self.cache_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.cache_file.parent, suffix=".tmp", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                json.dump(data, stream, indent=2)
+            temporary.replace(self.cache_file)
         except Exception:
             pass
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def get_quota(self, force: bool = False) -> Optional[Dict[str, Any]]:
         """Return official quota, refreshing from API if cache is older than TTL."""
@@ -62,7 +73,8 @@ class ClaudeQuotaSyncer:
         if now < self._retry_after:
             return self._last_result
 
-        if not force and self._last_result and (now - self._last_fetch_time) < CACHE_TTL_SECONDS:
+        if (not force and self._last_fetch_time is not None
+                and (now - self._last_fetch_time) < CACHE_TTL_SECONDS):
             return self._last_result
 
         fetched = self.fetch_fresh()
@@ -103,13 +115,19 @@ class ClaudeQuotaSyncer:
                 return None
 
             data = res.json()
-            fh = data.get("five_hour") or {}
-            sd = data.get("seven_day") or {}
+            if not isinstance(data, dict):
+                return None
+            from desktop.quota import _number
 
-            fh_used = round(float(fh["utilization"]), 1) if fh.get("utilization") is not None else None
+            fh = data.get("five_hour") if isinstance(data.get("five_hour"), dict) else {}
+            sd = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else {}
+
+            fh_used = _number(fh.get("utilization"))
+            fh_used = round(fh_used, 1) if fh_used is not None else None
             fh_rem = round(max(0.0, 100.0 - fh_used), 1) if fh_used is not None else None
 
-            sd_used = round(float(sd["utilization"]), 1) if sd.get("utilization") is not None else None
+            sd_used = _number(sd.get("utilization"))
+            sd_used = round(sd_used, 1) if sd_used is not None else None
             sd_rem = round(max(0.0, 100.0 - sd_used), 1) if sd_used is not None else None
 
             result = {
@@ -133,10 +151,15 @@ class ClaudeQuotaSyncer:
             return None
 
 
-# Global singleton instance
-syncer = ClaudeQuotaSyncer()
+# Importing the module must not read any account files.
+syncer: Optional[ClaudeQuotaSyncer] = None
+_singleton_lock = threading.Lock()
 
 
 def get_official_claude_quota(force: bool = False) -> Optional[Dict[str, Any]]:
     """Helper to fetch official Claude quota."""
+    global syncer
+    with _singleton_lock:
+        if syncer is None:
+            syncer = ClaudeQuotaSyncer()
     return syncer.get_quota(force=force)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -34,15 +35,27 @@ STALE_AFTER_SECONDS = 15 * 60
 _TAIL_BYTES = 512 * 1024
 
 
+def _number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def _parse_ts(value: Any) -> Optional[datetime]:
     if value is None or value == "":
         return None
     try:
+        if isinstance(value, bool):
+            return None
         if isinstance(value, (int, float)):
             return datetime.fromtimestamp(float(value), tz=timezone.utc)
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, OverflowError, OSError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
@@ -67,8 +80,11 @@ def make_window(
 ) -> Dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     stale = False
-    if used_pct is not None:
-        used_pct = round(min(100.0, max(0.0, float(used_pct))), 1)
+    used_pct = _number(used_pct)
+    if used_pct is None:
+        source = SOURCE_UNAVAILABLE
+    else:
+        used_pct = round(min(100.0, max(0.0, used_pct)), 1)
         if resets_at is not None and resets_at <= now:
             # The window rolled over after the number was taken; the old value is void.
             used_pct = None
@@ -105,7 +121,7 @@ def claude_windows(
 ) -> List[Dict[str, Any]]:
     """Windows from the cached Claude OAuth usage response (see claude_quota_syncer)."""
     src = "Anthropic 공식"
-    if not official:
+    if not isinstance(official, dict) or not official:
         reason = "Claude 로그인 정보가 없거나 공식 사용량을 아직 받지 못함"
         return [
             make_window(
@@ -182,7 +198,7 @@ def _tail_lines(path: Path, max_bytes: int = _TAIL_BYTES) -> List[str]:
 
 
 def latest_codex_rate_limits(
-    codex_home: Optional[Path] = None, max_files: int = 20,
+    codex_home: Optional[Path] = None, max_files: int = 200,
     account_at: Optional[Callable[[Any], Optional[str]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Most recent `rate_limits` snapshot Codex CLI wrote into its session logs.
@@ -198,10 +214,26 @@ def latest_codex_rate_limits(
         files = sorted(sessions.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return None
-    for path in files[:max_files]:
+    snapshots = []
+    uncertain = False
+    mtime_trusted = True
+    read_bytes = 0
+    from desktop.accounts import _timestamp
+
+    for index, path in enumerate(files):
         try:
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            newest = max((item[0] for item in snapshots), default=None)
+            if mtime_trusted and newest and modified < newest - timedelta(minutes=5):
+                break
+            size = min(stat.st_size, _TAIL_BYTES)
+            if index >= max_files or read_bytes + size > 64 * 1024 * 1024:
+                return {"rate_limits": {}, "limited": True}
             lines = _tail_lines(path)
+            read_bytes += size
         except OSError:
+            uncertain = True
             continue
         for line in reversed(lines):
             if "rate_limits" not in line:
@@ -210,26 +242,38 @@ def latest_codex_rate_limits(
                 obj = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(obj, dict):
+                continue
             payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else obj
             limits = payload.get("rate_limits") if isinstance(payload, dict) else None
             if isinstance(limits, dict) and (limits.get("primary") or limits.get("secondary")):
+                timestamp = _timestamp(obj.get("timestamp"))
+                if timestamp is None:
+                    uncertain = True
+                    continue
+                if timestamp > modified + timedelta(minutes=5):
+                    # Copied files or a changed PC clock can invalidate the mtime bound.
+                    mtime_trusted = False
                 snapshot = {"rate_limits": limits, "timestamp": obj.get("timestamp")}
                 if account_at is not None:
                     snapshot["account_id"] = account_at(obj.get("timestamp"))
-                return snapshot
-    return None
+                snapshots.append((timestamp, snapshot))
+    return max(snapshots, key=lambda item: item[0])[1] if snapshots and not uncertain else None
 
 
 def codex_windows(snapshot: Optional[Dict[str, Any]], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     src = "Codex 공식 (마지막 요청 시점)"
-    if not snapshot:
+    if (not isinstance(snapshot, dict) or not isinstance(snapshot.get("rate_limits"), dict)
+            or snapshot.get("limited")):
         return [
             make_window(
                 "codex.limits",
                 "사용 한도",
                 source=SOURCE_UNAVAILABLE,
                 source_label=src,
-                note="Codex 세션 로그에 사용 한도 기록이 아직 없음",
+                note=("Codex 로그 조회 상한에 도달해 최신 한도를 확인할 수 없음"
+                      if isinstance(snapshot, dict) and snapshot.get("limited")
+                      else "Codex 세션 로그에 사용 한도 기록이 아직 없음"),
                 now=now,
             )
         ]
@@ -237,20 +281,31 @@ def codex_windows(snapshot: Optional[Dict[str, Any]], now: Optional[datetime] = 
     out = []
     for slot in ("primary", "secondary"):
         w = snapshot["rate_limits"].get(slot)
-        if not isinstance(w, dict) or w.get("used_percent") is None:
+        if w is None:
             continue
-        minutes = w.get("window_minutes")
-        suffix, label = _window_label(float(minutes) if minutes is not None else None)
+        w = w if isinstance(w, dict) else {}
+        minutes = _number(w.get("window_minutes"))
+        valid = not (w.get("window_minutes") is not None and (minutes is None or minutes <= 0))
+        suffix, label = _window_label(minutes) if valid else (slot, "사용 한도")
         resets = _parse_ts(w.get("resets_at"))
-        if resets is None and w.get("resets_in_seconds") is not None and as_of is not None:
-            resets = as_of + timedelta(seconds=float(w["resets_in_seconds"]))
+        if w.get("resets_at") is not None and resets is None:
+            valid = False
+        if resets is None and w.get("resets_in_seconds") is not None:
+            seconds = _number(w["resets_in_seconds"])
+            if seconds is None or seconds < 0 or as_of is None:
+                valid = False
+            else:
+                try:
+                    resets = as_of + timedelta(seconds=seconds)
+                except OverflowError:
+                    valid = False
         out.append(
             make_window(
                 f"codex.{suffix}",
                 label,
                 source=SOURCE_OFFICIAL,
                 source_label=src,
-                used_pct=w.get("used_percent"),
+                used_pct=w.get("used_percent") if valid else None,
                 resets_at=resets,
                 as_of=as_of,
                 now=now,
@@ -273,47 +328,79 @@ def copilot_premium_requests_this_month(
     from `session.shutdown` events, so a session still open is not in it yet.
     """
     session_state = session_state or (Path.home() / ".copilot" / "session-state")
-    now = now or datetime.now(timezone.utc)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     total = 0.0
+    files_read = files_failed = incomplete = 0
     last_seen: Optional[datetime] = None
     if session_state.exists():
         for path in session_state.glob("*/events.jsonl"):
             try:
-                if datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc) < month_start:
-                    continue
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        if '"session.shutdown"' not in line:
-                            continue
                         try:
                             d = json.loads(line)
                         except ValueError:
+                            incomplete += 1
+                            continue
+                        if not isinstance(d, dict):
+                            incomplete += 1
+                            continue
+                        if d.get("type") != "session.shutdown":
                             continue
                         ts = _parse_ts(d.get("timestamp"))
-                        if ts is None or ts < month_start:
+                        if ts is None:
+                            incomplete += 1
                             continue
-                        metrics = (d.get("data") or {}).get("modelMetrics") or {}
+                        if not month_start <= ts <= now:
+                            continue
+                        data = d.get("data")
+                        metrics = data.get("modelMetrics") if isinstance(data, dict) else None
+                        if not isinstance(metrics, dict) or not metrics:
+                            incomplete += 1
+                            continue
                         for m in metrics.values():
-                            cost = ((m or {}).get("requests") or {}).get("cost")
-                            if isinstance(cost, (int, float)):
-                                total += float(cost)
+                            requests = m.get("requests") if isinstance(m, dict) else None
+                            cost = _number(requests.get("cost")) if isinstance(requests, dict) else None
+                            if cost is None or cost < 0:
+                                incomplete += 1
+                            else:
+                                total += cost
                         last_seen = max(last_seen, ts) if last_seen else ts
+                files_read += 1
             except OSError:
-                continue
+                files_failed += 1
     if month_start.month == 12:
         next_reset = month_start.replace(year=month_start.year + 1, month=1)
     else:
         next_reset = month_start.replace(month=month_start.month + 1)
-    return {"used": total, "month_start": month_start, "resets_at": next_reset, "last_seen": last_seen}
+    status = "ok" if files_read and not (files_failed or incomplete) else (
+        "partial" if files_read else "unavailable"
+    )
+    return {"used": total if status == "ok" else None, "known_used": total, "status": status,
+            "files_read": files_read, "files_failed": files_failed, "incomplete_events": incomplete,
+            "month_start": month_start, "resets_at": next_reset, "last_seen": last_seen}
 
 
 def copilot_windows(
     monthly_limit: Optional[float], usage: Dict[str, Any], now: Optional[datetime] = None
 ) -> List[Dict[str, Any]]:
-    used = usage["used"]
-    used_txt = f"{used:g}회"
-    if monthly_limit and monthly_limit > 0:
+    used = _number(usage.get("used"))
+    monthly_limit = _number(monthly_limit)
+    used_txt = f"{used:g}회" if used is not None else "확인 불가"
+    if usage.get("status", "ok") != "ok" or used is None:
+        partial = usage.get("status") == "partial"
+        known = _number(usage.get("known_used"))
+        note = (f"확인된 부분 합계 {known:g}회 · 일부 로그 확인 불가" if partial and known is not None
+                else "이 PC의 월 사용량을 확인하지 못함")
+        window = make_window(
+            "copilot.premium_month", "월 프리미엄 요청", source=SOURCE_UNAVAILABLE,
+            source_label="이 PC 로그 확인 불가", resets_at=usage.get("resets_at"),
+            as_of=usage.get("last_seen"), note=note, now=now, unit="회",
+        )
+        window["partial"] = partial
+        return [window]
+    if monthly_limit is not None and monthly_limit > 0:
         return [
             make_window(
                 "copilot.premium_month",
@@ -376,7 +463,8 @@ def windows_for(
     if key == "copilot":
         if copilot_usage == "auto":
             copilot_usage = _cached("copilot", lambda: _safe(copilot_premium_requests_this_month)) or {
-                "used": 0.0,
+                "used": None,
+                "status": "unavailable",
                 "resets_at": None,
                 "last_seen": None,
             }
@@ -434,6 +522,31 @@ def _fetch_claude_official() -> Optional[Dict[str, Any]]:
 
 _account_syncers: Dict[str, Any] = {}
 _account_registry: Any = None
+ACCOUNT_SYNCER_IDLE_SECONDS = 60 * 60
+
+
+def merge_account_quota_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep the latest usable window per (tool, account), never an empty mirror."""
+    grouped = {}
+    for row in rows:
+        key = (row["tool"], row.get("account_id"))
+        if key not in grouped:
+            grouped[key] = dict(row, quota_windows=[])
+        windows = {w["id"]: w for w in grouped[key]["quota_windows"]}
+        for window in row.get("quota_windows") or []:
+            previous = windows.get(window["id"])
+
+            def rank(item):
+                return (item.get("remaining_pct") is not None,
+                        _parse_ts(item.get("as_of")) or datetime.min.replace(tzinfo=timezone.utc))
+
+            if previous is None or rank(window) > rank(previous):
+                windows[window["id"]] = window
+        if any(w.get("remaining_pct") is not None for w in windows.values()):
+            windows = {key: w for key, w in windows.items()
+                       if w.get("remaining_pct") is not None or key not in ("codex.limits",)}
+        grouped[key]["quota_windows"] = list(windows.values())
+    return list(grouped.values())
 
 
 def account_quotas(registry: Any = None, force: bool = False,
@@ -443,15 +556,21 @@ def account_quotas(registry: Any = None, force: bool = False,
     A Codex snapshot whose login cannot be established is exposed as account_id=None,
     separately from the current account's unavailable windows.
     """
-    from desktop.accounts import AccountRegistry, account_id_for, config_dir_hash
+    from desktop.accounts import AccountRegistry, account_id_for
     from desktop.claude_quota_syncer import ClaudeQuotaSyncer
 
     global _account_registry
+    tick = time.monotonic()
+    with _scan_lock:
+        for key, cached_syncer in list(_account_syncers.items()):
+            if tick - getattr(cached_syncer, "_last_used_monotonic", tick) >= ACCOUNT_SYNCER_IDLE_SECONDS:
+                del _account_syncers[key]
     if registry is None:
         if _account_registry is None:
             _account_registry = AccountRegistry()
         registry = _account_registry
     result = []
+    fetched = {}
     for row in registry.refresh(now=now):
         tool = row["tool"]
         directory = Path(row["config_dir"])
@@ -464,19 +583,22 @@ def account_quotas(registry: Any = None, force: bool = False,
                 result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
                 result[-1]["quota_windows"] = claude_windows(None, now)
                 continue
-            key = f"{registry.state_dir}:{row['account_id']}:{config_dir_hash(directory)}"
+            key = f"{registry.state_dir}:{row['account_id']}"
             with _scan_lock:
                 syncer = _account_syncers.get(key)
                 if syncer is None:
                     cache = registry.state_dir / "quota" / f"{row['account_id'].replace(':', '-')}.json"
                     syncer = ClaudeQuotaSyncer(config_dir=directory, cache_file=cache)
                     _account_syncers[key] = syncer
-            windows = claude_windows(syncer.get_quota(force=force), now)
+                syncer._last_used_monotonic = tick
+            if key not in fetched:
+                fetched[key] = syncer.get_quota(force=force)
+            windows = claude_windows(fetched[key], now)
         elif tool == "codex":
             snapshot = latest_codex_rate_limits(
                 directory, account_at=lambda ts, d=directory: registry.account_at(d, ts)
             )
-            if snapshot and snapshot.get("account_id") != row["account_id"]:
+            if snapshot and not snapshot.get("limited") and snapshot.get("account_id") != row["account_id"]:
                 result.append({"account_id": snapshot.get("account_id"), "tool": tool,
                                "label": "계정 미상" if snapshot.get("account_id") is None else "이전 계정",
                                "config_dir": str(directory), "quota_windows": codex_windows(snapshot, now)})
@@ -484,4 +606,4 @@ def account_quotas(registry: Any = None, force: bool = False,
             windows = codex_windows(snapshot, now)
         result.append({k: row[k] for k in ("account_id", "tool", "label", "config_dir")})
         result[-1]["quota_windows"] = windows
-    return result
+    return merge_account_quota_rows(result)
