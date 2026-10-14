@@ -368,103 +368,100 @@ class MetricAggregator:
             "month": local_period_start_utc(now_utc, month_start=True),
         }
 
-        watcher_key = _watcher_key()
-        groups: List[tuple] = [
-            (key, "watcher", [watcher_key == key]) for key in WATCHER_TAGS
-        ]
-        not_watcher = [watcher_key.is_(None)]
-        providers = session.exec(select(TraceEvent.provider).where(*not_watcher).distinct()).all()
-        groups += [
-            (f"{prov}_api", "api", not_watcher + [col(TraceEvent.provider) == prov]) for prov in providers
-        ]
+        source = select(
+            func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api").label("tool_key"),
+            col(TraceEvent.account_id), col(TraceEvent.timestamp),
+            col(TraceEvent.total_tokens), KNOWN_COST.label("known_cost"),
+            case((TraceEvent.cost_source == SOURCE_UNKNOWN, 1), else_=0).label("unknown_cost"),
+        ).where(col(TraceEvent.timestamp) <= to_naive_utc(now_utc)).subquery("usage_rows")
+        columns = [source.c.tool_key, source.c.account_id]
+        for name, since in windows.items():
+            included = source.c.timestamp >= to_naive_utc(since)
+            columns.extend([
+                func.sum(case((included, 1), else_=0)).label(name + "_requests"),
+                func.sum(case((included, source.c.total_tokens), else_=0)).label(name + "_tokens"),
+                func.sum(case((included, source.c.known_cost), else_=0.0)).label(name + "_cost"),
+                func.sum(case((included, source.c.unknown_cost), else_=0)).label(name + "_unknown"),
+                func.min(case((included, source.c.timestamp), else_=None)).label(name + "_earliest"),
+            ])
+        usage_query = select(*columns).where(
+            source.c.timestamp >= min(to_naive_utc(since) for since in windows.values()),
+        ).group_by(source.c.tool_key, source.c.account_id)
+        summaries = {
+            (row.tool_key, row.account_id): row._mapping for row in session.exec(usage_query).all()
+        }
+        latest_times = select(
+            source.c.tool_key, source.c.account_id, func.max(source.c.timestamp).label("timestamp"),
+        ).group_by(source.c.tool_key, source.c.account_id).subquery("latest_times")
+        latest_ids = select(
+            latest_times.c.tool_key, latest_times.c.account_id, func.max(col(TraceEvent.id)).label("id"),
+        ).select_from(latest_times).join(TraceEvent, (
+            (col(TraceEvent.timestamp) == latest_times.c.timestamp)
+            & col(TraceEvent.account_id).is_not_distinct_from(latest_times.c.account_id)
+            & (func.coalesce(_watcher_key(), col(TraceEvent.provider) + "_api") == latest_times.c.tool_key)
+        )).group_by(latest_times.c.tool_key, latest_times.c.account_id).subquery("latest_ids")
+        query = select(
+            latest_ids.c.tool_key, latest_ids.c.account_id,
+            *[col(getattr(TraceEvent, field)).label("latest_" + field) for field in (
+                "id", "timestamp", "provider", "model_name", "session_id",
+                "prompt_tokens", "cache_read_tokens", "cache_write_tokens",
+            )],
+        ).select_from(latest_ids).join(TraceEvent, col(TraceEvent.id) == latest_ids.c.id).order_by(
+            latest_ids.c.tool_key, latest_ids.c.account_id.is_not(None), latest_ids.c.account_id,
+        )
 
-        def summarize(key: str, kind: str, filters: List[Any]) -> Optional[Dict[str, Any]]:
-            latest = session.exec(
-                select(TraceEvent)
-                .where(*filters)
-                .where(col(TraceEvent.timestamp) <= to_naive_utc(now_utc))
-                .order_by(col(TraceEvent.timestamp).desc(), col(TraceEvent.id).desc())
-                .limit(1)
-            ).first()
-            if latest is None:
-                return None
-
-            win_out: Dict[str, Any] = {}
-            for name, since in windows.items():
-                row = session.exec(
-                    select(
-                        func.count(col(TraceEvent.id)),
-                        func.coalesce(func.sum(col(TraceEvent.total_tokens)), 0),
-                        func.coalesce(
-                            func.sum(
-                                case(
-                                    (col(TraceEvent.cost_source) != SOURCE_UNKNOWN, col(TraceEvent.cost_usd)),
-                                    else_=0.0,
-                                )
-                            ),
-                            0.0,
-                        ),
-                        func.coalesce(
-                            func.sum(case((col(TraceEvent.cost_source) == SOURCE_UNKNOWN, 1), else_=0)), 0
-                        ),
-                        func.min(col(TraceEvent.timestamp)),
-                    )
-                    .where(*filters)
-                    .where(col(TraceEvent.timestamp) >= to_naive_utc(since))
-                    .where(col(TraceEvent.timestamp) <= to_naive_utc(now_utc))
-                ).first() or (0, 0, 0.0, 0, None)
-                win_out[name] = {
-                    "since": to_aware_utc(since).isoformat(),
-                    "requests": int(row[0] or 0),
-                    "tokens": int(row[1] or 0),
-                    "cost_usd": round(float(row[2] or 0.0), 6),
-                    "cost_unknown": int(row[3] or 0),
-                    "earliest": to_aware_utc(row[4]).isoformat() if row[4] else None,
-                }
-
-            ts = to_aware_utc(latest.timestamp)
-            mins_ago = int((now_utc - ts).total_seconds() // 60) if ts else None
-            # The input of the last request is the conversation's size at that point.
-            # Copilot rows are session totals and Antigravity rows are text-length
-            # estimates, so neither says anything about a context window.
+        results: Dict[str, Any] = {}
+        latest_ids: Dict[str, tuple] = {}
+        for record in session.exec(query).all():
+            row = record._mapping
+            key = row["tool_key"]
+            kind = "watcher" if key in WATCHER_TAGS else "api"
+            ts = to_aware_utc(row["latest_timestamp"])
+            mins_ago = int((now_utc - ts).total_seconds() // 60)
             context_tokens = None
             if key in ("claude", "codex") or kind == "api":
-                context_tokens = (
-                    (latest.prompt_tokens or 0)
-                    + (latest.cache_read_tokens or 0)
-                    + (latest.cache_write_tokens or 0)
-                )
-            return {
-                "key": key,
-                "kind": kind,
-                "provider": latest.provider,
-                "model_name": latest.model_name,
-                "session_id": latest.session_id,
-                "context_tokens": context_tokens,
-                "timestamp": ts.isoformat() if ts else None,
-                "mins_ago": mins_ago,
-                "is_active": mins_ago is not None and mins_ago <= 15,
-                "windows": win_out,
+                context_tokens = sum(row["latest_" + field] or 0 for field in (
+                    "prompt_tokens", "cache_read_tokens", "cache_write_tokens",
+                ))
+            latest = {
+                "key": key, "kind": kind, "provider": row["latest_provider"],
+                "model_name": row["latest_model_name"], "session_id": row["latest_session_id"],
+                "context_tokens": context_tokens, "timestamp": ts.isoformat(),
+                "mins_ago": mins_ago, "is_active": mins_ago <= 15,
             }
-        results: Dict[str, Any] = {}
-        for key, kind, filters in groups:
-            total = summarize(key, kind, filters)
-            if total is None:
-                continue
-            account_ids = session.exec(
-                select(TraceEvent.account_id).where(
-                    *filters, col(TraceEvent.timestamp) <= to_naive_utc(now_utc)
-                ).distinct().order_by(col(TraceEvent.account_id))
-            ).all()
-            accounts = []
-            for account_id in account_ids:
-                account_filter = (
-                    col(TraceEvent.account_id).is_(None)
-                    if account_id is None else col(TraceEvent.account_id) == account_id
-                )
-                account = summarize(key, kind, filters + [account_filter])
-                if account is not None:
-                    accounts.append({"account_id": account_id, **account})
-            total["accounts"] = accounts
-            results[key] = total
+            if key not in results:
+                results[key] = {**latest, "windows": {
+                    name: {"since": to_aware_utc(since).isoformat(), "requests": 0, "tokens": 0,
+                           "cost_usd": 0.0, "cost_unknown": 0, "earliest": None}
+                    for name, since in windows.items()
+                }, "accounts": []}
+            total = results[key]
+            latest_id = (row["latest_timestamp"], row["latest_id"])
+            if key not in latest_ids or latest_id > latest_ids[key]:
+                total.update(latest)
+                latest_ids[key] = latest_id
+            account_windows = {}
+            usage_row = summaries.get((key, row["account_id"]), {})
+            for name in windows:
+                earliest = usage_row.get(name + "_earliest")
+                usage = {
+                    "since": total["windows"][name]["since"],
+                    "requests": int(usage_row.get(name + "_requests", 0)),
+                    "tokens": int(usage_row.get(name + "_tokens", 0)),
+                    "cost_usd": float(usage_row.get(name + "_cost", 0.0)),
+                    "cost_unknown": int(usage_row.get(name + "_unknown", 0)),
+                    "earliest": to_aware_utc(earliest).isoformat() if earliest else None,
+                }
+                combined = total["windows"][name]
+                for field in ("requests", "tokens", "cost_usd", "cost_unknown"):
+                    combined[field] += usage[field]
+                if usage["earliest"] and (
+                    not combined["earliest"] or usage["earliest"] < combined["earliest"]
+                ):
+                    combined["earliest"] = usage["earliest"]
+                account_windows[name] = {**usage, "cost_usd": round(usage["cost_usd"], 6)}
+            total["accounts"].append({"account_id": row["account_id"], **latest, "windows": account_windows})
+        for total in results.values():
+            for usage in total["windows"].values():
+                usage["cost_usd"] = round(usage["cost_usd"], 6)
         return results
