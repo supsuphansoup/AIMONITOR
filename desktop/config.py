@@ -18,6 +18,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "widget_y": 60,
     "widget_opacity": 0.94,
     "widget_mode": "mini",  # "mini" or "expanded"
+    # Width the user dragged per mode, in pixels; None = fit the content.
+    "widget_width_mini": None,
+    "widget_width_expanded": None,
     "always_on_top": True,
     "poll_interval_ms": 3000,
     "claude_watch_enabled": True,
@@ -50,6 +53,9 @@ def _validated(data: Dict[str, Any]) -> Dict[str, Any]:
                   and (isinstance(value, int) or math.isfinite(value)))
         if key in ("widget_x", "widget_y"):
             valid = value is None or (isinstance(value, int) and not isinstance(value, bool))
+        elif key in ("widget_width_mini", "widget_width_expanded"):
+            valid = value is None or (isinstance(value, int) and not isinstance(value, bool)
+                                      and 120 <= value <= 20000)
         elif key == "poll_interval_ms":
             valid = isinstance(value, int) and not isinstance(value, bool) and 500 <= value <= 3600000
         elif key == "widget_opacity":

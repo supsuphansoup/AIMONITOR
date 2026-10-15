@@ -7,6 +7,7 @@ no official value reads "확인 불가".
 
 - Frameless, draggable, semi-transparent, optional always-on-top
 - Mini (one line) and expanded (one row per item) modes
+- Width follows the content until the user drags the left/right edge (saved per mode)
 - Double-click opens the native dashboard
 """
 
@@ -43,7 +44,25 @@ from desktop.quota import account_quotas
 from desktop.rate_fetcher import shared_updater
 
 ROW_HEIGHT = theme.ROW_HEIGHT
+MINI_CHROME = 80  # status dot + two icons around the one-line text
+GRIP_WIDTH = 6  # invisible left/right edge strips that resize the widget
+LABEL_CHROME = 6  # a Tk label's border and padding around its text, both sides
+MIN_WIDTH = {"mini": 200, "expanded": 300}
 logger = logging.getLogger(__name__)
+
+
+def fit_text(text: str, measure: Callable[[str], int], max_px: int) -> str:
+    """Longest prefix of text, ending in '…', that measures at most max_px."""
+    if measure(text) <= max_px:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if measure(text[:mid].rstrip() + "…") <= max_px:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low].rstrip() + "…"
 
 
 def monitor_work_areas(root: tk.Misc) -> list:
@@ -116,6 +135,12 @@ class FloatingWidget:
 
         self._drag_start_x = 0
         self._drag_start_y = 0
+        self._resize_drag: Optional[tuple] = None
+        self._live_width: Optional[int] = None
+        self._live_position: Optional[tuple] = None
+        self._mini_full: Optional[str] = None
+        self._mini_shown: Optional[str] = None
+        self._row_notes: List[tuple] = []  # (note label, full note, row name, value) of the card rows
         self.summary_data: Dict[str, Any] = {}
         self.entries: List[Dict[str, Any]] = []
         self.is_connected = False
@@ -155,11 +180,27 @@ class FloatingWidget:
     def _visible(self) -> List[Dict[str, Any]]:
         return select_entries(self.entries, self._selected_ids())
 
+    def _custom_width(self) -> Optional[int]:
+        """Width being dragged, else the width saved for this mode; None = fit the content."""
+        live = getattr(self, "_live_width", None)
+        if live is not None:
+            return live
+        saved = self.config.get(f"widget_width_{self.mode}")
+        return saved if isinstance(saved, int) and not isinstance(saved, bool) else None
+
     def _size(self) -> tuple:
+        custom = self._custom_width()
+        if custom is not None:
+            width = max(MIN_WIDTH[self.mode], min(custom, self.root.winfo_screenwidth() - 40))
+            if self.mode == "mini":
+                return width, 36
+            return width, 80 + max(1, len(self._visible())) * ROW_HEIGHT
         if self.mode == "mini":
-            # Fit the line to its text (status dot + two icons ≈ 80px), within the screen.
-            text = self.mini_text.cget("text") if hasattr(self, "mini_text") else ""
-            width = self.font_bold.measure(text) + 80
+            # Fit the line to its text, within the screen.
+            text = getattr(self, "_mini_full", None)
+            if text is None:
+                text = self.mini_text.cget("text") if hasattr(self, "mini_text") else ""
+            width = self.font_bold.measure(text) + MINI_CHROME
             return max(260, min(width, self.root.winfo_screenwidth() - 40)), 36
         rows = max(1, len(self._visible()))
         visible = self._visible()
@@ -188,19 +229,57 @@ class FloatingWidget:
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _resize(self) -> None:
+        mini = getattr(self, "mode", None) == "mini" and hasattr(self, "mini_text")
+        if mini:
+            shown = self.mini_text.cget("text")
+            if shown != getattr(self, "_mini_shown", None):
+                self._mini_full = shown  # _render put new text on the label
         w, h = self._size()
         x, y = self.root.winfo_x(), self.root.winfo_y()
         x, y, w, h = fit_work_area(x, y, w, h, monitor_work_areas(self.root))
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+        if mini:
+            self._fit_mini(w)
+        elif getattr(self, "_row_notes", None):
+            self._fit_notes(w)
+
+    def _fit_mini(self, width: int) -> None:
+        """Shorten the one-line text with '…' when the widget is narrower than the text."""
+        shown = fit_text(self._mini_full or "", self.font_bold.measure, width - MINI_CHROME)
+        self._mini_shown = shown
+        if shown != self.mini_text.cget("text"):
+            self.mini_text.config(text=shown)
+
+    def _fit_notes(self, width: int) -> None:
+        """Shorten each card row's right-hand note with '…' so its name and value stay readable."""
+        inner = width - 2 * theme.SPACE_3 - 2  # row padding and the 1px border
+        for label, note, name, value in self._row_notes:
+            room = (inner - self.font_normal.measure(name) - theme.SPACE_3
+                    - self.font_bold.measure(value) - theme.SPACE_2 - 3 * LABEL_CHROME)
+            fits = room > self.font_small.measure("…")
+            text = fit_text(note, self.font_small.measure, room) if fits else ""
+            if text != label.cget("text"):
+                label.config(text=text)
 
     def _build_ui(self) -> None:
         self._rows_sig = None  # new, empty rows frame: the next render must fill it
+        self._row_notes = []
         for child in self.frame.winfo_children():
             child.destroy()
         if self.mode == "mini":
             self._build_mini_ui()
         else:
             self._build_expanded_ui()
+        # Placed last so they sit above the content at both edges.
+        for side in ("left", "right"):
+            grip = tk.Frame(self.frame, bg=theme.color(theme.CARD), cursor="sb_h_double_arrow")
+            grip._aim_bound = True  # type: ignore[attr-defined]  # not a drag-to-move handle
+            grip.place(relx=0.0 if side == "left" else 1.0, rely=0.0, relheight=1.0, width=GRIP_WIDTH,
+                       anchor="nw" if side == "left" else "ne")
+            grip.bind("<Button-1>", lambda e, s=side: self._on_resize_start(e, s))
+            grip.bind("<B1-Motion>", self._on_resize_motion)
+            grip.bind("<ButtonRelease-1>", self._on_resize_release)
+            grip.bind("<Button-3>", self._show_context_menu)
 
     def _icon(
         self, parent: tk.Misc, text: str, command: Callable[[], None], fg: Optional[str] = None
@@ -217,6 +296,7 @@ class FloatingWidget:
         lbl.bind("<Button-1>", lambda e: command())
 
     def _build_mini_ui(self) -> None:
+        self._mini_full = self._mini_shown = None
         bar = tk.Frame(self.frame, bg=theme.color(theme.CARD))
         bar.pack(fill="both", expand=True)
         self.lbl_status = tk.Label(
@@ -294,6 +374,43 @@ class FloatingWidget:
     def _on_drag_release(self, event) -> None:
         self._save(widget_x=self.root.winfo_x(), widget_y=self.root.winfo_y())
 
+    def _on_resize_start(self, event, side: str) -> None:
+        self._resize_drag = (side, event.x_root, self.root.winfo_x(), self.root.winfo_y(),
+                             self.root.winfo_width(), monitor_work_areas(self.root))
+
+    def _on_resize_motion(self, event) -> None:
+        if self._resize_drag is None:
+            return
+        side, start, x, y, width, areas = self._resize_drag
+        moved = event.x_root - start
+        new = max(MIN_WIDTH[self.mode], width + moved if side == "right" else width - moved)
+        if side == "left":
+            x += width - new  # the right edge stays put
+        self._live_width = new
+        x, y, w, h = fit_work_area(x, y, new, self._size()[1], areas)
+        self._live_width = w
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self._live_position = (x, y)
+        if self.mode == "mini":
+            self._fit_mini(w)
+        elif self._row_notes:
+            self._fit_notes(w)
+
+    def _on_resize_release(self, event) -> None:
+        if self._resize_drag is None:
+            return
+        self._resize_drag = None
+        if self._live_width is not None:
+            x, y = self._live_position or (self.root.winfo_x(), self.root.winfo_y())
+            self._save(**{f"widget_width_{self.mode}": self._live_width, "widget_x": x, "widget_y": y})
+        self._live_width = self._live_position = None
+        self._resize()
+
+    def reset_width(self) -> None:
+        """Go back to fitting the content for the current mode."""
+        self._save(**{f"widget_width_{self.mode}": None})
+        self._resize()
+
     def _save(self, **changes: Any) -> bool:
         try:
             self.config = update_config(changes)
@@ -314,6 +431,7 @@ class FloatingWidget:
         )
         menu.add_command(label="📊 전체 프로그램 창 열기", command=self.open_dashboard)
         menu.add_command(label="⤢ 한 줄 / 카드 모드 전환", command=self.toggle_mode)
+        menu.add_command(label="↔ 폭 자동 맞춤 (좌우 끝을 끌어 조절)", command=self.reset_width)
         menu.add_separator()
         menu.add_cascade(label="👁 표시할 AI", menu=self._ais_menu(menu))
         menu.add_cascade(label="☑ 표시 항목 선택", menu=self._items_menu(menu))
@@ -574,7 +692,7 @@ class FloatingWidget:
                 self._resize()
                 return
             self.lbl_footer.config(text="인증 필요", fg=theme.color(theme.ERROR))
-        elif hasattr(self, "lbl_footer"):
+        elif self.mode == "expanded":  # the one-line mode has no footer (an old one may be destroyed)
             status = "연결 실패 · 이전 값 · " if not self.is_connected and self.entries else ""
             self.lbl_footer.config(text=status + self.rate_updater.describe(), fg=theme.color(theme.FAINT))
 
@@ -586,7 +704,7 @@ class FloatingWidget:
             parts = [f"{e['group']} {e['label']} {e['value']} {widget_entry_note(e)}" for e in visible]
             status = "연결 실패 · 이전 값 │ " if not self.is_connected else ""
             text = status + ("  │  ".join(parts) or "우클릭 > 표시 항목 선택")
-            if text != self.mini_text.cget("text"):
+            if text != getattr(self, "_mini_full", None):
                 self.mini_text.config(text=text)
                 self._resize()
             return
@@ -603,6 +721,7 @@ class FloatingWidget:
 
         for child in self.rows_frame.winfo_children():
             child.destroy()
+        self._row_notes = []
         if not visible:
             tk.Label(
                 self.rows_frame,
@@ -628,13 +747,15 @@ class FloatingWidget:
             ).pack(side="left")
             tail = widget_entry_note(e)
             if tail:
-                tk.Label(
+                note = tk.Label(
                     row,
                     text=tail,
                     fg=theme.color(theme.FAINT),
                     bg=theme.color(theme.CARD),
                     font=self.font_small,
-                ).pack(side="right")
+                )
+                note.pack(side="right")
+                self._row_notes.append((note, tail, f"{e['group']} · {e['label']}", e["value"]))
         self._bind_events()
         self._resize()
 

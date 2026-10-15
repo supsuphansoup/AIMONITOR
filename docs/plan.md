@@ -26,7 +26,7 @@ python -m pytest -q
 ## 다음 후보 (승인 시 새 plan)
 
 - 2027-01-01 전 단가표 갱신 (Gemini 프로모션 종료) — [spec/cost.md](spec/cost.md)
-- 미니 위젯이 기본 항목을 모두 한 줄에 이어 붙여, Claude·Codex만 연결돼도 폭이 화면 전체에 가까움(1880px). 차트의 모델 이름이 잘림 — [spec/desktop.md](spec/desktop.md)
+- 미니 위젯의 기본 폭은 여전히 내용 전체 길이(Claude·Codex만으로 1880px) — 끌어서 줄일 수는 있음(Unreleased). 차트의 모델 이름이 잘림 — [spec/desktop.md](spec/desktop.md)
 - 화면 영어 지원, macOS 지원 여부 — [intent.md](intent.md) Open questions
 - 키 이름 기반 원문 차단의 한계, API 키 회전 절차 — [spec/security-ops.md](spec/security-ops.md)
 - `cost_hourly` 별칭의 의미 불일치 — [spec/alerts.md](spec/alerts.md)

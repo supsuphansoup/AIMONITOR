@@ -78,13 +78,15 @@ def test_chart_values_theme_and_tick_legibility_at_minimum_width(monkeypatch, mo
 def test_empty_widget_switches_to_mini_size(monkeypatch, mode, connected):
     monkeypatch.setattr(theme, "appearance_mode", lambda: mode)
     ui = SimpleNamespace(mode="expanded", entries=[], is_connected=connected, _theme_mode=mode,
-        mini_text=Mock(), _save=Mock(), _build_ui=Mock(), _bind_events=Mock())
+        mini_text=Mock(), _save=Mock(), _build_ui=Mock(), _bind_events=Mock(), config={})
     ui.mini_text.cget.return_value = "표시할 항목 없음"
     ui.font_bold = SimpleNamespace(measure=lambda text: len(text) * 12)
     ui.root = SimpleNamespace(winfo_screenwidth=lambda: 1920, winfo_x=lambda: 100,
                              winfo_y=lambda: 100, geometry=Mock())
     ui._size = lambda: widget.FloatingWidget._size(ui)
     ui._resize = lambda: widget.FloatingWidget._resize(ui)
+    ui._custom_width = lambda: widget.FloatingWidget._custom_width(ui)
+    ui._fit_mini = lambda width: widget.FloatingWidget._fit_mini(ui, width)
     ui._visible = lambda: []
     ui._render = lambda: widget.FloatingWidget._render(ui)
     widget.FloatingWidget.toggle_mode(ui)

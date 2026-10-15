@@ -86,12 +86,20 @@ def test_large_invalid_setting_repairs_only_bad_field(tmp_path, monkeypatch):
     ("widget_opacity", 2), ("krw_per_usd", float("nan")), ("always_on_top", "false"),
     ("widget_mode", "invalid"), ("widget_items", [None]), ("hidden_ais", "claude"),
     ("copilot_monthly_premium_limit", -1), ("backend_url", None), ("api_key", []),
+    ("widget_width_mini", True), ("widget_width_mini", 50), ("widget_width_expanded", "wide"),
+    ("widget_width_expanded", 640.5),
 ])
 def test_invalid_setting_recovers_only_invalid_field(key, value):
     config.CONFIG_FILE.write_text(json.dumps({key: value, "claude_watch_enabled": False}), encoding="utf-8")
     loaded = config.load_config()
     assert loaded[key] == config.DEFAULT_CONFIG[key]
     assert loaded["claude_watch_enabled"] is False
+
+
+def test_dragged_widget_widths_round_trip_per_mode():
+    config.save_config({"widget_width_mini": 640, "widget_width_expanded": None})
+    loaded = config.load_config()
+    assert loaded["widget_width_mini"] == 640 and loaded["widget_width_expanded"] is None
 
 
 def test_valid_negative_monitor_position_and_obsolete_keys():
