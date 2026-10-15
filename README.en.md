@@ -14,7 +14,11 @@
 
 <p align="center"><a href="README.md">한국어</a> · <b>English</b></p>
 
-<!-- Screenshots: docs/images/widget.png (always-on-top widget), docs/images/main.png (main window) — add before going public -->
+<p align="center">
+  <img src="docs/images/main.png" alt="Main window — remaining 5-hour and weekly limits and today's usage for Claude Code and Codex" width="760"><br>
+  <img src="docs/images/widget.png" alt="Always-on-top widget — remaining limit and reset time per tool" width="460"><br>
+  <sub>Main window and always-on-top widget. The numbers are synthetic demo data.</sub>
+</p>
 
 > The app UI is in Korean for now. Numbers, model names and limits read the same in any language; English UI contributions are welcome.
 

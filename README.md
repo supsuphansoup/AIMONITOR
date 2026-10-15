@@ -14,7 +14,11 @@
 
 <p align="center"><b>한국어</b> · <a href="README.en.md">English</a></p>
 
-<!-- 스크린샷 자리: docs/images/widget.png (항상 위 위젯), docs/images/main.png (메인 창) — 공개 전에 추가 -->
+<p align="center">
+  <img src="docs/images/main.png" alt="메인 창 — Claude Code·Codex의 5시간·주간 남은 한도와 오늘 사용량" width="760"><br>
+  <img src="docs/images/widget.png" alt="항상 위 위젯 — 도구별 남은 한도와 리셋 시각" width="460"><br>
+  <sub>메인 창과 항상 위 위젯. 화면의 숫자는 데모용 합성 데이터입니다.</sub>
+</p>
 
 ## 이런 분께
 

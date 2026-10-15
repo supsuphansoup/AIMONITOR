@@ -1,6 +1,6 @@
 # Plan: v0.6.0 공개 배포
 
-Status: released (2026-10-15), 사람 확인 2건 남음. 근거: [intent.md](intent.md), [기능별 명세](spec/README.md). 이전 계획과 검증 기록은 git 이력과 [CHANGELOG](../CHANGELOG.md)에 있다.
+Status: released (2026-10-15). 근거: [intent.md](intent.md), [기능별 명세](spec/README.md). 이전 계획과 검증 기록은 git 이력과 [CHANGELOG](../CHANGELOG.md)에 있다.
 
 ## 완료
 
@@ -12,11 +12,7 @@ Status: released (2026-10-15), 사람 확인 2건 남음. 근거: [intent.md](in
 - Claude 사용량 조회 User-Agent를 `AIMONITOR/<버전>`으로, 커밋 작성자 이메일을 GitHub noreply로 변경.
 - 공개 전 검증(데이터·계약·개인정보·배포물·계정 수집 종단)과 발견한 결함 수정.
 - `v0.6.0` 공개(2026-10-15): 저장소 설명·topics, 비공개 취약점 제보, 릴리스 게시.
-
-## 남은 작업 (사람 확인 필요)
-
-1. exe 첫 실행 화면 확인 — 실행 중인 앱을 끄거나 Windows Sandbox에서 `v0.6.0` zip으로.
-2. 스크린샷(위젯·메인 창) → `docs/images/`, README의 주석 자리에 연결.
+- 릴리스 zip 첫 실행 확인(빈 사용자 프로필, 탭 5개)과 README 스크린샷(합성 데모 데이터).
 
 ## 검증
 
@@ -30,6 +26,7 @@ python -m pytest -q
 ## 다음 후보 (승인 시 새 plan)
 
 - 2027-01-01 전 단가표 갱신 (Gemini 프로모션 종료) — [spec/cost.md](spec/cost.md)
+- 미니 위젯이 기본 항목을 모두 한 줄에 이어 붙여, Claude·Codex만 연결돼도 폭이 화면 전체에 가까움(1880px). 차트의 모델 이름이 잘림 — [spec/desktop.md](spec/desktop.md)
 - 화면 영어 지원, macOS 지원 여부 — [intent.md](intent.md) Open questions
 - 키 이름 기반 원문 차단의 한계, API 키 회전 절차 — [spec/security-ops.md](spec/security-ops.md)
 - `cost_hourly` 별칭의 의미 불일치 — [spec/alerts.md](spec/alerts.md)
