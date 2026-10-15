@@ -2,7 +2,7 @@
 
 동작 규칙의 현재 상태는 [docs/spec/](docs/spec/README.md)에 있다. 이 파일은 버전별 변경과 업그레이드 주의사항만 기록한다.
 
-## v0.6.0 — 2026-10-08 · 데스크톱 전용 UI, 계정별 사용량, Windows exe
+## v0.6.0 — 2026-10-15 · 데스크톱 전용 UI, 계정별 사용량, Windows exe
 
 **동작 변경 (BREAKING)**
 - 웹 대시보드 제거. UI는 Windows 데스크톱 앱(메인 창·트레이·위젯)만 제공한다. `GET /`는 JSON 404이며 `/api/v1/**`·`/health`·SDK·CSV는 유지한다.
