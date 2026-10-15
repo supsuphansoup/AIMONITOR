@@ -16,7 +16,7 @@ def validate_retention_days(days: int) -> int:
 class Settings(BaseSettings):
     # --- Identity -------------------------------------------------------
     PROJECT_NAME: str = "AIMONITOR"
-    VERSION: str = "0.6.0"
+    VERSION: str = "0.6.1"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"

@@ -130,7 +130,7 @@ def collect_notices(project: Path, output: Path, pure: list, data: list,
     text.extend([
         "Rebuilding with a modified library (including pystray under LGPLv3)",
         "AIMONITOR uses pystray; its original COPYING (GPLv3) and COPYING.LGPL (LGPLv3) are included above.",
-        "AIMONITOR source and build instructions: https://github.com/supsuphansoup/AIMONITOR/tree/v0.6.0",
+        "AIMONITOR source and build instructions: https://github.com/supsuphansoup/AIMONITOR/tree/v0.6.1",
         "Obtain this release's AIMONITOR source, the matching library source above, and Python with Tk.",
         "In your own build environment, install backend/requirements.txt, desktop/requirements.txt and",
         "build-windows/requirements.txt. Install your modified library from its source directory into that",

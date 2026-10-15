@@ -1,6 +1,6 @@
 [project]
 name = "aimonitor"
-version = "0.6.0"
+version = "0.6.1"
 description = "Real-time AI/LLM observability, cost and performance monitoring"
 requires-python = ">=3.10"
 license = { text = "MIT" }

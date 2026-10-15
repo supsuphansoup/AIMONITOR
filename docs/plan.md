@@ -13,6 +13,7 @@ Status: released (2026-10-15). 근거: [intent.md](intent.md), [기능별 명세
 - 공개 전 검증(데이터·계약·개인정보·배포물·계정 수집 종단)과 발견한 결함 수정.
 - `v0.6.0` 공개(2026-10-15): 저장소 설명·topics, 비공개 취약점 제보, 릴리스 게시.
 - 릴리스 zip 첫 실행 확인(빈 사용자 프로필, 탭 5개)과 README 스크린샷(합성 데모 데이터).
+- `v0.6.1`(2026-10-15): 위젯 폭 조절, 카드→한 줄 전환 뒤 갱신이 멈추던 문제 수정.
 
 ## 검증
 
@@ -26,7 +27,7 @@ python -m pytest -q
 ## 다음 후보 (승인 시 새 plan)
 
 - 2027-01-01 전 단가표 갱신 (Gemini 프로모션 종료) — [spec/cost.md](spec/cost.md)
-- 미니 위젯의 기본 폭은 여전히 내용 전체 길이(Claude·Codex만으로 1880px) — 끌어서 줄일 수는 있음(Unreleased). 차트의 모델 이름이 잘림 — [spec/desktop.md](spec/desktop.md)
+- 미니 위젯의 기본 폭은 여전히 내용 전체 길이(Claude·Codex만으로 1880px) — 끌어서 줄일 수는 있음(v0.6.1). 차트의 모델 이름이 잘림 — [spec/desktop.md](spec/desktop.md)
 - 화면 영어 지원, macOS 지원 여부 — [intent.md](intent.md) Open questions
 - 키 이름 기반 원문 차단의 한계, API 키 회전 절차 — [spec/security-ops.md](spec/security-ops.md)
 - `cost_hourly` 별칭의 의미 불일치 — [spec/alerts.md](spec/alerts.md)

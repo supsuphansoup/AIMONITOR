@@ -89,3 +89,11 @@ def test_missing_runtime_notice_uses_only_exact_version_upstream_copy(tmp_path):
     tcl_init.write_text("package require -exact Tcl 8.6.13\n")
     with pytest.raises(RuntimeError, match="Tcl runtime license"):
         collect.collect_notices(project, output, [], data, [], runtime)
+
+
+def test_notices_point_to_the_source_of_this_release():
+    import re
+
+    version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+    source = (ROOT / "build-windows/collect_notices.py").read_text(encoding="utf-8")
+    assert f"/AIMONITOR/tree/v{version.group(1)}\"" in source
