@@ -26,6 +26,7 @@ class SingleInstance:
         self.port = port
         self.on_show: Optional[Callable[[], None]] = None
         self._sock: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
 
     def acquire(self) -> bool:
         """True if this process is the only instance (and now listens for show requests)."""
@@ -40,7 +41,8 @@ class SingleInstance:
             sock.close()
             return False
         self._sock = sock
-        threading.Thread(target=self._serve, daemon=True, name="SingleInstance").start()
+        self._thread = threading.Thread(target=self._serve, daemon=True, name="SingleInstance")
+        self._thread.start()
         return True
 
     def notify_running(self, show: bool = True) -> bool:
@@ -98,3 +100,7 @@ class SingleInstance:
             except OSError:
                 pass
             self._sock = None
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            # Linux frees the port only once accept() has returned in _serve().
+            thread.join(timeout=2.0)

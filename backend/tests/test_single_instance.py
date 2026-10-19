@@ -27,15 +27,17 @@ def test_second_instance_is_refused_and_asks_the_first_to_show():
 
 
 def test_port_is_free_again_after_release():
-    port = _free_port()
-    first = SingleInstance(port=port)
-    assert first.acquire()
-    first.release()
-    again = SingleInstance(port=port)
-    try:
-        assert again.acquire()
-    finally:
-        again.release()
+    # Repeated: on Linux the port stayed bound for a moment after release() in about 1 of 13 runs.
+    for _ in range(200):
+        port = _free_port()
+        first = SingleInstance(port=port)
+        assert first.acquire()
+        first.release()
+        again = SingleInstance(port=port)
+        try:
+            assert again.acquire()
+        finally:
+            again.release()
 
 
 def test_unrelated_message_does_not_trigger_show():
