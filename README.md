@@ -20,6 +20,10 @@
   <sub>메인 창과 항상 위 위젯. 화면의 숫자는 데모용 합성 데이터입니다.</sub>
 </p>
 
+AIMONITOR는 **클로드 코드(Claude Code) 사용량 확인**, **코덱스(Codex) 남은 한도**, **깃허브 코파일럿(Copilot) 프리미엄 요청 수**를
+한곳에서 보여 주는 무료 오픈소스 Windows 프로그램입니다. Claude Pro·Max, ChatGPT Plus·Pro 구독의 5시간·주간 사용 한도와
+리셋 시각, 토큰 사용량과 API 비용을 보여 주고, 기록은 내 PC에만 저장합니다. 소개 페이지: <https://supsuphansoup.github.io/AIMONITOR/>
+
 ## 이런 분께
 
 - Claude Code의 **5시간·주간 한도가 얼마나 남았는지** 매번 `/usage`로 확인하기 번거로운 분

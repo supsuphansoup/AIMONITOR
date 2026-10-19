@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIMONITOR — 클로드 코드·코덱스 사용량과 남은 한도 확인 위젯 (Windows)</title>
+<meta name="description" content="클로드 코드(Claude Code) 사용량 확인, 코덱스(Codex) 남은 한도, 코파일럿 프리미엄 요청 수를 Windows 트레이 위젯으로 한눈에. 5시간·주간 한도와 리셋 시각, 토큰 사용량을 보여 주는 무료 오픈소스 프로그램. 프롬프트 본문은 모으지 않습니다.">
+<link rel="canonical" href="https://supsuphansoup.github.io/AIMONITOR/">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:site_name" content="AIMONITOR">
+<meta property="og:title" content="AIMONITOR — 클로드 코드·코덱스 남은 한도를 한눈에">
+<meta property="og:description" content="Claude Code·Codex·Copilot의 남은 한도와 사용량을 Windows 트레이 위젯으로. 무료 오픈소스, 기록은 내 PC에만.">
+<meta property="og:url" content="https://supsuphansoup.github.io/AIMONITOR/">
+<meta property="og:image" content="https://supsuphansoup.github.io/AIMONITOR/images/main.png">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AIMONITOR",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows 10, Windows 11",
+  "description": "Claude Code·Codex·Copilot의 남은 한도와 사용량을 보여 주는 Windows 트레이 위젯",
+  "url": "https://supsuphansoup.github.io/AIMONITOR/",
+  "downloadUrl": "https://github.com/supsuphansoup/AIMONITOR/releases/latest",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "KRW"}
+}
+</script>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1f; --muted: #5c5f66; --border: #e3e3df;
+    --accent: #3b5bdb; --accent-text: #ffffff; --code: #efefec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141517; --card: #1c1d20; --text: #ececee; --muted: #a2a5ad; --border: #2c2e33;
+      --accent: #748ffc; --accent-text: #0d0f14; --code: #26282c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141517; --card: #1c1d20; --text: #ececee; --muted: #a2a5ad; --border: #2c2e33;
+    --accent: #748ffc; --accent-text: #0d0f14; --code: #26282c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.7;
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+    word-break: keep-all; overflow-wrap: break-word;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 2.2rem; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.35rem; margin: 48px 0 12px; }
+  h3 { font-size: 1.05rem; margin: 20px 0 4px; }
+  p { margin: 8px 0; }
+  a { color: var(--accent); }
+  .lead { font-size: 1.15rem; color: var(--muted); margin: 0 0 24px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
+  .button {
+    display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 700;
+    border: 1px solid var(--accent);
+  }
+  .button.primary { background: var(--accent); color: var(--accent-text); }
+  figure { margin: 24px 0; }
+  figure img { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px; display: block; }
+  figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 8px; }
+  ul { padding-left: 1.2em; }
+  li { margin: 4px 0; }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; background: var(--card); font-size: 0.95rem; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>AIMONITOR</h1>
+    <p class="lead">클로드 코드(Claude Code)·코덱스(Codex)·코파일럿(Copilot)의 <b>남은 한도와 사용량</b>을
+      Windows 트레이 위젯으로 한눈에. 계정 여러 개도 나눠서, 프롬프트·응답 본문은 모으지 않고.</p>
+    <div class="actions">
+      <a class="button primary" href="https://github.com/supsuphansoup/AIMONITOR/releases/latest">Windows용 무료 다운로드</a>
+      <a class="button" href="https://github.com/supsuphansoup/AIMONITOR">GitHub에서 소스 보기</a>
+    </div>
+    <p>Windows 10/11 · Python 설치 필요 없음 · MIT 라이선스 오픈소스 · <a href="https://github.com/supsuphansoup/AIMONITOR/blob/main/README.en.md">English</a></p>
+  </header>
+
+  <figure>
+    <img src="images/main.png" width="1088" height="928" alt="메인 창 — Claude Code·Codex의 5시간·주간 남은 한도와 오늘 사용량">
+    <figcaption>메인 창: 계정별 5시간·주간 남은 한도, 오늘 사용량과 비용. 화면의 숫자는 데모용 합성 데이터입니다.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/widget.png" width="546" height="220" alt="항상 위 위젯 — 도구별 남은 한도와 리셋 시각" style="max-width: 460px; width: 100%;">
+    <figcaption>항상 위 위젯: 도구별 남은 한도(%)와 리셋 시각. 좌우 끝을 끌어 폭을 바꿀 수 있습니다.</figcaption>
+  </figure>
+
+  <section>
+    <h2>이런 분께</h2>
+    <ul>
+      <li>Claude Code의 <b>5시간·주간 한도가 얼마나 남았는지</b> 매번 <code>/usage</code>로 확인하기 번거로운 분</li>
+      <li>Claude Pro·Max, ChatGPT Plus·Pro 구독으로 Claude Code와 Codex를 함께 쓰며 <b>사용량 한도</b>를 자주 확인하는 분</li>
+      <li><b>개인·회사 Claude 계정</b>이나 Codex·Copilot을 함께 써서 어디서 얼마나 썼는지 헷갈리는 분</li>
+      <li>API 토큰 사용량과 비용을 보고 싶지만 <b>프롬프트를 외부 SaaS에 넘기기는 싫은</b> 분</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>주요 기능</h2>
+    <ul>
+      <li><b>항상 위 위젯</b> — 도구별 남은 한도(%)와 리셋 시각, 오늘 사용량·비용을 화면 구석에. 트레이에서 숨기기·열기.</li>
+      <li><b>계정별 분리</b> — 여러 Claude·Codex 설정 폴더를 모두 읽고 계정마다 나눠 보여 줍니다.</li>
+      <li><b>정직한 숫자</b> — 공식 값이 없으면 지어내지 않고 <code>확인 불가</code>·<code>계산 불가</code>로 표시합니다. 추정치는 추정이라고 밝힙니다.</li>
+      <li><b>메인 창</b> — 계정별 한도·사용량, 기록·차트(계정·모델별), 공급자 API 키와 공식 청구액·잔액.</li>
+      <li><b>내 앱의 LLM 호출도 함께</b> — Python SDK나 HTTP API로 OpenAI·Anthropic·Gemini·Ollama 호출 기록을 같은 화면에서.</li>
+      <li><b>Windows 시작 시 자동 실행</b>.</li>
+    </ul>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>도구</th><th>사용량 (토큰·비용)</th><th>남은 한도</th></tr></thead>
+        <tbody>
+          <tr><td>Claude Code</td><td>✅</td><td>✅ 5시간·주간</td></tr>
+          <tr><td>OpenAI Codex</td><td>✅</td><td>✅ 세션 로그의 한도 창</td></tr>
+          <tr><td>GitHub Copilot</td><td>✅</td><td>⚠️ 이번 달 프리미엄 요청 ÷ 직접 입력한 한도 (GitHub가 잔여량을 주지 않음)</td></tr>
+          <tr><td>Google Antigravity</td><td>⚠️ 추정</td><td>—</td></tr>
+          <tr><td>Cursor·Windsurf·Ollama</td><td>연결 여부만</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>설치</h2>
+    <ol>
+      <li><a href="https://github.com/supsuphansoup/AIMONITOR/releases/latest">Releases</a>에서 <code>AIMONITOR-&lt;버전&gt;-windows-x64.zip</code>을 받아 원하는 폴더에 풉니다.</li>
+      <li><code>AIMONITOR\AIMONITOR.exe</code>를 실행합니다.</li>
+    </ol>
+    <p>코드 서명이 없어 처음 실행할 때 SmartScreen 경고가 뜰 수 있습니다. <code>추가 정보 → 실행</code>을 누르세요.
+      데이터는 <code>%USERPROFILE%\.aimonitor</code>에 저장됩니다.</p>
+  </section>
+
+  <section>
+    <h2>개인정보</h2>
+    <ul>
+      <li>로컬 로그에서는 토큰·요청 수, 모델, 시각, 세션 ID와 계정 해시만 모읍니다. 프롬프트·응답 본문은 저장하거나 보내지 않습니다.</li>
+      <li>밖으로 보내는 곳: Claude 사용량 조회(<code>api.anthropic.com</code>, 비공식 엔드포인트), 환율 API, 등록한 키의 공급자, 설정한 Webhook. 텔레메트리는 없습니다.</li>
+      <li>공급자 API 키는 Windows DPAPI로 암호화합니다. 로컬 API는 <code>127.0.0.1</code>에서만 열립니다.</li>
+    </ul>
+    <p>읽는 파일과 외부 전송 전체 목록: <a href="https://github.com/supsuphansoup/AIMONITOR/blob/main/docs/privacy.md">개인정보 문서</a></p>
+  </section>
+
+  <section>
+    <h2>자주 묻는 질문</h2>
+    <h3>Claude Code 사용량과 남은 한도는 어떻게 확인하나요?</h3>
+    <p>AIMONITOR를 켜 두면 Claude Code의 5시간·주간 한도 남은 비율과 리셋 시각이 위젯에 계속 표시됩니다. 매번 <code>/usage</code>를 입력하지 않아도 됩니다.</p>
+    <h3>Codex 남은 한도도 보이나요?</h3>
+    <p>네. Codex 세션 로그에 기록되는 한도 창을 읽어 남은 비율을 보여 줍니다.</p>
+    <h3>무료인가요?</h3>
+    <p>네. MIT 라이선스 오픈소스이며 결제나 가입이 필요 없습니다.</p>
+    <h3>Mac이나 Linux에서도 되나요?</h3>
+    <p>지금은 Windows 10/11용 데스크톱 앱만 제공합니다.</p>
+  </section>
+
+  <footer>
+    <p>AIMONITOR · <a href="https://github.com/supsuphansoup/AIMONITOR">github.com/supsuphansoup/AIMONITOR</a> ·
+      <a href="https://github.com/supsuphansoup/AIMONITOR/blob/main/LICENSE">MIT</a></p>
+  </footer>
+</main>
+</body>
+</html>

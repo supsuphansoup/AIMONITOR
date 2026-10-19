@@ -80,7 +80,22 @@ def test_release_build_and_tag_publish_have_separate_permissions():
     assert "--draft" in publication and "--prerelease" in publication
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+def test_pages_deploy_is_the_only_job_with_pages_write_and_ships_existing_images():
+    workflow = _workflow("pages.yml")
+    assert workflow["permissions"] == {"contents": "read"}
+    deploy = workflow["jobs"]["deploy"]
+    assert deploy["permissions"] == {"contents": "read", "pages": "write", "id-token": "write"}
+    for step in deploy["steps"]:
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+    assemble = next(step["run"] for step in deploy["steps"] if step.get("name") == "Assemble site")
+    page = (ROOT / "site/index.html").read_text(encoding="utf-8")
+    for image in re.findall(r'src="images/([\w.-]+)"', page):
+        assert f"docs/images/{image}" in assemble
+        assert (ROOT / "docs/images" / image).is_file()
+
+
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml", "pages.yml"])
 def test_actions_are_pinned_to_full_commit_shas(name):
     contents = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
     assert "pull_request_target" not in contents
